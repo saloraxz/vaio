@@ -1,14 +1,16 @@
 fedoralap.tail055b0e.ts.net {
     tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
 
-    # Root goes to your website
-    root * /var/www/html
+    # Point to the 'www' folder inside your GitHub repo
+    root * /var/www/html/current/www
     file_server
 
+    # This handles the /ntfy link by showing ntfy.html
     rewrite /ntfy /ntfy.html
+}
 
-    # /ntfy/ goes to the ntfy container
-    handle_path /ntfy/* {
-        reverse_proxy ntfy:80
-    }
+# The actual ntfy service is here
+fedoralap.tail055b0e.ts.net:8080 {
+    tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
+    reverse_proxy ntfy:80
 }
