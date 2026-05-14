@@ -1,0 +1,4 @@
+certs/
+cache/
+etc/
+.env

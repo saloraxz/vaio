@@ -1,0 +1,12 @@
+fedoralap.tail055b0e.ts.net {
+    tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
+
+    # Root goes to your website
+    root * /var/www/html
+    file_server
+
+    # /ntfy/ goes to the ntfy container
+    handle_path /ntfy/* {
+        reverse_proxy ntfy:80
+    }
+}

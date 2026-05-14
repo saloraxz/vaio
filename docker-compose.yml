@@ -1,0 +1,40 @@
+services:
+  caddy:
+    image: caddy:latest
+    container_name: caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./www:/var/www/html
+      - caddy_data:/data
+      - ./certs:/certs:ro
+    restart: unless-stopped
+  
+  ntfy:
+    image: binwiederhier/ntfy
+    container_name: ntfy
+    command: serve
+    environment:
+      - NTFY_BASE_URL=https://fedoralap.tail055b0e.ts.net/ntfy
+      - NTFY_BEHIND_PROXY=true
+    volumes:
+      - ./cache:/var/cache/ntfy
+      - ./etc:/etc/ntfy
+    restart: unless-stopped
+
+  git-sync:
+    image: registry.k8s.io/git-sync/git-sync:v4.2.3
+    container_name: git-sync
+    volumes:
+      - ./www:/tmp/git # This links to your website folder
+    environment:
+      - GIT_SYNC_REPO=https://github.com/saloraxz/vaio
+      - GIT_SYNC_BRANCH=main
+      - GIT_SYNC_ROOT=/tmp/git
+      - GIT_SYNC_WAIT=60 # Checks for updates every 60 seconds
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
