@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ntfy Hub - Vaio</title>
+    <style>
+        /* Using the same styles as your index.html for consistency */
+        body { font-family: sans-serif; background-color: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { text-align: center; background: #1e1e1e; padding: 2rem; border-radius: 15px; border: 1px solid #333; width: 300px; }
+        h1 { color: #00ffa3; }
+        .links { display: grid; gap: 1rem; margin-top: 1rem; }
+        .button { background: #333; color: white; padding: 0.8rem; text-decoration: none; border-radius: 8px; transition: 0.3s; border: 1px solid #444; }
+        .button:hover { background: #00ffa3; color: #121212; }
+        input { padding: 0.8rem; border-radius: 8px; border: 1px solid #444; background: #222; color: white; width: 80%; margin-top: 1rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ntfy Hub</h1>
+        <div class="links">
+            <a href="https://fedoralap.tail055b0e.ts.net:8080/eric-mark" class="button">Support Alerts</a>
+            <a href="https://fedoralap.tail055b0e.ts.net:8080/server_alerts" class="button">Server Alerts</a>
+        </div>
+        
+        <input type="text" id="topicSearch" placeholder="Go to topic..." onkeydown="if(event.key === 'Enter') window.location.href='https://fedoralap.tail055b0e.ts.net:8080/' + this.value">
+        
+        <p style="font-size: 0.7rem; color: #555; margin-top: 1rem;">Press Enter to search</p>
+    </div>
+</body>
+</html>

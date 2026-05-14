@@ -5,6 +5,8 @@ fedoralap.tail055b0e.ts.net {
     root * /var/www/html
     file_server
 
+    rewrite /ntfy /ntfy.html
+
     # /ntfy/ goes to the ntfy container
     handle_path /ntfy/* {
         reverse_proxy ntfy:80
