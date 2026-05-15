@@ -17,11 +17,13 @@ fedoralap.tail055b0e.ts.net {
     }
     
     handle_path /cockpit* {
-        reverse_proxy localhost:9090 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
+        reverse_proxy host.docker.internal:9090 {
+            transport http {
+                tls_insecure_skip_verify
+            }
         }
     }
+    file_server
 }
 # ntfy Dashboard
 fedoralap.tail055b0e.ts.net:8080 {
