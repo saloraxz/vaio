@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Games Page</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            text-align: center;
+            background: #1e1e1e;
+            padding: 2rem;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            border: 1px solid #333;
+        }
+        h1 { color: #00ffa3; margin-bottom: 0.5rem; }
+        p { color: #888; margin-bottom: 2rem; }
+        .links {
+            display: grid;
+            gap: 1rem;
+        }
+        .button {
+            background: #333;
+            color: white;
+            padding: 1rem 2rem;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: bold;
+            transition: background 0.3s, transform 0.2s;
+            border: 1px solid #444;
+            display: inline-block; /* Added for alignment */
+            cursor: pointer;       /* Added for the hand icon */
+            font-size: 1rem;       /* Added to match button text size */
+        }
+        .button:hover {
+            background: #00ffa3;
+            color: #121212;
+            transform: translateY(-2px);
+        }
+        #version-footer {
+            position: fixed;
+            bottom: 15px;
+            font-size: 0.7rem;
+            color: #555;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+        .status {
+            margin-top: 1.5rem;
+            font-size: 0.8rem;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Fedora Vaio</h1>
+        <p>Tailscale Home Server</p>
+        
+        <div class="links">
+            <a href="/snekgame">snekgame</a>
+        </div>
+
+        <div class="status">
+            Connected via Tailscale : Page Version <div id="version-footer">v0.0.0</div>
+            <script>
+                // 1. Fetch Version from version.txt
+                async function loadVersion() {
+                    try {
+                        const response = await fetch('/version.txt');
+                        if (response.ok) {
+                            const version = await response.text();
+                            document.getElementById('version-footer').innerText = 'v' + version.trim();
+                        }
+                    } catch (e) {
+                        console.log("Version file not found");
+                    }
+                }
+                loadVersion();
+            </script>
+        </div>
+    </div>
+</body>
+</html>
