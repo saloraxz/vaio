@@ -10,6 +10,6 @@ fedoralap.tail055b0e.ts.net {
 }
 
 fedoralap.tail055b0e.ts.net:8080 {
-    tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
+    # tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
     reverse_proxy ntfy:80
 }
