@@ -62,7 +62,7 @@
         <div class="links">
             <a href="/ntfy" class="button">Go to ntfy</a>
             
-            <a href="https://fedoralap.tail055b0e.ts.net:9090" class="button">Server Admin (Cockpit)</a>
+            <a id="cockpitBtn" onclick="checkCockpit()" class="button">Server Admin (Cockpit)</a>
             <a href="https://saloraxz.github.io" class="button">Github Pages</a>
             <a href="./love/" class="button">Watermelons</a>
         </div>
@@ -70,6 +70,40 @@
         <div class="status">
             Connected via Tailscale : Page Version <div id="version-footer">v0.0.0</div>
             <script>
+                async function checkCockpit() {
+                    const btn = document.getElementById('cockpitBtn');
+                    const originalText = btn.innerText;
+                    const cockpitUrl = "https://fedoralap.tail055b0e.ts.net:9090";
+
+                    // 1. Enter "Authenticating" state
+                    btn.innerText = "Authenticating...";
+                    btn.style.backgroundColor = "#d9534f"; // Red color
+                    btn.disabled = true;
+
+                    try {
+                        // We use 'no-cors' because we just want to see if the server responds
+                        // even if it rejects the cross-origin request.
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 sec timeout
+
+                        await fetch(cockpitUrl, { mode: 'no-cors', signal: controller.signal });
+        
+                        // 2. Success! Redirect to Cockpit
+                        window.location.href = cockpitUrl;
+
+                    } catch (error) {
+                        // 3. Failed state
+                        btn.innerText = "Failed: Connect to Tailscale";
+        
+                        setTimeout(() => {
+                            // 4. Back to original state after 1.5 seconds
+                            btn.innerText = originalText;
+                            btn.style.backgroundColor = ""; // Reset to CSS default
+                            btn.disabled = false;
+                        }, 1500);
+                    }
+                }
+                
                 // 1. Fetch Version from version.txt
                 async function loadVersion() {
                     try {
