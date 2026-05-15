@@ -12,6 +12,8 @@ services:
       - caddy_data:/data
       - ./certs:/certs:ro,Z
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
   
   ntfy:
     image: binwiederhier/ntfy
