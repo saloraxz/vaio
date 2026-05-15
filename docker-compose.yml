@@ -18,7 +18,7 @@ services:
     container_name: ntfy
     command: serve
     environment:
-      - NTFY_BASE_URL=https://fedoralap.tail055b0e.ts.net:8443
+      - NTFY_BASE_URL=https://fedoralap.tail055b0e.ts.net
       - NTFY_BEHIND_PROXY=true
       - NTFY_AUTH_FILE=/var/lib/ntfy/user.db
       - NTFY_AUTH_DEFAULT_ACCESS=deny-all
