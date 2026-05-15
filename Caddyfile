@@ -1,8 +1,20 @@
-# Main Website
 fedoralap.tail055b0e.ts.net {
     tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
-    root * /var/www/html/current/www
-    route {
+
+    # New Blog Section
+    handle_path /blog/* {
+        reverse_proxy https://saloraxz.github.io {
+            header_up Host {upstream_hostport}
+        }
+    }
+
+    # Your existing ntfy/website handles...
+    handle_path /app/* {
+        reverse_proxy ntfy:80
+    }
+
+    handle {
+        root * /var/www/html/current/www
         rewrite /ntfy /ntfy.html
         file_server
     }
@@ -12,12 +24,4 @@ fedoralap.tail055b0e.ts.net {
 fedoralap.tail055b0e.ts.net:8080 {
     tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
     reverse_proxy ntfy:80
-}
-
-blog.fedoralap.tail055b0e.ts.net {
-    tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
-    
-    reverse_proxy https://saloraxz.github.io {
-        header_up Host {upstream_hostport}
-    }
 }
