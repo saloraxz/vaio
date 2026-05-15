@@ -5,11 +5,12 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "8080:8080"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - ./www:/var/www/html
+      - ./Caddyfile:/etc/caddy/Caddyfile:Z
+      - ./www:/var/www/html:Z
       - caddy_data:/data
-      - ./certs:/certs:ro
+      - ./certs:/certs:ro,Z
     restart: unless-stopped
   
   ntfy:
@@ -31,12 +32,13 @@ services:
     image: registry.k8s.io/git-sync/git-sync:v4.2.3
     container_name: git-sync
     volumes:
-      - ./www:/tmp/git # This links to your website folder
+      - ./www:/tmp/git:Z # This links to your website folder
     environment:
-      - GIT_SYNC_REPO=https://github.com/saloraxz/vaio
-      - GIT_SYNC_BRANCH=main
-      - GIT_SYNC_ROOT=/tmp/git
-      - GIT_SYNC_WAIT=60 # Checks for updates every 60 seconds
+      - GITSYNC_REPO=https://github.com/saloraxz/vaio
+      - GITSYNC_REF=main
+      - GITSYNC_ROOT=/tmp/git
+      - GITSYNC_LINK=current
+      - GITSYNC_PERIOD=60s # Checks for updates every 60 seconds
     restart: unless-stopped
 
 volumes:
