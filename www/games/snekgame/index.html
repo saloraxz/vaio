@@ -143,7 +143,7 @@ function getRandomInt(min, max) {
     // 1. Fetch Version from version.txt
     async function loadVersion() {
         try {
-            const response = await fetch('/version.txt');
+            const response = await fetch('fedoralap.tail055b0e.ts.net/version.txt');
             if (response.ok) {
                 const version = await response.text();
                 document.getElementById('version-footer').innerText = 'v' + version.trim();
