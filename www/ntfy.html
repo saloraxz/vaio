@@ -21,6 +21,31 @@
         <div class="links">
             <a href="https://fedoralap.tail055b0e.ts.net:8080/eric-mark" class="button">Support Alerts</a>
             <a href="https://fedoralap.tail055b0e.ts.net:8080/server_alerts" class="button">Server Alerts</a>
+            <a href="#" onclick="smartRedirect(); return false;" class="button">
+                Open ntfy
+            </a>
+            
+            <script>
+                function smartRedirect() {
+                    const btn = event.target;
+                    const originalText = btn.innerText;
+                    btn.innerText = "Checking connection...";
+                
+                    const privateUrl = "https://fedoralap.tail055b0e.ts.net:8080";
+                    const publicUrl  = "https://fedoralap.tail055b0e.ts.net:8443";
+                
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 1500); // Shorter 1.5s is usually better for UX
+                
+                    fetch(privateUrl, { mode: 'no-cors', signal: controller.signal })
+                        .then(() => {
+                            window.location.href = privateUrl;
+                        })
+                        .catch(() => {
+                            window.location.href = publicUrl;
+                        });
+                }
+                </script>
         </div>
         
         <input type="text" id="topicSearch" placeholder="Go to topic..." onkeydown="if(event.key === 'Enter') window.location.href='https://fedoralap.tail055b0e.ts.net:8080/' + this.value">
