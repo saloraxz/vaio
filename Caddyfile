@@ -1,11 +1,15 @@
 fedoralap.tail055b0e.ts.net {
-    tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
-
-    handle {
-        root * /var/www/html/current/www
-        rewrite /ntfy /ntfy.html
-        file_server
+    # Basic Auth Challenge
+    basic_auth /admin* {
+        admin $2a$14$v86JeNuG4PeFlB1Zc0Mzte/eQx/Bc.p8lChAxQIKEqj.Lo3vrUw1a (your hashed password)
     }
+
+    # Standard proxy for the rest of the site
+    root * /var/www/html
+    file_server
+    
+    # Proxy for the backend console script (we'll make this next)
+    reverse_proxy /api/console localhost:5000 
 }
 # ntfy Dashboard
 fedoralap.tail055b0e.ts.net:8080 {

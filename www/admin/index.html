@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ntfy Admin Console</title>
+    <style>
+        body { font-family: monospace; background: #000; color: #00ffa3; padding: 20px; }
+        .console { background: #111; border: 1px solid #333; padding: 15px; border-radius: 8px; }
+        button { background: #00ffa3; color: black; border: none; padding: 10px; margin: 5px; cursor: pointer; border-radius: 4px; }
+        pre { background: #222; padding: 10px; color: white; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h1>NTFY ADMIN CONSOLE</h1>
+    <div class="console">
+        <button onclick="run('list_users')">List Users</button>
+        <button onclick="run('stats')">Container Stats</button>
+        <hr>
+        <input type="text" id="topic" placeholder="Topic name">
+        <button onclick="run('clear_topic', document.getElementById('topic').value)">Clear Topic</button>
+        
+        <h3>Output:</h3>
+        <pre id="output">System ready...</pre>
+    </div>
+
+    <script>
+        async function run(type, param = "") {
+            const out = document.getElementById('output');
+            out.innerText = "Executing...";
+            
+            const response = await fetch('/api/console', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({type, param})
+            });
+            const data = await response.json();
+            out.innerText = data.output;
+        }
+    </script>
+</body>
+</html>
