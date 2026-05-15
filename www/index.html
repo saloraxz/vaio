@@ -70,40 +70,51 @@
         <div class="status">
             Connected via Tailscale : Page Version <div id="version-footer">v0.0.0</div>
             <script>
-                async function checkCockpit() {
+                function checkCockpit() {
                     const btn = document.getElementById('cockpitBtn');
                     const originalText = btn.innerText;
+                    // We point to the favicon or a small asset Cockpit always has
+                    const pingUrl = "https://fedoralap.tail055b0e.ts.net:9090/static/favicon.ico";
                     const cockpitUrl = "https://fedoralap.tail055b0e.ts.net:9090";
 
-                    // 1. Enter "Authenticating" state
                     btn.innerText = "Authenticating...";
-                    btn.style.backgroundColor = "#d9534f"; // Red color
+                    btn.style.backgroundColor = "#d9534f"; // Red
                     btn.disabled = true;
 
-                    try {
-                        // We use 'no-cors' because we just want to see if the server responds
-                        // even if it rejects the cross-origin request.
-                        const controller = new AbortController();
-                        const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 sec timeout
+                    // Create a dummy image object
+                    const img = new Image();
+    
+                    // If the image "loads" or even throws an error (but didn't timeout), 
+                    // it means the server responded!
+                    const timer = setTimeout(() => {
+                        img.src = ""; // Stop trying
+                        showFailed(btn, originalText);
+                    }, 4000); // 4 second timeout
 
-                        await fetch(cockpitUrl, { mode: 'no-cors', signal: controller.signal });
-        
-                        // 2. Success! Redirect to Cockpit
+                    img.onload = () => {
+                        clearTimeout(timer);
                         window.location.href = cockpitUrl;
+                    };
 
-                    } catch (error) {
-                        // 3. Failed state
-                        btn.innerText = "Failed: Connect to Tailscale";
-        
-                        setTimeout(() => {
-                            // 4. Back to original state after 1.5 seconds
-                            btn.innerText = originalText;
-                            btn.style.backgroundColor = ""; // Reset to CSS default
-                            btn.disabled = false;
-                        }, 1500);
-                    }
+                    img.onerror = () => {
+                        // With self-signed certs, it will likely hit 'onerror' 
+                        // because the cert is "invalid," but that's enough to prove the server is UP.
+                        clearTimeout(timer);
+                        window.location.href = cockpitUrl;
+                    };
+
+                    img.src = pingUrl + "?t=" + new Date().getTime(); // Anti-cache string
                 }
-                
+
+                function showFailed(btn, originalText) {
+                    btn.innerText = "Failed: Connect to Tailscale";
+                    setTimeout(() => {
+                        btn.innerText = originalText;
+                        btn.style.backgroundColor = ""; 
+                        btn.disabled = false;
+                    }, 1500);
+                }
+
                 // 1. Fetch Version from version.txt
                 async function loadVersion() {
                     try {
