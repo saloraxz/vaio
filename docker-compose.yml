@@ -22,6 +22,7 @@ services:
       - NTFY_BEHIND_PROXY=true
       - NTFY_AUTH_FILE=/var/lib/ntfy/user.db
       - NTFY_AUTH_DEFAULT_ACCESS=deny-all
+      - NTFY_ATTACHMENT_TOTAL_SIZE_LIMIT=15M
       - NTFY_WEB_BANNER=Welcome! <a href="https://fedoralap.tail055b0e.ts.net" style="color: #00ffa3; font-weight: bold;">[ Back to Home Server ]</a>
     volumes:
       - ./cache:/var/cache/ntfy
