@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>For You</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #1a0f0f;
+            color: #fce4ec;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            display: none; /* Hidden until password check */
+        }
+
+        .container {
+            text-align: center;
+            background: #2d1b1b;
+            padding: 3rem;
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(255, 105, 180, 0.2);
+            border: 1px solid #4a2c2c;
+            max-width: 400px;
+            z-index: 10; /* Keep text above falling petals */
+        }
+
+        h1 { color: #ff6b6b; margin-bottom: 0.5rem; }
+        
+        .button {
+            background: #ff6b6b;
+            color: white;
+            padding: 1rem 2rem;
+            text-decoration: none;
+            border-radius: 30px;
+            font-weight: bold;
+            transition: all 0.3s;
+            border: none;
+            cursor: pointer;
+            display: inline-block;
+            margin: 10px;
+            font-size: 1rem;
+        }
+
+        .button:hover {
+            background: #ff8787;
+            transform: translateY(-2px);
+        }
+
+        /* Sakura Petal Styling */
+        .petal {
+            position: fixed;
+            top: -10%;
+            background-color: #ffb7c5; /* Soft Pink */
+            border-radius: 150% 0 150% 0;
+            opacity: 0.8;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        /* Falling Animation */
+        @keyframes fall {
+            0% {
+                transform: translateY(0) rotate(0deg);
+                opacity: 0;
+            }
+            10% { opacity: 0.8; }
+            100% {
+                transform: translateY(110vh) rotate(720deg);
+                opacity: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div style="font-size: 3rem; margin-bottom: 1rem;">🌸</div>
+        <h1>Hi Loveyyyy!</h1>
+        <p>Made this just for youuu</p>
+        
+        <div class="links">
+            <button class="button" onclick="spawnSakura()">Click Hereee</button>
+            <br>
+            <a href="../" style="color: #888; text-decoration: none; font-size: 0.8rem;">Back</a>
+        </div>
+    </div>
+
+    <script>
+        // --- Password Logic ---
+        const PASSWORD = "watermelon"; 
+        function checkPassword() {
+            const entry = prompt("Enter the secret word:");
+            if (entry === PASSWORD) {
+                document.body.style.display = "flex";
+            } else {
+                alert("Access Denied.");
+                window.location.href = "../";
+            }
+        }
+        checkPassword();
+
+        // --- Sakura Logic ---
+        function spawnSakura() {
+            const petalCount = 30; // How many petals per click
+
+            for (let i = 0; i < petalCount; i++) {
+                const petal = document.createElement('div');
+                petal.className = 'petal';
+
+                // Randomize appearance and position
+                const size = Math.random() * 10 + 10 + "px";
+                const leftPos = Math.random() * 100 + "vw";
+                const delay = Math.random() * 3 + "s";
+                const duration = Math.random() * 2 + 4 + "s";
+
+                petal.style.width = size;
+                petal.style.height = size;
+                petal.style.left = leftPos;
+                petal.style.animation = `fall ${duration} linear ${delay} forwards`;
+
+                document.body.appendChild(petal);
+
+                // Clean up the DOM after the animation ends
+                setTimeout(() => {
+                    petal.remove();
+                }, (parseFloat(delay) + parseFloat(duration)) * 1000);
+            }
+        }
+    </script>
+</body>
+</html>
