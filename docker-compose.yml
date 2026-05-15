@@ -17,11 +17,14 @@ services:
     container_name: ntfy
     command: serve
     environment:
-      - NTFY_BASE_URL=https://fedoralap.tail055b0e.ts.net/ntfy
+      - NTFY_BASE_URL=https://fedoralap.tail055b0e.ts.net:8080
       - NTFY_BEHIND_PROXY=true
+      - NTFY_AUTH_FILE=/var/lib/ntfy/user.db
+      - NTFY_AUTH_DEFAULT_ACCESS=deny-all
     volumes:
       - ./cache:/var/cache/ntfy
       - ./etc:/etc/ntfy
+      - ./auth:/var/lib/ntfy
     restart: unless-stopped
 
   git-sync:
