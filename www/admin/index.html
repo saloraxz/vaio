@@ -35,14 +35,26 @@
         async function run(type, param = "") {
             const out = document.getElementById('output');
             out.innerText = "Executing...";
-            
-            const response = await fetch('/api/console', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({type, param})
-            });
-            const data = await response.json();
-            out.innerText = data.output;
+    
+            try {
+                const response = await fetch('/api/console', {
+            method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({type, param})
+                });
+
+                // If Caddy returns 404 or 500, this will catch it
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    out.innerText = `Error ${response.status}: ${response.statusText}\n${errorText}`;
+                    return;
+                }
+
+                const data = await response.json();
+                out.innerText = data.output;
+            } catch (err) {
+                out.innerText = "Connection Error: Is the Python script running and reachable?\n" + err.message;
+            }
         }
         // 1. Fetch Version from version.txt
         async function loadVersion() {
