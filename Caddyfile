@@ -13,3 +13,11 @@ fedoralap.tail055b0e.ts.net:8080 {
     tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
     reverse_proxy ntfy:80
 }
+
+blog.fedoralap.tail055b0e.ts.net {
+    tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
+    
+    reverse_proxy https://saloraxz.github.io {
+        header_up Host {upstream_hostport}
+    }
+}
