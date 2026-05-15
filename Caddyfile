@@ -1,4 +1,5 @@
-# Main Website (Secure)
+# 1. Main Website (Port 443)
+# We keep the domain here so Caddy uses your Tailscale certs
 fedoralap.tail055b0e.ts.net {
     tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
     root * /var/www/html/current/www
@@ -8,9 +9,8 @@ fedoralap.tail055b0e.ts.net {
     }
 }
 
-# The fix: Remove the "http://" prefix so Caddy can automatically
-# determine the protocol, or keep it but access it correctly.
-fedoralap.tail055b0e.ts.net:8080 {
-    tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
+# 2. ntfy (Port 8080)
+# We use ':8080' so Caddy accepts both HTTP (from Funnel) and HTTPS
+:8080 {
     reverse_proxy ntfy:80
 }
