@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Our Corner</title>
+    <title>Our Memory Wall</title>
     <style>
         :root {
             --bg-color: #1a0f0f;
-            --card-bg: #2d1b1b;
+            --card-bg: rgba(45, 27, 27, 0.92);
             --accent: #ff6b6b;
             --text: #fce4ec;
         }
@@ -17,94 +17,118 @@
             background-color: var(--bg-color);
             color: var(--text);
             margin: 0;
-            height: 100vh;
-            overflow: hidden;
-            display: none; /* Hidden until password check */
-            justify-content: center;
+            /* Allow scrolling if photos exceed screen height */
+            min-height: 100vh;
+            display: none; 
+            flex-direction: column;
             align-items: center;
+            justify-content: center;
+            padding: 40px 0;
+            overflow-x: hidden;
         }
 
         /* --- Photo Wall --- */
         .photo-wall {
-            position: fixed;
+            position: absolute;
             top: 0;
             left: 0;
             width: 100%;
-            height: 100%;
+            min-height: 100%;
             z-index: 1;
             display: flex;
             flex-wrap: wrap;
-            justify-content: space-around;
+            justify-content: center;
             align-items: center;
-            padding: 20px;
-            pointer-events: none; /* Allows clicking the main button through the background */
-            opacity: 0.6; /* Faded so the text is readable */
+            gap: 15px;
+            padding: 40px 20px;
+            pointer-events: none;
+            opacity: 0.6;
         }
 
         .polaroid {
             background: white;
-            padding: 10px 10px 30px 10px;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
-            margin: 15px;
-            width: 180px;
-            height: 220px;
+            padding: 8px 8px 25px 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            width: 130px;
+            height: 160px;
             border-radius: 2px;
             position: relative;
-            transform: rotate(var(--r)); /* Randomized via inline style */
+            transform: rotate(var(--r));
+            transition: transform 0.3s ease;
         }
 
         .polaroid img {
             width: 100%;
-            height: 170px;
+            height: 120px;
             object-fit: cover;
             background: #eee;
+            display: block;
         }
 
-        /* The "Pin" or Tape effect */
+        /* The Push Pin */
         .polaroid::before {
             content: '';
             position: absolute;
-            top: -10px;
+            top: -8px;
             left: 50%;
             transform: translateX(-50%);
-            width: 15px;
-            height: 15px;
-            background: rgba(255, 107, 107, 0.8); /* Red pin color */
+            width: 12px;
+            height: 12px;
+            background: radial-gradient(circle at 30% 30%, #ff8787, #b32d2d);
             border-radius: 50%;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.4);
+            z-index: 2;
         }
 
-        /* --- Main Content --- */
+        /* Desktop Adjustments */
+        @media (min-width: 768px) {
+            .polaroid {
+                width: 180px;
+                height: 220px;
+                padding: 10px 10px 35px 10px;
+            }
+            .polaroid img {
+                height: 175px;
+            }
+        }
+
+        /* --- Main Content Card --- */
         .container {
             position: relative;
             z-index: 10;
             text-align: center;
             background: var(--card-bg);
-            padding: 3rem;
-            border-radius: 20px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+            padding: 2.5rem;
+            border-radius: 25px;
+            box-shadow: 0 15px 50px rgba(0, 0, 0, 0.8);
             border: 1px solid #4a2c2c;
-            max-width: 400px;
-            backdrop-filter: blur(5px);
+            width: 85%;
+            max-width: 380px;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
         }
+
+        h1 { color: var(--accent); margin-top: 0; font-size: 1.8rem; }
+        p { line-height: 1.5; color: #d8b4b4; }
 
         .button {
             background: var(--accent);
             color: white;
             padding: 1rem 2rem;
-            border-radius: 30px;
+            border-radius: 50px;
             font-weight: bold;
             text-decoration: none;
             transition: 0.3s;
             border: none;
             cursor: pointer;
             display: inline-block;
-            margin-top: 1rem;
+            margin-top: 1.5rem;
+            font-size: 1rem;
         }
 
         .button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 0 15px rgba(255, 107, 107, 0.4);
+            transform: scale(1.05);
+            box-shadow: 0 0 20px rgba(255, 107, 107, 0.5);
         }
 
         /* Sakura Petals */
@@ -127,39 +151,45 @@
 <body>
 
     <div class="photo-wall">
-        <div class="polaroid" style="--r: -5deg;"><img src="photo1.jpg" alt="Memory 1"></div>
-        <div class="polaroid" style="--r: 3deg;"><img src="photo2.jpg" alt="Memory 2"></div>
-        <div class="polaroid" style="--r: -2deg;"><img src="photo3.jpg" alt="Memory 3"></div>
-        <div class="polaroid" style="--r: 7deg;"><img src="photo4.jpg" alt="Memory 4"></div>
-        <div class="polaroid" style="--r: -8deg;"><img src="photo5.jpg" alt="Memory 5"></div>
-        <div class="polaroid" style="--r: 4deg;"><img src="photo6.jpg" alt="Memory 6"></div>
+        <div class="polaroid" style="--r: -4deg;"><img src="photo1.jpg" alt="1"></div>
+        <div class="polaroid" style="--r: 5deg;"><img src="photo2.jpg" alt="2"></div>
+        <div class="polaroid" style="--r: -2deg;"><img src="photo3.jpg" alt="3"></div>
+        <div class="polaroid" style="--r: 8deg;"><img src="photo4.jpg" alt="4"></div>
+        <div class="polaroid" style="--r: -6deg;"><img src="photo5.jpg" alt="5"></div>
+        <div class="polaroid" style="--r: 3deg;"><img src="photo6.jpg alt="6"></div>
+        <div class="polaroid" style="--r: -7deg;"><img src="photo7.jpg" alt="7"></div>
+        <div class="polaroid" style="--r: 4deg;"><img src="photo8.jpg" alt="8"></div>
+        <div class="polaroid" style="--r: -3deg;"><img src="photo9.jpg" alt="9"></div>
+        <div class="polaroid" style="--r: 6deg;"><img src="photo10.jpg" alt="10"></div>
+        <div class="polaroid" style="--r: -5deg;"><img src="photo11.jpg" alt="11"></div>
+        <div class="polaroid" style="--r: 2deg;"><img src="photo12.jpg" alt="12"></div>
     </div>
 
     <div class="container">
-        <div style="font-size: 3rem; margin-bottom: 1rem;">🌸</div>
-        <h1>For My Favorite Person</h1>
-        <p>A little space for us on the Fedora Vaio.</p>
+        <div style="font-size: 3rem; margin-bottom: 0.5rem;">🌸</div>
+        <h1>Hi Beautiful</h1>
+        <p>I wanted to give our memories a special home on the server.</p>
         
-        <button class="button" onclick="spawnSakura()">Click for Sakura</button>
+        <button class="button" onclick="spawnSakura()">Make it Rain 🌸</button>
         <br><br>
         <a href="../" style="color: #888; text-decoration: none; font-size: 0.8rem;">Back Home</a>
     </div>
 
     <script>
-        // --- Password Logic ---
-        const PASSWORD = "watermelon"; 
+        // Password Logic
+        const PASSWORD = "watermelon";
         function checkPassword() {
-            const entry = prompt("Enter the secret password:");
+            const entry = prompt("Enter the secret word:");
             if (entry === PASSWORD) {
                 document.body.style.display = "flex";
             } else {
-                alert("Incorrect!");
+                alert("Try again!");
                 window.location.href = "../";
             }
         }
         checkPassword();
 
-        // --- Sakura Logic ---
+        // Sakura Effect Logic
         function spawnSakura() {
             for (let i = 0; i < 30; i++) {
                 const petal = document.createElement('div');
@@ -169,9 +199,10 @@
                 petal.style.height = size;
                 petal.style.left = Math.random() * 100 + "vw";
                 const duration = Math.random() * 2 + 3 + "s";
-                petal.style.animation = `fall ${duration} linear ${Math.random() * 2}s forwards`;
+                const delay = Math.random() * 2 + "s";
+                petal.style.animation = `fall ${duration} linear ${delay} forwards`;
                 document.body.appendChild(petal);
-                setTimeout(() => petal.remove(), 5000);
+                setTimeout(() => petal.remove(), (parseFloat(duration) + parseFloat(delay)) * 1000);
             }
         }
     </script>
