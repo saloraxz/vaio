@@ -15,6 +15,13 @@ fedoralap.tail055b0e.ts.net {
         root * /var/www/html
         file_server
     }
+    
+    handle_path /cockpit* {
+        reverse_proxy localhost:9090 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+        }
+    }
 }
 # ntfy Dashboard
 fedoralap.tail055b0e.ts.net:8080 {
