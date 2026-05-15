@@ -1,12 +1,16 @@
+# Main Website
 fedoralap.tail055b0e.ts.net {
     tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
     root * /var/www/html/current/www
+
     route {
         rewrite /ntfy /ntfy.html
         file_server
     }
 }
 
-http://fedoralap.tail055b0e.ts.net:8080 {
+# ntfy on port 8080 (Private)
+fedoralap.tail055b0e.ts.net:8080 {
+    tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
     reverse_proxy ntfy:80
 }
