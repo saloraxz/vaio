@@ -15,15 +15,7 @@ fedoralap.tail055b0e.ts.net {
         root * /var/www/html
         file_server
     }
-    
-    handle_path /cockpit* {
-        reverse_proxy host.docker.internal:9090 {
-            transport http {
-                tls_insecure_skip_verify
-            }
-        }
-    }
-    file_server
+
 }
 # ntfy Dashboard
 fedoralap.tail055b0e.ts.net:8080 {
