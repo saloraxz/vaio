@@ -21,7 +21,7 @@
         <div class="links">
             <a href="https://fedoralap.tail055b0e.ts.net:8080/eric-mark" class="button">Support Alerts</a>
             <a href="https://fedoralap.tail055b0e.ts.net:8080/server_alerts" class="button">Server Alerts</a>
-            <a href="#" onclick="smartRedirect(); return false;" class="button">
+            <a href="#" id="ntfy-button" onclick="smartRedirect(); return false;" class="button">
                 Open ntfy
             </a>
             
@@ -45,6 +45,17 @@
                             window.location.href = publicUrl;
                         });
                 }
+                window.addEventListener('pageshow', function(event) {
+                    // 'persisted' is true if the page was loaded from the cache (back button)
+                    if (event.persisted) {
+                        const btn = document.getElementById('ntfy-button'); // Use whatever ID your button has
+                        if (btn) {
+                            btn.innerHTML = 'Open ntfy'; // Put your original text here
+                            btn.style.opacity = '1';      // Ensure it's not faded out
+                            btn.disabled = false;         // Ensure it's clickable
+                        }
+                    }
+                });
                 </script>
         </div>
         
