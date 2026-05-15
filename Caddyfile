@@ -1,15 +1,20 @@
 fedoralap.tail055b0e.ts.net {
-    # Basic Auth Challenge
-    basic_auth /admin* {
-        admin $2a$14$v86JeNuG4PeFlB1Zc0Mzte/eQx/Bc.p8lChAxQIKEqj.Lo3vrUw1a (your hashed password)
+    handle /admin* {
+        basic_auth {
+            admin $2a$14$v86JeNuG4PeFlB1Zc0Mzte/eQx/Bc.p8lChAxQIKEqj.Lo3vrUw1a
+        }
+        root * /var/www/html
+        file_server
     }
 
-    # Standard proxy for the rest of the site
-    root * /var/www/html
-    file_server
-    
-    # Proxy for the backend console script (we'll make this next)
-    reverse_proxy /api/console localhost:5000 
+    handle /api/console* {
+        reverse_proxy localhost:5000
+    }
+
+    handle {
+        root * /var/www/html
+        file_server
+    }
 }
 # ntfy Dashboard
 fedoralap.tail055b0e.ts.net:8080 {
