@@ -67,8 +67,22 @@
         </div>
 
         <div class="status">
-            Connected via Tailscale : Page Version 1.1.9
+            Connected via Tailscale : Page Version <div id="version-footer">v0.0.0</div>
         </div>
+        <script>
+            // 1. Fetch Version from version.txt
+            async function loadVersion() {
+                try {
+                    const response = await fetch('/version.txt');
+                    if (response.ok) {
+                        const version = await response.text();
+                        document.getElementById('version-footer').innerText = 'v' + version.trim();
+                    }
+                } catch (e) {
+                    console.log("Version file not found");
+                }
+            }
+        </script>
     </div>
 </body>
 </html>

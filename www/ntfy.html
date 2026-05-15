@@ -5,59 +5,130 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ntfy Hub - Vaio</title>
     <style>
-        body { font-family: sans-serif; background-color: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .container { text-align: center; background: #1e1e1e; padding: 2rem; border-radius: 15px; border: 1px solid #333; width: 300px; }
-        h1 { color: #00ffa3; }
+        body {
+            font-family: sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .container {
+            text-align: center;
+            background: #1e1e1e;
+            padding: 2rem;
+            border-radius: 15px;
+            border: 1px solid #333;
+            width: 300px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        h1 { color: #00ffa3; margin-bottom: 1.5rem; }
         .links { display: grid; gap: 1rem; margin-top: 1rem; }
-        .button { background: #333; color: white; padding: 0.8rem; text-decoration: none; border-radius: 8px; transition: 0.3s; border: 1px solid #444; cursor: pointer; display: block; }
-        .button:hover { background: #00ffa3; color: #121212; }
-        input { padding: 0.8rem; border-radius: 8px; border: 1px solid #444; background: #222; color: white; width: 80%; margin-top: 1rem; box-sizing: border-box; }
+        
+        .button {
+            background: #333;
+            color: white;
+            padding: 0.8rem;
+            text-decoration: none;
+            border-radius: 8px;
+            transition: 0.3s;
+            border: 1px solid #444;
+            cursor: pointer;
+            display: block;
+            font-weight: bold;
+        }
+        .button:hover { background: #00ffa3; color: #121212; border-color: #00ffa3; }
+        
+        /* Special styling for the Home button */
+        .button-home { border-color: #00ffa3; margin-top: 0.5rem; }
+
+        input {
+            padding: 0.8rem;
+            border-radius: 8px;
+            border: 1px solid #444;
+            background: #222;
+            color: white;
+            width: 100%;
+            margin-top: 1.5rem;
+            box-sizing: border-box;
+            outline: none;
+        }
+        input:focus { border-color: #00ffa3; }
+
         .loading { opacity: 0.6; cursor: wait; }
+
+        /* Version Footer */
+        #version-footer {
+            position: fixed;
+            bottom: 15px;
+            font-size: 0.7rem;
+            color: #555;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
     </style>
 </head>
 <body>
+
     <div class="container">
         <h1>ntfy Hub</h1>
         <div class="links">
             <a href="#" data-topic="support" class="button smart-link">Support</a>
             <a href="#" data-topic="server_alerts" class="button smart-link">Server Alerts</a>
-            <a href="#" data-topic="" class="button smart-link" id="main-ntfy">Open ntfy</a>
+            <a href="#" data-topic="" class="button smart-link">Open ntfy</a>
+            
+            <a href="https://fedoralap.tail055b0e.ts.net" class="button button-home">Back to Home</a>
         </div>
-        
-        <input type="text" id="topicSearch" placeholder="Go to topic..." 
+
+        <input type="text" id="topicSearch" placeholder="Go to topic..."
                onkeydown="if(event.key === 'Enter') smartRedirect(this.value)">
-        
+
         <p style="font-size: 0.7rem; color: #555; margin-top: 1rem;">Press Enter to search</p>
-        <div class="status">
-            Connected via Tailscale : Page Version 1.1.9
-        </div>
     </div>
+
+    <div id="version-footer">v0.0.0</div>
 
     <script>
         const PRIVATE_BASE = "https://fedoralap.tail055b0e.ts.net:8080";
         const PUBLIC_BASE  = "https://fedoralap.tail055b0e.ts.net:8443";
 
+        // 1. Fetch Version from version.txt
+        async function loadVersion() {
+            try {
+                const response = await fetch('/version.txt');
+                if (response.ok) {
+                    const version = await response.text();
+                    document.getElementById('version-footer').innerText = 'v' + version.trim();
+                }
+            } catch (e) {
+                console.log("Version file not found");
+            }
+        }
+
+        // 2. Universal Connection Checker
         async function getBestUrl(topic = "") {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 1200);
+            const timeoutId = setTimeout(() => controller.abort(), 1200); // 1.2s timeout
 
             try {
-                // Ping the private port
+                // Try Tailscale port
                 await fetch(PRIVATE_BASE, { mode: 'no-cors', signal: controller.signal });
                 return `${PRIVATE_BASE}/${topic}`;
             } catch (e) {
-                // Fallback to public
+                // Fallback to Funnel port
                 return `${PUBLIC_BASE}/${topic}`;
             } finally {
                 clearTimeout(timeoutId);
             }
         }
 
+        // 3. Execution Function
         async function smartRedirect(topic, element = null) {
-            let originalText = "";
             if (element) {
                 element.classList.add('loading');
-                originalText = element.innerText;
                 element.innerText = "Checking...";
             }
 
@@ -65,26 +136,29 @@
             window.location.href = targetUrl;
         }
 
-        // Attach listeners to all "smart-link" buttons
+        // 4. Attach Click Events to all Smart Buttons
         document.querySelectorAll('.smart-link').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
-                const topic = btn.getAttribute('data-topic');
-                smartRedirect(topic, btn);
+                smartRedirect(btn.getAttribute('data-topic'), btn);
             });
         });
 
-        // FIX: The "Back Button" Reset
+        // 5. FIX: Reset buttons when using the Back Button
         window.addEventListener('pageshow', (event) => {
             document.querySelectorAll('.smart-link').forEach(btn => {
                 btn.classList.remove('loading');
-                // Restore text based on data-topic
+                // Revert text to original state
                 const topic = btn.getAttribute('data-topic');
                 if (topic === "") btn.innerText = "Open ntfy";
                 else if (topic === "support") btn.innerText = "Support";
                 else if (topic === "server_alerts") btn.innerText = "Server Alerts";
             });
         });
+
+        // Initialize version loader on startup
+        loadVersion();
     </script>
+
 </body>
 </html>
