@@ -2,14 +2,15 @@
 fedoralap.tail055b0e.ts.net {
     tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
     root * /var/www/html/current/www
-
     route {
         rewrite /ntfy /ntfy.html
         file_server
     }
 }
 
-# ntfy for Funnel (Plain HTTP internally)
-http://fedoralap.tail055b0e.ts.net:8080 {
+# The fix: Remove the "http://" prefix so Caddy can automatically
+# determine the protocol, or keep it but access it correctly.
+fedoralap.tail055b0e.ts.net:8080 {
+    tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
     reverse_proxy ntfy:80
 }
