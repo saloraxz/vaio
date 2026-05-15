@@ -7,10 +7,10 @@ services:
       - "443:443"
       - "8080:8080"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:Z
-      - ./www:/var/www/html:Z
+      - ./Caddyfile:/etc/caddy/Caddyfile:z
+      - ./www:/var/www/html:z
       - caddy_data:/data
-      - ./certs:/certs:ro,Z
+      - ./certs:/certs:ro,z
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
