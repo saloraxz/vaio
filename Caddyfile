@@ -1,25 +1,24 @@
 fedoralap.tail055b0e.ts.net {
     tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
 
-    # New Blog Section
+    # 1. The Blog Proxy
     handle_path /blog/* {
         reverse_proxy https://saloraxz.github.io {
             header_up Host {upstream_hostport}
+            
+            # This attempts to fix the "Leaky Link" issue by rewriting 
+            # redirection headers from GitHub back to your Tailscale URL.
+            header_down Location https://saloraxz.github.io/ https://fedoralap.tail055b0e.ts.net/blog/
         }
     }
 
-    # Your existing ntfy/website handles...
-    handle_path /app/* {
-        reverse_proxy ntfy:80
-    }
-
+    # 2. Your Main Website (Index)
     handle {
         root * /var/www/html/current/www
         rewrite /ntfy /ntfy.html
         file_server
     }
 }
-
 # ntfy Dashboard
 fedoralap.tail055b0e.ts.net:8080 {
     tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
