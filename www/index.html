@@ -57,13 +57,37 @@
         <p>Tailscale Home Server</p>
         
         <div class="links">
-            <a href="/ntfy.html" class="button">Open ntfy Notifications</a>
+            <button onclick="smartRedirect()" class="your-button-class">
+                Open ntfy
+            </button>
+            
+            <script>
+            function smartRedirect() {
+                const privateUrl = "https://fedoralap.tail055b0e.ts.net:8080";
+                const publicUrl  = "https://fedoralap.tail055b0e.ts.net:8443";
+            
+                // Create a 'controller' to cancel the request if it takes too long
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second limit
+            
+                // Try to 'fetch' the private port
+                fetch(privateUrl, { mode: 'no-cors', signal: controller.signal })
+                    .then(() => {
+                        // If it responds at all, you are on Tailscale
+                        window.location.href = privateUrl;
+                    })
+                    .catch(() => {
+                        // If it fails or times out, you are likely on the public web
+                        window.location.href = publicUrl;
+                    });
+            }
+            </script>
             
             <a href="https://fedoralap:9090" class="button">Server Admin (Cockpit)</a>
         </div>
 
         <div class="status">
-            Connected via Tailscale : Page Version 1.1.0
+            Connected via Tailscale : Page Version 1.1.1
         </div>
     </div>
 </body>
