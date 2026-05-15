@@ -38,6 +38,9 @@
             font-weight: bold;
             transition: background 0.3s, transform 0.2s;
             border: 1px solid #444;
+            display: inline-block; /* Added for alignment */
+            cursor: pointer;       /* Added for the hand icon */
+            font-size: 1rem;       /* Added to match button text size */
         }
         .button:hover {
             background: #00ffa3;
@@ -57,37 +60,37 @@
         <p>Tailscale Home Server</p>
         
         <div class="links">
-            <button onclick="smartRedirect()" class="your-button-class">
+            <a href="#" onclick="smartRedirect(); return false;" class="button">
                 Open ntfy
-            </button>
+            </a>
             
             <script>
-            function smartRedirect() {
-                const privateUrl = "https://fedoralap.tail055b0e.ts.net:8080";
-                const publicUrl  = "https://fedoralap.tail055b0e.ts.net:8443";
-            
-                // Create a 'controller' to cancel the request if it takes too long
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second limit
-            
-                // Try to 'fetch' the private port
-                fetch(privateUrl, { mode: 'no-cors', signal: controller.signal })
-                    .then(() => {
-                        // If it responds at all, you are on Tailscale
-                        window.location.href = privateUrl;
-                    })
-                    .catch(() => {
-                        // If it fails or times out, you are likely on the public web
-                        window.location.href = publicUrl;
-                    });
-            }
-            </script>
+                function smartRedirect() {
+                    const btn = event.target;
+                    const originalText = btn.innerText;
+                    btn.innerText = "Checking connection...";
+                
+                    const privateUrl = "https://fedoralap.tail055b0e.ts.net:8080";
+                    const publicUrl  = "https://fedoralap.tail055b0e.ts.net:8443";
+                
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 1500); // Shorter 1.5s is usually better for UX
+                
+                    fetch(privateUrl, { mode: 'no-cors', signal: controller.signal })
+                        .then(() => {
+                            window.location.href = privateUrl;
+                        })
+                        .catch(() => {
+                            window.location.href = publicUrl;
+                        });
+                }
+                </script>
             
             <a href="https://fedoralap:9090" class="button">Server Admin (Cockpit)</a>
         </div>
 
         <div class="status">
-            Connected via Tailscale : Page Version 1.1.1
+            Connected via Tailscale : Page Version 1.1.2
         </div>
     </div>
 </body>
