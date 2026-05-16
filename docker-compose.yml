@@ -7,14 +7,14 @@ services:
       - "443:443"
       - "8080:8080"
     volumes:
-      - /home/laperic/git-sync-root/current/Caddyfile:/etc/caddy/Caddyfile:z
-      - /home/laperic/git-sync-root/current/www:/var/www/html:z
+      - /home/laperic/git-sync-root:/srv/repo:z
       - caddy_data:/data
-      - ./certs:/certs:ro,z
+      - /home/laperic/ntfy/certs:/certs:ro,z
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    restart: unless-stopped
     networks:
-      - caddy_net   # <-- added so Caddy can reach nextcloud-app by container name
+      - caddy_net
 
   ntfy:
     image: binwiederhier/ntfy
@@ -27,12 +27,12 @@ services:
       - NTFY_AUTH_DEFAULT_ACCESS=deny-all
       - NTFY_ATTACHMENT_TOTAL_SIZE_LIMIT=15M
     volumes:
-      - ./cache:/var/cache/ntfy
-      - ./etc:/etc/ntfy
-      - ./auth:/var/lib/ntfy
+      - /home/laperic/ntfy/cache:/var/cache/ntfy
+      - /home/laperic/ntfy/etc:/etc/ntfy
+      - /home/laperic/ntfy/auth:/var/lib/ntfy
     restart: unless-stopped
     networks:
-      - caddy_net   # <-- added so Caddy can reach ntfy by container name too
+      - caddy_net
 
   git-sync:
     image: registry.k8s.io/git-sync/git-sync:v4.2.3
@@ -52,5 +52,5 @@ volumes:
 
 networks:
   caddy_net:
-    driver: bridge   # Caddy owns this network; nextcloud compose joins it as external
+    driver: bridge
     name: caddy_net

@@ -6,7 +6,7 @@ fedoralap.tail055b0e.ts.net {
         basic_auth {
             admin $2a$14$v86JeNuG4PeFlB1Zc0Mzte/eQx/Bc.p8lChAxQIKEqj.Lo3vrUw1a
         }
-        root * /var/www/html
+        root * /srv/repo/current/www
         file_server
     }
 
@@ -26,7 +26,7 @@ fedoralap.tail055b0e.ts.net {
 
     # 2. Catch-all block handles your standard files last
     handle {
-        root * /var/www/html
+        root * /srv/repo/current/www
         file_server
     }
 
