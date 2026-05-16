@@ -22,7 +22,7 @@ fedoralap.tail055b0e.ts.net {
     redir /.well-known/carddav /nextcloud/remote.php/dav/ 301
     redir /.well-known/caldav /nextcloud/remote.php/dav/ 301
 
-    handle_path /nextcloud* {
+    handle /nextcloud* {
         reverse_proxy host.docker.internal:8085 {
             header_up Host {http.request.host}
             header_up X-Real-IP {http.request.remote}
