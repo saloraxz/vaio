@@ -52,6 +52,23 @@
             color: #121212;
             transform: translateY(-2px);
         }
+        .lovebutton {
+            background: #333;
+            color: white;
+            padding: 1rem 2rem;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: bold;
+            transition: background 0.3s, transform 0.2s;
+            border: 1px solid #444;
+            display: inline-block; /* Added for alignment */
+            cursor: pointer;       /* Added for the hand icon */
+            font-size: 1rem;       /* Added to match button text size */
+        }
+        .lovebutton:hover {
+            box-shadow: 0 0 20px rgba(255, 107, 107, 0.5);
+            color: #ff6b6b;
+        }
         .status {
             margin-top: 1.5rem;
             font-size: 0.8rem;
@@ -69,7 +86,7 @@
             
             <a id="cockpitBtn" onclick="checkCockpit()" class="button">Server Admin (Cockpit)</a>
             <a href="https://saloraxz.github.io" class="button">Github Pages</a>
-            <a href="./love/" class="button">Watermelons</a>
+            <a href="./love/" class="lovebutton" >Watermelons</a>
             <a href="/games/" class="button">Games</a>
         </div>
 
