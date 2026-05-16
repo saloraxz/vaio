@@ -36,14 +36,46 @@ services:
     image: registry.k8s.io/git-sync/git-sync:v4.2.3
     container_name: git-sync
     volumes:
-      - ./www:/tmp/git:Z # This links to your website folder
+      - ./www:/tmp/git:Z
     environment:
       - GITSYNC_REPO=https://github.com/saloraxz/vaio
       - GITSYNC_REF=main
       - GITSYNC_ROOT=/tmp/git
       - GITSYNC_LINK=current
-      - GITSYNC_PERIOD=60s # Checks for updates every 60 seconds
+      - GITSYNC_PERIOD=60s
     restart: unless-stopped
+
+  # --- ADDED NEXTCLOUD DATABASE ---
+  nextcloud-db:
+    image: mariadb:10.11
+    container_name: nextcloud-db
+    command: --transaction-isolation=READ-COMMITTED --log-bin=binlog --binlog-format=ROW
+    restart: unless-stopped
+    volumes:
+      - nextcloud_db:/var/lib/mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=your_root_password
+      - MYSQL_PASSWORD=your_nc_password
+      - MYSQL_DATABASE=nextcloud
+      - MYSQL_USER=nextcloud
+
+  # --- ADDED NEXTCLOUD APP ---
+  nextcloud-app:
+    image: nextcloud:latest
+    container_name: nextcloud-app
+    restart: unless-stopped
+    # No ports directive needed here! Caddy talks to it internally on port 80.
+    volumes:
+      # Binds your external Seagate drive directly to Nextcloud
+      - ~/nextcloud:/var/www/html:z
+    environment:
+      - MYSQL_PASSWORD=your_nc_password
+      - MYSQL_DATABASE=nextcloud
+      - MYSQL_USER=nextcloud
+      - MYSQL_HOST=nextcloud-db
+    depends_on:
+      - nextcloud-db
 
 volumes:
   caddy_data:
+  nextcloud_db:
