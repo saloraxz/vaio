@@ -7,11 +7,10 @@ services:
       - "443:443"
       - "8080:8080"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:z
-      - ./www:/var/www/html:z
+      - /home/laperic/git-sync-root/current/Caddyfile:/etc/caddy/Caddyfile:z
+      - /home/laperic/git-sync-root/current/www:/var/www/html:z
       - caddy_data:/data
       - ./certs:/certs:ro,z
-    restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -40,7 +39,7 @@ services:
     image: registry.k8s.io/git-sync/git-sync:v4.2.3
     container_name: git-sync
     volumes:
-      - ./www:/tmp/git:Z
+      - /home/laperic/git-sync-root:/tmp/git:Z
     environment:
       - GITSYNC_REPO=https://github.com/saloraxz/vaio
       - GITSYNC_REF=main
