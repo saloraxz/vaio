@@ -106,6 +106,16 @@
             backdrop-filter: blur(20px); /* Increased blur to protect readability over 0.4 transparency */
             -webkit-backdrop-filter: blur(20px);
             box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+        .container img {
+            max-width: 100%;
+            height: auto;
+            display: inline-block;
+            box-sizing: border-box; /* Ensures padding is calculated internally */
         }
 
         h1 { color: var(--accent); margin-top: 0; font-size: 2.2rem; font-weight: 700; letter-spacing: -0.5px; }
