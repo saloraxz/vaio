@@ -1,6 +1,6 @@
 fedoralap.tail055b0e.ts.net {
 
-    redir /ntfy/{topic} https://ts.net{topic} permanent
+    redir /ntfy/{topic} https://fedoralap.tail055b0e.ts.net{topic} permanent
 
     handle /admin* {
         basic_auth {
