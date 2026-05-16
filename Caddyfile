@@ -1,7 +1,5 @@
 fedoralap.tail055b0e.ts.net {
 
-    redir /ntfy/{topic} https://fedoralap.tail055b0e.ts.net{topic} permanent
-
     handle /admin* {
         basic_auth {
             admin $2a$14$v86JeNuG4PeFlB1Zc0Mzte/eQx/Bc.p8lChAxQIKEqj.Lo3vrUw1a
