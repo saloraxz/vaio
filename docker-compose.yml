@@ -53,3 +53,4 @@ volumes:
 networks:
   caddy_net:
     driver: bridge   # Caddy owns this network; nextcloud compose joins it as external
+    name: caddy_net
