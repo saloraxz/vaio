@@ -14,47 +14,142 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    font-family: sans-serif;
   }
+
+  /* Structural wrapper to stack game elements neatly */
+  .game-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 10px;
+  }
+
+  canvas {
+    border: 1px solid white;
+    max-width: 100%; /* Keeps larger maps responsive on mobile viewports */
+    height: auto;
+  }
+
   .links {
-            display: grid;
-            gap: 1rem;
-        }
-        .button {
-            background: #333;
-            color: white;
-            padding: 1rem 2rem;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: bold;
-            transition: background 0.3s, transform 0.2s;
-            border: 1px solid #444;
-            display: inline-block; /* Added for alignment */
-            cursor: pointer;       /* Added for the hand icon */
-            font-size: 1rem;       /* Added to match button text size */
-        }
-        .button:hover {
-            background: #00ffa3;
-            color: #121212;
-            transform: translateY(-2px);
-        }
-        #version-footer {
-            position: fixed;
-            bottom: 15px;
-            font-size: 0.7rem;
-            color: #555;
-            letter-spacing: 1px;
-            text-transform: uppercase;
-        }
-        .status {
-            margin-top: 1.5rem;
-            font-size: 0.8rem;
-            color: #555;
-        }
+    display: grid;
+    gap: 1rem;
+    margin-top: 1rem;
+  }
+
+  .button {
+    background: #333;
+    color: white;
+    padding: 1rem 2rem;
+    text-decoration: none;
+    border-radius: 8px;
+    font-weight: bold;
+    transition: background 0.3s, transform 0.2s;
+    border: 1px solid #444;
+    display: inline-block;
+    cursor: pointer;
+    font-size: 1rem;
+  }
+
+  .button:hover {
+    background: #00ffa3;
+    color: #121212;
+    transform: translateY(-2px);
+  }
+
+  #version-footer {
+    position: fixed;
+    bottom: 15px;
+    font-size: 0.7rem;
+    color: #555;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .status {
+    margin-top: 1.5rem;
+    font-size: 0.8rem;
+    color: #555;
+  }
+
+  /* --- Mobile D-PAD CSS Configuration --- */
+  .dpad-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-top: 15px;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .dpad-row {
+    display: flex;
+    justify-content: center;
+  }
+
+  .dpad-btn {
+    width: 60px;
+    height: 60px;
+    margin: 5px;
+    background-color: #333;
+    color: white;
+    border: 1px solid #444;
+    border-radius: 10px;
+    font-size: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background-color 0.1s;
+  }
+
+  /* Color feedback when a touch event is triggered */
+  .dpad-btn:active {
+    background-color: #00ffa3;
+    color: #121212;
+  }
+
+  .dpad-spacer {
+    width: 60px;
+    height: 60px;
+    margin: 5px;
+  }
+
+  /* Hides the control board automatically on desktop browser layouts */
+  @media (min-width: 768px) {
+    .dpad-container {
+      display: none;
+    }
+  }
   </style>
 </head>
 <body>
-<canvas width="400" height="400" id="game"></canvas>
-<script>
+    <div class="game-container">
+      <canvas width="400" height="400" id="game"></canvas>
+    
+      <div class="dpad-container">
+          <div class="dpad-row">
+              <button class="dpad-btn" id="btnUp">▲</button>
+          </div>
+          <div class="dpad-row">
+              <button class="dpad-btn" id="btnLeft">◄</button>
+              <div class="dpad-spacer"></div>
+              <button class="dpad-btn" id="btnRight">►</button>
+          </div>
+          <div class="dpad-row">
+              <button class="dpad-btn" id="btnDown">▼</button>
+          </div>
+      </div>
+    
+      <div class="links">
+          <a href="../" class="button">Back</a>
+      </div>
+    </div>
+    
+    <div class="status" id="version-footer">v0.0.0</div>
+    
+    <script>
     const canvas = document.getElementById('game');
 const context = canvas.getContext('2d');
 
@@ -337,6 +432,31 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
+// --- Fixed Mobile D-PAD Engine Mapping ---
+function mapTouchDirection(elementId, setRow, setCol) {
+  var buttonElement = document.getElementById(elementId);
+  
+  function triggerMove() {
+    // Safely sets the direction for the next animation frame loop
+    playerDir = { row: setRow, col: setCol };
+  }
+
+  buttonElement.addEventListener('touchstart', function(e) {
+    e.preventDefault(); 
+    triggerMove();
+  });
+
+  buttonElement.addEventListener('click', function() {
+    triggerMove();
+  });
+}
+
+// Attach buttons directly to the physics loop parameters
+mapTouchDirection('btnLeft',   0, -1);
+mapTouchDirection('btnUp',    -1,  0);
+mapTouchDirection('btnRight',  0,  1);
+mapTouchDirection('btnDown',   1,  0);
+
 // start the game
 requestAnimationFrame(loop);
 </script>
@@ -356,8 +476,6 @@ requestAnimationFrame(loop);
     }
     loadVersion();
     </script>
-    <div class="links">
-        <a href="../" class="button">Back</a>
 </div>
 </body>
 </html>

@@ -250,33 +250,37 @@ function getRandomInt(min, max) {
     /* space key */ else if (e.which === 32) {alert("Game is paused | Press ok to unpause...");}
     /* else key */ else {console.log(e.which);}});
 
-    // --- Mobile D-PAD Touch Logic ---
-    function bindTouchControl(elementId, axisCheck, setDx, setDy) {
+    // --- Fixed Mobile D-PAD Touch Logic ---
+    function bindTouchControl(elementId, axisType, setDx, setDy) {
         var element = document.getElementById(elementId);
         
-        // touchstart registers instantly on touch screens without the 300ms click delay
-        element.addEventListener('touchstart', function(e) {
-            e.preventDefault(); // Prevents the mobile browser from double-tap zooming
-            if (axisCheck === 0) {
+        function handleInput() {
+            // FIX: We now check the LIVE snake velocity directly during the tap event
+            if (axisType === 'x' && snake.dx === 0) {
+                snake.dx = setDx;
+                snake.dy = setDy;
+            } else if (axisType === 'y' && snake.dy === 0) {
                 snake.dx = setDx;
                 snake.dy = setDy;
             }
+        }
+
+        element.addEventListener('touchstart', function(e) {
+            e.preventDefault(); 
+            handleInput();
         });
 
-        // Click listener fallback for desktop inspection testing
         element.addEventListener('click', function() {
-            if (axisCheck === 0) {
-                snake.dx = setDx;
-                snake.dy = setDy;
-            }
+            handleInput();
         });
     }
 
     // Connect individual D-pad buttons to structural grid logic
-    bindTouchControl('btnLeft',  snake.dx, -grid, 0);
-    bindTouchControl('btnUp',    snake.dy, 0, -grid);
-    bindTouchControl('btnRight', snake.dx, grid, 0);
-    bindTouchControl('btnDown',  snake.dy, 0, grid);
+    // We pass 'x' or 'y' to tell it which axis velocity to check in real-time
+    bindTouchControl('btnLeft',  'x', -grid, 0);
+    bindTouchControl('btnRight', 'x', grid, 0);
+    bindTouchControl('btnUp',    'y', 0, -grid);
+    bindTouchControl('btnDown',  'y', 0, grid);
 
     /* start the game */ alert("Controls: WASD or arrow keys. Space bar to pause."); alert("Starting Game..."); requestAnimationFrame(loop);
     </script>
@@ -295,8 +299,5 @@ function getRandomInt(min, max) {
     }
     loadVersion();
     </script>
-    <div class="links">
-            <a href="../" class="button">Back</a>
-    </div>
 </body>
 </html>
