@@ -34,6 +34,7 @@
             display: grid;
             gap: 1rem;
         }
+
         .button {
             background: #333;
             color: white;
@@ -41,52 +42,27 @@
             text-decoration: none;
             border-radius: 8px;
             font-weight: bold;
-            transition: background 0.3s, transform 0.2s;
+            transition: background 0.3s, transform 0.2s, box-shadow 0.3s;
             border: 1px solid #444;
-            display: inline-block; /* Added for alignment */
-            cursor: pointer;       /* Added for the hand icon */
-            font-size: 1rem;       /* Added to match button text size */
+            display: inline-block;
+            cursor: pointer;
+            font-size: 1rem;
+
+            /* Fallback color if you don't specify one in the HTML */
+            --hover-color: #00ffa3;
+            --hover-shadow: none;
         }
-        .cockpitbutton {
-            background: #333;
-            color: white;
-            padding: 1rem 2rem;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: bold;
-            transition: background 0.3s, transform 0.2s;
-            border: 1px solid #444;
-            display: inline-block; /* Added for alignment */
-            cursor: pointer;       /* Added for the hand icon */
-            font-size: 1rem;       /* Added to match button text size */
-        }
-        .cockpitbutton:hover {
-            background: #1e90ff;
-            color: #121212;
-            transform: translateY(-2px);
-        }
+
         .button:hover {
-            background: #00ffa3;
+            background: var(--hover-color);
             color: #121212;
             transform: translateY(-2px);
+            box-shadow: --hover-shadow;            
         }
-        .lovebutton {
-            background: #333;
-            color: white;
-            padding: 1rem 2rem;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: bold;
-            transition: background 0.3s, transform 0.2s;
-            border: 1px solid #444;
-            display: inline-block; /* Added for alignment */
-            cursor: pointer;       /* Added for the hand icon */
-            font-size: 1rem;       /* Added to match button text size */
-        }
-        .lovebutton:hover {
+
+        /* Optional helper rule to keep things clean for your special watermelon glow */
+        .button[style*="#ff6b6b"]:hover {
             box-shadow: 0 0 20px rgba(255, 107, 107, 0.5);
-            color: #121212;
-            background: #ff6b6b;
         }
         .status {
             margin-top: 1.5rem;
@@ -101,11 +77,11 @@
         <p>Tailscale Home Server</p>
         
         <div class="links">
-            <a href="/ntfy" class="button">Go to ntfy</a>
+            <a href="/ntfy" class="button" style="--hover-color: #3DDC84;"Go to ntfy</a>
             
-            <a id="cockpitBtn" onclick="checkCockpit()" class="cockpitbutton">Server Admin (Cockpit)</a>
-            <a href="https://saloraxz.github.io" class="button">Github Pages</a>
-            <a href="./love/" class="lovebutton" >Watermelons</a>
+            <a id="cockpitBtn" onclick="checkCockpit()" class="button" style="--hover-color: #1e90ff;">Server Admin (Cockpit)</a>
+            <a href="https://saloraxz.github.io" class="button" style="--hover-color: #0FBF3E;">Github Pages</a>
+            <a href="./love/" class="button" style="--hover-color: #ff6b6b; --hover-shadow: 0 0 20px rgba(255, 107, 107, 0.5);">Watermelons</a>
             <a href="/games/" class="button">Games</a>
         </div>
 
