@@ -7,9 +7,12 @@
     <style>
         :root {
             --bg-color: #1a0f0f;
+            /* Container Alpha opacity set to 0.4 */
             --card-bg: rgba(45, 27, 27, 0.4);
             --accent: #ff6b6b;
             --text: #fce4ec;
+            --timer-card-bg: rgba(255, 255, 255, 0.08);
+            --timer-card-border: rgba(255, 255, 255, 0.1);
         }
 
         body {
@@ -17,7 +20,6 @@
             background-color: var(--bg-color);
             color: var(--text);
             margin: 0;
-            /* Allow scrolling if photos exceed screen height */
             min-height: 100vh;
             display: none; 
             flex-direction: column;
@@ -42,7 +44,7 @@
             gap: 15px;
             padding: 40px 20px;
             pointer-events: none;
-            opacity: 0.6;
+            opacity: 0.5; 
         }
 
         .polaroid {
@@ -54,7 +56,6 @@
             border-radius: 2px;
             position: relative;
             transform: rotate(var(--r));
-            transition: transform 0.3s ease;
         }
 
         .polaroid img {
@@ -65,7 +66,6 @@
             display: block;
         }
 
-        /* The Push Pin */
         .polaroid::before {
             content: '';
             position: absolute;
@@ -80,7 +80,6 @@
             z-index: 2;
         }
 
-        /* Desktop Adjustments */
         @media (min-width: 768px) {
             .polaroid {
                 width: 180px;
@@ -98,24 +97,75 @@
             z-index: 10;
             text-align: center;
             background: var(--card-bg);
-            padding: 2.5rem;
+            padding: 2.5rem 1.5rem;
             border-radius: 25px;
             box-shadow: 0 15px 50px rgba(0, 0, 0, 0.6);
-            border: 1px solid #4a2c2c;
-            width: 85%;
-            max-width: 380px;
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            aspect-ratio: 1 / 1;
+            border: 1px solid rgba(74, 44, 44, 0.6);
+            width: 90%;
+            max-width: 480px;
+            backdrop-filter: blur(20px); /* Increased blur to protect readability over 0.4 transparency */
+            -webkit-backdrop-filter: blur(20px);
+            box-sizing: border-box;
         }
 
-        h1 { color: var(--accent); margin-top: 0; font-size: 1.8rem; }
-        p { line-height: 1.5; color: #d8b4b4; }
+        h1 { color: var(--accent); margin-top: 0; font-size: 2.2rem; font-weight: 700; letter-spacing: -0.5px; }
+        .subtitle { color: #d8b4b4; margin-bottom: 2rem; font-size: 1rem; }
 
+        /* --- Time Tracker Grid --- */
+        .tracker-group {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .tracker-group.small-units {
+            gap: 8px;
+        }
+
+        .time-box {
+            background: var(--timer-card-bg);
+            border: 1px solid var(--timer-card-border);
+            border-radius: 14px;
+            padding: 12px 5px;
+            width: 85px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .tracker-group.small-units .time-box {
+            width: 70px;
+            padding: 10px 5px;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .time-number {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #ffffff;
+            line-height: 1.2;
+        }
+
+        .tracker-group.small-units .time-number {
+            font-size: 1.3rem;
+        }
+
+        .time-label {
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #bfa3a3;
+            margin-top: 5px;
+            font-weight: 600;
+        }
+
+        /* --- UI Controls --- */
         .button {
             background: var(--accent);
             color: white;
-            padding: 1rem 2rem;
+            padding: 0.8rem 2rem;
             border-radius: 50px;
             font-weight: bold;
             text-decoration: none;
@@ -124,15 +174,14 @@
             cursor: pointer;
             display: inline-block;
             margin-top: 1.5rem;
-            font-size: 1rem;
+            font-size: 0.95rem;
         }
 
         .button:hover {
-            transform: scale(1.05);
+            transform: scale(1.03);
             box-shadow: 0 0 20px rgba(255, 107, 107, 0.5);
         }
 
-        /* Sakura Petals */
         .petal {
             position: fixed;
             top: -10%;
@@ -167,18 +216,47 @@
     </div>
 
     <div class="container">
-        <div style="font-size: 3rem; margin-bottom: 0.5rem;">🌸</div>
-        <h1>Hi Loveyyy</h1>
-        <p>This is for youuuuu</p>
+        <h1>Time Together</h1>
+        <div class="subtitle">We've been together for</div>
+        
+        <div class="tracker-group">
+            <div class="time-box">
+                <span class="time-number" id="years">00</span>
+                <span class="time-label">Years</span>
+            </div>
+            <div class="time-box">
+                <span class="time-number" id="months">00</span>
+                <span class="time-label">Months</span>
+            </div>
+            <div class="time-box">
+                <span class="time-number" id="days">00</span>
+                <span class="time-label">Days</span>
+            </div>
+        </div>
+
+        <div class="tracker-group small-units">
+            <div class="time-box">
+                <span class="time-number" id="hours">00</span>
+                <span class="time-label">Hours</span>
+            </div>
+            <div class="time-box">
+                <span class="time-number" id="minutes">00</span>
+                <span class="time-label">Minutes</span>
+            </div>
+            <div class="time-box">
+                <span class="time-number" id="seconds">00</span>
+                <span class="time-label">Seconds</span>
+            </div>
+        </div>
         
         <button class="button" onclick="spawnSakura()">Make it Rain 🌸</button>
         <br><br>
-        <a href="../" style="color: #888; text-decoration: none; font-size: 0.8rem;">Back Home</a>
+        <a href="../" style="color: rgba(255,255,255,0.4); text-decoration: none; font-size: 0.8rem;">Back Home</a>
     </div>
 
     <script>
-        // Password Logic
-        const PASSWORD = "watermelon";
+        // --- Password Logic ---
+        const PASSWORD = "watermelon"; 
         function checkPassword() {
             const entry = prompt("Enter the secret word:");
             if (entry === PASSWORD) {
@@ -190,7 +268,56 @@
         }
         checkPassword();
 
-        // Sakura Effect Logic
+        // --- Live Accurate Counting Script ---
+        // CONFIGURATION: Set your anniversary date here! (Year, Month index 0-11, Day, Hour, Minute)
+        // NOTE: Months are 0-indexed in JS (January = 0, February = 1, ..., June = 5, etc.)
+        const anniversaryDate = new Date(2025, 2, 12, 13, 40, 23); 
+
+        function updateTracker() {
+            const now = new Date();
+            
+            let years = now.getFullYear() - anniversaryDate.getFullYear();
+            let months = now.getMonth() - anniversaryDate.getMonth();
+            let days = now.getDate() - anniversaryDate.getDate();
+            
+            let hours = now.getHours() - anniversaryDate.getHours();
+            let minutes = now.getMinutes() - anniversaryDate.getMinutes();
+            let seconds = now.getSeconds() - anniversaryDate.getSeconds();
+
+            if (seconds < 0) {
+                seconds += 60;
+                minutes--;
+            }
+            if (minutes < 0) {
+                minutes += 60;
+                hours--;
+            }
+            if (hours < 0) {
+                hours += 24;
+                days--;
+            }
+            if (days < 0) {
+                const previousMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+                days += previousMonth.getDate();
+                months--;
+            }
+            if (months < 0) {
+                months += 12;
+                years--;
+            }
+
+            document.getElementById('years').innerText = String(years).padStart(2, '0');
+            document.getElementById('months').innerText = String(months).padStart(2, '0');
+            document.getElementById('days').innerText = String(days).padStart(2, '0');
+            document.getElementById('hours').innerText = String(hours).padStart(2, '0');
+            document.getElementById('minutes').innerText = String(minutes).padStart(2, '0');
+            document.getElementById('seconds').innerText = String(seconds).padStart(2, '0');
+        }
+
+        updateTracker();
+        setInterval(updateTracker, 1000);
+
+        // --- Sakura Effect Logic ---
         function spawnSakura() {
             for (let i = 0; i < 30; i++) {
                 const petal = document.createElement('div');
