@@ -32,31 +32,27 @@
     height: auto;
   }
 
-  .links {
-    display: grid;
-    gap: 1rem;
-    margin-top: 1rem;
-  }
-
-  .button {
+  .back-btn {
+    position: fixed;
+    top: 15px;
+    left: 15px;
     background: #333;
     color: white;
-    padding: 1rem 2rem;
+    padding: 0.5rem 1rem;
     text-decoration: none;
     border-radius: 8px;
     font-weight: bold;
     transition: background 0.3s, transform 0.2s;
     border: 1px solid #444;
-    display: inline-block;
-    cursor: pointer;
     font-size: 1rem;
-  }
+    z-index: 100;
+}
 
-  .button:hover {
+.back-btn:hover {
     background: #00ffa3;
     color: #121212;
     transform: translateY(-2px);
-  }
+}
 
   #version-footer {
     position: fixed;
@@ -140,7 +136,7 @@
           </div>
         
           <div class="links">
-              <a href="../" class="button">Back</a>
+              <a href="../" class="back-btn">← Back</a>
           </div>
         </div>
         
@@ -151,7 +147,7 @@ var context = canvas.getContext('2d');
 
 var score = 0;
 
-var grid = 16;
+var grid = 14;
 var count = 0;
   
 var snake = {
