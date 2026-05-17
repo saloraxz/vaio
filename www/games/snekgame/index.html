@@ -190,7 +190,7 @@ function getRandomInt(min, max) {
 
     if (snake.cells.length > snake.maxCells) {snake.cells.pop();}
 
-    ontext.fillStyle = 'red'; context.fillRect(apple.x, apple.y, grid-1, grid-1);
+    context.fillStyle = 'red'; context.fillRect(apple.x, apple.y, grid-1, grid-1);
 
     for (var i; i < snake.cells; i++){
         if (i === 0){
