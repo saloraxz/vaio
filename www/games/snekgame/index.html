@@ -229,27 +229,25 @@ function getRandomInt(min, max) {
     else {console.log(e.which);}});
 
     function bindTouchControl(elementId, axisType, setDx, setDy) {
-        var element = document.getElementById(elementId);
-        
-        function handleInput() {
-            if (axisType === 'x' && snake.dx === 0) {
-                snake.dx = setDx;
-                snake.dy = setDy;
-            } else if (axisType === 'y' && snake.dy === 0) {
-                snake.dx = setDx;
-                snake.dy = setDy;
-            }
+    var element = document.getElementById(elementId);
+    function handleInput() {
+        if (axisType === 'x' && snake.dx === 0) {
+            snake.dx = setDx;
+            snake.dy = setDy;
+        } else if (axisType === 'y' && snake.dy === 0) {
+            snake.dx = setDx;
+            snake.dy = setDy;
         }
-
-        element.addEventListener('touchstart', function(e) {
-            e.preventDefault(); 
-            handleInput();
-        });
-
-        element.addEventListener('click', function() {
-            handleInput();
-        });
     }
+    element.addEventListener('touchstart', function(e) {
+        e.preventDefault();
+        handleInput();
+    }, { passive: false });
+    element.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        handleInput();
+    });
+}
 
     bindTouchControl('btnLeft',  'x', -grid, 0);
     bindTouchControl('btnRight', 'x', grid, 0);
