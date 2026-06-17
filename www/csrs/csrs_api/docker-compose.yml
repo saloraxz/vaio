@@ -1,0 +1,98 @@
+services:
+
+  # ---------------------------------------------------------------------------
+  # git-sync: pulls GitHub repo every 30s onto shared volume
+  # csrs-web reads data.save from here
+  # ---------------------------------------------------------------------------
+  git-sync:
+    image: registry.k8s.io/git-sync/git-sync:v4.2.4
+    container_name: csrs-git-sync
+    restart: unless-stopped
+    environment:
+      GITSYNC_REPO: "${GITHUB_REPO}"
+      GITSYNC_REF: "main"
+      GITSYNC_PERIOD: "30s"
+      GITSYNC_ROOT: "/git"
+      GITSYNC_LINK: "repo"
+      GITSYNC_USERNAME: "${GITHUB_USERNAME}"
+      GITSYNC_PASSWORD: "${GITHUB_TOKEN}"
+    volumes:
+      - git-repo:/git
+    networks:
+      - internal
+
+  # ---------------------------------------------------------------------------
+  # csrs-daemon: runs CSRS.py --daemon, imports matches, pushes data.save
+  # ---------------------------------------------------------------------------
+  csrs-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.daemon
+    container_name: csrs-daemon
+    restart: unless-stopped
+    environment:
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+      GITHUB_REPO: "${GITHUB_REPO}"
+    volumes:
+      - csrs-data:/data
+      - git-repo:/app/repo
+    working_dir: /app/repo/repo
+    networks:
+      - internal
+    depends_on:
+      - git-sync
+
+  # ---------------------------------------------------------------------------
+  # csrs-web: FastAPI + frontend, public via Tailscale funnel on port 8000
+  # ---------------------------------------------------------------------------
+  csrs-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: csrs-web
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      CSRS_DATA_FILE: /data/repo/data.save
+      CSRS_FRONTEND_DIR: /app/frontend
+    volumes:
+      - git-repo:/data:ro
+    networks:
+      - public-net
+      - internal
+    depends_on:
+      - git-sync
+
+  # ---------------------------------------------------------------------------
+  # csrs-admin: admin API + UI, Tailscale-only on port 8001 (never funnelled)
+  # ---------------------------------------------------------------------------
+  csrs-admin:
+    build:
+      context: .
+      dockerfile: Dockerfile.admin
+    container_name: csrs-admin
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8001"
+    environment:
+      ADMIN_USERNAME: "${ADMIN_USERNAME}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+      ADMIN_SECRET_KEY: "${ADMIN_SECRET_KEY}"
+      CSRS_DATA_FILE: /data/data.save
+      BATCH_LOG_FILE: /data/batch_import.log
+    volumes:
+      - csrs-data:/data
+      - git-repo:/git-repo:ro
+    networks:
+      - internal
+    depends_on:
+      - csrs-daemon
+
+volumes:
+  csrs-data:
+  git-repo:
+
+networks:
+  public-net:
+  internal:

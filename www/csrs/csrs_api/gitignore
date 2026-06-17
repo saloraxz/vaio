@@ -1,0 +1,13 @@
+# Secrets — never commit these
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+
+# Data (managed by CSRS.py — committed deliberately via daemon only)
+# data.save is intentionally NOT ignored so the daemon can push it

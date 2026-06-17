@@ -1,0 +1,1164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CSRS — Counter Strike Rating System</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg:        #0d0d0f;
+  --surface:   #16181c;
+  --surface2:  #1e2127;
+  --border:    #2a2d35;
+  --accent:    #f5a623;
+  --accent2:   #e8891a;
+  --text:      #e8eaf0;
+  --muted:     #7a7f8e;
+  --green:     #4caf82;
+  --red:       #e05a5a;
+  --blue:      #5b9cf6;
+  --tier-s:    #ff6b6b;
+  --tier-a:    #f5a623;
+  --tier-b:    #4caf82;
+  --tier-c:    #5b9cf6;
+  --tier-d:    #9b8fd4;
+  --tier-r:    #7a7f8e;
+  --radius:    8px;
+  --sidebar-w: 220px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  display: flex;
+}
+
+/* ── Sidebar ── */
+#sidebar {
+  width: var(--sidebar-w);
+  min-height: 100vh;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 0; left: 0;
+  z-index: 100;
+}
+
+.sidebar-logo {
+  padding: 24px 20px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-logo h1 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 1px;
+}
+.sidebar-logo p {
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+nav { flex: 1; padding: 12px 0; }
+nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.875rem;
+  transition: all 0.15s;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+nav a:hover { color: var(--text); background: var(--surface2); }
+nav a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(245,166,35,0.08); }
+nav a .icon { font-size: 1rem; width: 20px; text-align: center; }
+
+.sidebar-meta {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+.sidebar-meta span { display: block; margin-bottom: 2px; }
+
+/* ── Main ── */
+#main {
+  margin-left: var(--sidebar-w);
+  flex: 1;
+  min-height: 100vh;
+  padding: 28px 32px;
+}
+
+.page { display: none; }
+.page.active { display: block; }
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.page-header h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+/* ── Cards ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+}
+.stat-card .label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-card .value { font-size: 1.6rem; font-weight: 700; margin-top: 4px; color: var(--accent); }
+.stat-card .sub   { font-size: 0.72rem; color: var(--muted); margin-top: 2px; }
+
+/* ── Controls ── */
+.controls {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+input[type="text"], select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+input[type="text"]:focus, select:focus { border-color: var(--accent); }
+input[type="text"]::placeholder { color: var(--muted); }
+
+button {
+  background: var(--accent);
+  color: #0d0d0f;
+  border: none;
+  border-radius: var(--radius);
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+button:hover { background: var(--accent2); }
+button.secondary {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+button.secondary:hover { background: var(--border); }
+
+/* ── Table ── */
+.table-wrap { overflow-x: auto; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+th {
+  text-align: left;
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(42,45,53,0.5);
+}
+tr:hover td { background: var(--surface2); }
+tr:last-child td { border-bottom: none; }
+
+.rank-num { color: var(--muted); font-weight: 600; }
+.team-link { color: var(--text); cursor: pointer; font-weight: 500; }
+.team-link:hover { color: var(--accent); text-decoration: underline; }
+.pts { font-weight: 600; font-family: monospace; }
+.delta-pos { color: var(--green); }
+.delta-neg { color: var(--red); }
+.delta-zero { color: var(--muted); }
+
+/* Tier badges */
+.tier {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.tier-S { background: rgba(255,107,107,0.15); color: var(--tier-s); }
+.tier-A { background: rgba(245,166,35,0.15);  color: var(--tier-a); }
+.tier-B { background: rgba(76,175,130,0.15);  color: var(--tier-b); }
+.tier-C { background: rgba(91,156,246,0.15);  color: var(--tier-c); }
+.tier-D { background: rgba(155,143,212,0.15); color: var(--tier-d); }
+.tier-R { background: rgba(122,127,142,0.15); color: var(--tier-r); }
+
+.prov-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  background: rgba(91,156,246,0.15);
+  color: var(--blue);
+  border-radius: 4px;
+  font-size: 0.65rem;
+  margin-left: 4px;
+}
+
+.win-badge  { color: var(--green); font-weight: 600; }
+.loss-badge { color: var(--red);   font-weight: 600; }
+
+/* ── Pagination ── */
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  justify-content: center;
+}
+.pagination button { min-width: 36px; padding: 6px 10px; }
+.pagination .page-info { color: var(--muted); font-size: 0.8rem; }
+
+/* ── Simulation ── */
+.sim-layout {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 20px;
+  align-items: start;
+  margin-bottom: 20px;
+}
+.sim-team-card { text-align: center; }
+.sim-team-card .team-name-big {
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.sim-team-card .team-pts {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.sim-vs {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--muted);
+  padding-top: 20px;
+}
+
+.prob-bar-wrap { margin: 20px 0; }
+.prob-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 0.85rem;
+}
+.prob-bar {
+  height: 12px;
+  border-radius: 6px;
+  background: var(--surface2);
+  overflow: hidden;
+  display: flex;
+}
+.prob-bar-t1 { background: var(--accent); transition: width 0.4s; }
+.prob-bar-t2 { background: var(--blue); flex: 1; }
+
+.outcome-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.outcome-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.outcome-card h4 { font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; }
+.outcome-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  margin-bottom: 4px;
+}
+
+/* ── Team detail ── */
+.team-detail-header {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.team-detail-header h2 { font-size: 2rem; }
+.team-detail-header .rank-badge {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 12px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.chart-wrap {
+  position: relative;
+  height: 280px;
+  margin-bottom: 20px;
+}
+
+/* ── Analytics ── */
+.analytics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 900px) { .analytics-grid { grid-template-columns: 1fr; } }
+
+/* ── H2H ── */
+.h2h-score {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 24px;
+  background: var(--surface2);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+}
+.h2h-score .team-side { text-align: center; }
+.h2h-score .team-side .name { font-size: 1.1rem; font-weight: 600; }
+.h2h-score .team-side .wins { font-size: 2.5rem; font-weight: 700; }
+.h2h-score .dash { font-size: 2rem; color: var(--muted); }
+
+/* ── Loading / error ── */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 60px;
+  color: var(--muted);
+}
+.spinner {
+  width: 28px; height: 28px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  margin-right: 12px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.error-msg {
+  background: rgba(224,90,90,0.1);
+  border: 1px solid var(--red);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  color: var(--red);
+  font-size: 0.85rem;
+}
+
+.empty-msg { color: var(--muted); text-align: center; padding: 40px; }
+
+/* ── Responsive ── */
+@media (max-width: 700px) {
+  #sidebar { display: none; }
+  #main { margin-left: 0; padding: 16px; }
+}
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside id="sidebar">
+  <div class="sidebar-logo">
+    <h1>CSRS</h1>
+    <p>Counter Strike Rating System</p>
+  </div>
+  <nav>
+    <a class="active" data-page="rankings"><span class="icon">🏆</span> Rankings</a>
+    <a data-page="history"><span class="icon">📋</span> Match History</a>
+    <a data-page="simulate"><span class="icon">⚔️</span> Simulate</a>
+    <a data-page="analytics"><span class="icon">📊</span> Analytics</a>
+    <a data-page="h2h"><span class="icon">🔁</span> Head to Head</a>
+  </nav>
+  <div class="sidebar-meta" id="sidebar-meta">
+    <span>Loading...</span>
+  </div>
+</aside>
+
+<!-- Main content -->
+<main id="main">
+
+  <!-- Rankings -->
+  <div class="page active" id="page-rankings">
+    <div class="page-header">
+      <h2>🏆 Rankings</h2>
+      <div class="controls" style="margin:0">
+        <input type="text" id="rank-search" placeholder="Search team…" style="width:200px">
+      </div>
+    </div>
+    <div class="card" style="padding:0">
+      <div class="table-wrap" id="rankings-table">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Match History -->
+  <div class="page" id="page-history">
+    <div class="page-header"><h2>📋 Match History</h2></div>
+    <div class="controls">
+      <input type="text" id="hist-team"  placeholder="Team…" style="width:160px">
+      <select id="hist-tier">
+        <option value="">All Tiers</option>
+        <option>S</option><option>A</option><option>B</option>
+        <option>C</option><option>D</option><option>R</option>
+      </select>
+      <input type="text" id="hist-event" placeholder="Event…" style="width:200px">
+      <button onclick="loadHistory(1)">Filter</button>
+      <button class="secondary" onclick="clearHistoryFilters()">Clear</button>
+    </div>
+    <div class="card" style="padding:0" id="history-card">
+      <div class="table-wrap" id="history-table">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+    <div class="pagination" id="history-pagination"></div>
+  </div>
+
+  <!-- Simulate -->
+  <div class="page" id="page-simulate">
+    <div class="page-header"><h2>⚔️ Match Simulator</h2></div>
+    <div class="card">
+      <div class="sim-layout">
+        <div class="sim-team-card">
+          <div style="margin-bottom:8px;font-size:0.8rem;color:var(--muted)">TEAM 1</div>
+          <input type="text" id="sim-t1" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem">
+          <div class="team-pts" id="sim-t1-pts" style="margin-top:8px"></div>
+        </div>
+        <div class="sim-vs">VS</div>
+        <div class="sim-team-card">
+          <div style="margin-bottom:8px;font-size:0.8rem;color:var(--muted)">TEAM 2</div>
+          <input type="text" id="sim-t2" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem">
+          <div class="team-pts" id="sim-t2-pts" style="margin-top:8px"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
+        <div>
+          <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">Tier</div>
+          <select id="sim-tier">
+            <option value="S">S — Major</option>
+            <option value="A" selected>A — Premier</option>
+            <option value="B">B — A-tier</option>
+            <option value="C">C — B-tier</option>
+            <option value="D">D — Lower</option>
+            <option value="R">R — Regional</option>
+          </select>
+        </div>
+        <div>
+          <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">Environment</div>
+          <select id="sim-env">
+            <option value="LAN">LAN</option>
+            <option value="STAGE">Stage</option>
+            <option value="STUDIO" selected>Studio</option>
+            <option value="ONLINE">Online</option>
+          </select>
+        </div>
+        <div style="display:flex;align-items:flex-end">
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer">
+            <input type="checkbox" id="sim-gf" style="accent-color:var(--accent)">
+            Grand Final
+          </label>
+        </div>
+        <div style="display:flex;align-items:flex-end">
+          <button onclick="runSim()">Simulate</button>
+        </div>
+      </div>
+      <div id="sim-result" style="display:none">
+        <div class="prob-bar-wrap">
+          <div class="prob-labels">
+            <span id="sim-prob-t1-label"></span>
+            <span id="sim-prob-t2-label"></span>
+          </div>
+          <div class="prob-bar">
+            <div class="prob-bar-t1" id="sim-bar-t1"></div>
+            <div class="prob-bar-t2"></div>
+          </div>
+        </div>
+        <div class="outcome-grid">
+          <div class="outcome-card">
+            <h4 id="sim-outcome1-title"></h4>
+            <div class="outcome-row"><span id="sim-o1-t1-name"></span><span id="sim-o1-t1-delta" class="delta-pos"></span></div>
+            <div class="outcome-row"><span id="sim-o1-t2-name"></span><span id="sim-o1-t2-delta" class="delta-neg"></span></div>
+          </div>
+          <div class="outcome-card">
+            <h4 id="sim-outcome2-title"></h4>
+            <div class="outcome-row"><span id="sim-o2-t1-name"></span><span id="sim-o2-t1-delta" class="delta-neg"></span></div>
+            <div class="outcome-row"><span id="sim-o2-t2-name"></span><span id="sim-o2-t2-delta" class="delta-pos"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Analytics -->
+  <div class="page" id="page-analytics">
+    <div class="page-header"><h2>📊 Analytics</h2></div>
+    <div id="analytics-content">
+      <div class="loading"><div class="spinner"></div> Loading…</div>
+    </div>
+  </div>
+
+  <!-- H2H -->
+  <div class="page" id="page-h2h">
+    <div class="page-header"><h2>🔁 Head to Head</h2></div>
+    <div class="card">
+      <div class="controls" style="margin-bottom:0">
+        <input type="text" id="h2h-t1" placeholder="Team 1…" style="width:200px">
+        <input type="text" id="h2h-t2" placeholder="Team 2…" style="width:200px">
+        <button onclick="loadH2H()">Compare</button>
+      </div>
+    </div>
+    <div id="h2h-result"></div>
+  </div>
+
+  <!-- Team Detail (hidden page) -->
+  <div class="page" id="page-team">
+    <div style="margin-bottom:16px">
+      <button class="secondary" onclick="goBack()">← Back</button>
+    </div>
+    <div id="team-detail-content">
+      <div class="loading"><div class="spinner"></div> Loading…</div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+const API = window.location.origin;  // same origin as frontend
+
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
+let prevPage = 'rankings';
+let currentPage = 'rankings';
+
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  const navLink = document.querySelector(`nav a[data-page="${name}"]`);
+  if (navLink) navLink.classList.add('active');
+  prevPage = currentPage;
+  currentPage = name;
+}
+
+document.querySelectorAll('nav a[data-page]').forEach(a => {
+  a.addEventListener('click', () => {
+    const page = a.dataset.page;
+    showPage(page);
+    if (page === 'rankings')  loadRankings();
+    if (page === 'history')   loadHistory(1);
+    if (page === 'analytics') loadAnalytics();
+  });
+});
+
+function goBack() { showPage(prevPage); }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+async function api(path) {
+  const res = await fetch(API + path);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || res.statusText);
+  }
+  return res.json();
+}
+
+async function apiPost(path, body) {
+  const res = await fetch(API + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || res.statusText);
+  }
+  return res.json();
+}
+
+function fmt(n) { return (n >= 0 ? '+' : '') + n.toFixed(2); }
+
+function tierBadge(tier) {
+  return `<span class="tier tier-${tier}">${tier}</span>`;
+}
+
+function deltaClass(n) {
+  if (n > 0) return 'delta-pos';
+  if (n < 0) return 'delta-neg';
+  return 'delta-zero';
+}
+
+function setEl(id, html) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = html;
+}
+
+function setLoading(id) {
+  setEl(id, '<div class="loading"><div class="spinner"></div> Loading…</div>');
+}
+
+function setError(id, msg) {
+  setEl(id, `<div class="error-msg">⚠ ${msg}</div>`);
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar meta
+// ---------------------------------------------------------------------------
+async function loadMeta() {
+  try {
+    const d = await api('/api/meta');
+    const el = document.getElementById('sidebar-meta');
+    el.innerHTML = `
+      <span>${d.total_teams} teams</span>
+      <span>${d.total_matches} matches</span>
+      <span style="color:var(--muted);margin-top:4px">Last: ${d.last_match ? d.last_match.split(' ')[0] : '—'}</span>
+    `;
+  } catch(e) {}
+}
+
+// ---------------------------------------------------------------------------
+// Rankings
+// ---------------------------------------------------------------------------
+let rankingsData = [];
+
+async function loadRankings() {
+  setLoading('rankings-table');
+  try {
+    const search = document.getElementById('rank-search').value;
+    const d = await api(`/api/rankings?limit=200&search=${encodeURIComponent(search)}`);
+    rankingsData = d.rankings;
+    renderRankings(rankingsData);
+  } catch(e) {
+    setError('rankings-table', e.message);
+  }
+}
+
+function renderRankings(rows) {
+  if (!rows.length) {
+    setEl('rankings-table', '<div class="empty-msg">No teams found.</div>');
+    return;
+  }
+  const html = `
+    <table>
+      <thead><tr>
+        <th>#</th>
+        <th>Team</th>
+        <th>Points</th>
+        <th>Peak</th>
+        <th>Peak Rank</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(r => `
+          <tr>
+            <td class="rank-num">${r.rank}</td>
+            <td>
+              <span class="team-link" onclick="openTeam('${r.name.replace(/'/g,"\\'")}')">
+                ${r.name}
+              </span>
+              ${r.provisional ? `<span class="prov-badge">PROV</span>` : ''}
+            </td>
+            <td class="pts">${r.points.toFixed(2)}</td>
+            <td class="pts" style="color:var(--muted)">${r.peak_points.toFixed(2)}</td>
+            <td style="color:var(--muted)">${r.peak_rank ? '#' + r.peak_rank : '—'}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>`;
+  setEl('rankings-table', html);
+}
+
+document.getElementById('rank-search').addEventListener('input', () => {
+  const q = document.getElementById('rank-search').value.toLowerCase();
+  const filtered = rankingsData.filter(r => r.name.toLowerCase().includes(q));
+  renderRankings(filtered);
+});
+
+// ---------------------------------------------------------------------------
+// Match History
+// ---------------------------------------------------------------------------
+let histPage = 1;
+let histTotal = 0;
+let histPages = 0;
+
+async function loadHistory(page) {
+  histPage = page;
+  setLoading('history-table');
+  try {
+    const team  = document.getElementById('hist-team').value;
+    const tier  = document.getElementById('hist-tier').value;
+    const event = document.getElementById('hist-event').value;
+    const d = await api(
+      `/api/history?page=${page}&per_page=30` +
+      `&team=${encodeURIComponent(team)}` +
+      `&tier=${encodeURIComponent(tier)}` +
+      `&event=${encodeURIComponent(event)}`
+    );
+    histTotal = d.total;
+    histPages = d.pages;
+    renderHistory(d.history);
+    renderHistPagination();
+  } catch(e) {
+    setError('history-table', e.message);
+  }
+}
+
+function renderHistory(rows) {
+  if (!rows.length) {
+    setEl('history-table', '<div class="empty-msg">No matches found.</div>');
+    return;
+  }
+  const html = `
+    <table>
+      <thead><tr>
+        <th>Date</th>
+        <th>Event</th>
+        <th>Tier</th>
+        <th>Team 1</th>
+        <th></th>
+        <th>Team 2</th>
+        <th>Result</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(h => {
+          const t1won = h.t1.score > h.t2.score;
+          return `
+            <tr>
+              <td style="color:var(--muted);white-space:nowrap;font-size:0.8rem">${h.date.split(' ')[0]}</td>
+              <td style="font-size:0.8rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${h.event}">${h.event}</td>
+              <td>${tierBadge(h.tier)}</td>
+              <td>
+                <span class="team-link ${t1won ? 'win-badge' : ''}" onclick="openTeam('${h.t1.name.replace(/'/g,"\\'")}')">
+                  ${h.t1.name}
+                </span>
+                <small class="${deltaClass(h.t1.pts_delta)}" style="font-size:0.7rem;margin-left:4px">${fmt(h.t1.pts_delta)}</small>
+              </td>
+              <td style="text-align:center;font-weight:700;color:var(--muted)">${h.t1.score}–${h.t2.score}</td>
+              <td>
+                <span class="team-link ${!t1won ? 'win-badge' : ''}" onclick="openTeam('${h.t2.name.replace(/'/g,"\\'")}')">
+                  ${h.t2.name}
+                </span>
+                <small class="${deltaClass(h.t2.pts_delta)}" style="font-size:0.7rem;margin-left:4px">${fmt(h.t2.pts_delta)}</small>
+              </td>
+              <td>
+                ${h.url ? `<a href="${h.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none">HLTV ↗</a>` : ''}
+              </td>
+            </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+  setEl('history-table', html);
+}
+
+function renderHistPagination() {
+  const el = document.getElementById('history-pagination');
+  if (histPages <= 1) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <button ${histPage <= 1 ? 'disabled' : ''} onclick="loadHistory(${histPage - 1})">←</button>
+    <span class="page-info">Page ${histPage} of ${histPages} (${histTotal} matches)</span>
+    <button ${histPage >= histPages ? 'disabled' : ''} onclick="loadHistory(${histPage + 1})">→</button>
+  `;
+}
+
+function clearHistoryFilters() {
+  document.getElementById('hist-team').value = '';
+  document.getElementById('hist-tier').value = '';
+  document.getElementById('hist-event').value = '';
+  loadHistory(1);
+}
+
+// ---------------------------------------------------------------------------
+// Team detail
+// ---------------------------------------------------------------------------
+let ratingChart = null;
+
+async function openTeam(name) {
+  showPage('team');
+  setLoading('team-detail-content');
+  try {
+    const d = await api(`/api/team/${encodeURIComponent(name)}`);
+    renderTeamDetail(d);
+  } catch(e) {
+    setError('team-detail-content', e.message);
+  }
+}
+
+function renderTeamDetail(d) {
+  const wl = d.total_matches > 0 ? `${d.wins}W ${d.losses}L (${(d.wins/d.total_matches*100).toFixed(0)}%)` : '—';
+  const html = `
+    <div class="team-detail-header">
+      <h2>${d.name}</h2>
+      <span class="rank-badge">#${d.rank}</span>
+      <span class="rank-badge" style="color:var(--accent)">${d.points.toFixed(2)} pts</span>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="label">Current Rating</div>
+        <div class="value">${d.points.toFixed(1)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Global Rank</div>
+        <div class="value">#${d.rank}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Record</div>
+        <div class="value" style="font-size:1.1rem;padding-top:8px">${wl}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Peak Rating</div>
+        <div class="value">${d.peak.points ? d.peak.points.toFixed(1) : '—'}</div>
+        <div class="sub">${d.peak.date ? d.peak.date.split(' ')[0] + ' · #' + d.peak.rank : ''}</div>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:12px;font-size:1rem">Rating History</h3>
+      <div class="chart-wrap"><canvas id="rating-chart"></canvas></div>
+    </div>
+    <div class="card" style="padding:0">
+      <div style="padding:16px 20px 0;font-size:1rem;font-weight:600">Match History</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Date</th><th>Event</th><th>Tier</th><th>Opponent</th>
+            <th>Score</th><th>Delta</th>
+          </tr></thead>
+          <tbody>
+            ${[...d.timeline].reverse().map(m => `
+              <tr>
+                <td style="color:var(--muted);font-size:0.8rem;white-space:nowrap">${m.date.split(' ')[0]}</td>
+                <td style="font-size:0.8rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${m.event}">${m.event}</td>
+                <td>${tierBadge(m.tier)}</td>
+                <td class="team-link" onclick="openTeam('${m.opponent.replace(/'/g,"\\'")}')">
+                  ${m.opponent}
+                </td>
+                <td class="${m.won ? 'win-badge' : 'loss-badge'}">${m.score}</td>
+                <td class="${deltaClass(m.pts_delta)}">${fmt(m.pts_delta)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  setEl('team-detail-content', html);
+
+  // Draw chart
+  if (ratingChart) { ratingChart.destroy(); ratingChart = null; }
+  const labels = d.timeline.map(m => m.date.split(' ')[0]);
+  const values = d.timeline.map(m => m.pts_after);
+  const ctx = document.getElementById('rating-chart').getContext('2d');
+  ratingChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Rating',
+        data: values,
+        borderColor: '#f5a623',
+        backgroundColor: 'rgba(245,166,35,0.08)',
+        borderWidth: 2,
+        pointRadius: 3,
+        pointBackgroundColor: '#f5a623',
+        tension: 0.3,
+        fill: true,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: i => d.timeline[i[0].dataIndex].date,
+            afterLabel: i => d.timeline[i.dataIndex].event,
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
+        y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Simulation
+// ---------------------------------------------------------------------------
+async function runSim() {
+  const t1 = document.getElementById('sim-t1').value.trim();
+  const t2 = document.getElementById('sim-t2').value.trim();
+  if (!t1 || !t2) return alert('Enter both team names.');
+  try {
+    const d = await apiPost('/api/simulate', {
+      team1: t1, team2: t2,
+      tier: document.getElementById('sim-tier').value,
+      env:  document.getElementById('sim-env').value,
+      grand_final: document.getElementById('sim-gf').checked,
+    });
+
+    document.getElementById('sim-t1-pts').textContent = d.team1.points.toFixed(2) + ' pts';
+    document.getElementById('sim-t2-pts').textContent = d.team2.points.toFixed(2) + ' pts';
+
+    const p1 = d.win_probability_t1;
+    const p2 = d.win_probability_t2;
+    document.getElementById('sim-prob-t1-label').textContent = `${d.team1.name} ${p1}%`;
+    document.getElementById('sim-prob-t2-label').textContent = `${p2}% ${d.team2.name}`;
+    document.getElementById('sim-bar-t1').style.width = p1 + '%';
+
+    // Outcome 1: t1 wins
+    document.getElementById('sim-outcome1-title').textContent = `If ${d.team1.name} wins`;
+    document.getElementById('sim-o1-t1-name').textContent = d.team1.name;
+    document.getElementById('sim-o1-t2-name').textContent = d.team2.name;
+    document.getElementById('sim-o1-t1-delta').textContent = fmt(d.if_t1_wins.t1_delta);
+    document.getElementById('sim-o1-t2-delta').textContent = fmt(d.if_t1_wins.t2_delta);
+
+    // Outcome 2: t2 wins
+    document.getElementById('sim-outcome2-title').textContent = `If ${d.team2.name} wins`;
+    document.getElementById('sim-o2-t1-name').textContent = d.team1.name;
+    document.getElementById('sim-o2-t2-name').textContent = d.team2.name;
+    document.getElementById('sim-o2-t1-delta').textContent = fmt(d.if_t2_wins.t1_delta);
+    document.getElementById('sim-o2-t2-delta').textContent = fmt(d.if_t2_wins.t2_delta);
+
+    document.getElementById('sim-result').style.display = 'block';
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Analytics
+// ---------------------------------------------------------------------------
+let analyticsCharts = [];
+
+async function loadAnalytics() {
+  setLoading('analytics-content');
+  try {
+    const d = await api('/api/analytics/summary');
+    renderAnalytics(d);
+  } catch(e) {
+    setError('analytics-content', e.message);
+  }
+}
+
+function renderAnalytics(d) {
+  analyticsCharts.forEach(c => c.destroy());
+  analyticsCharts = [];
+
+  const html = `
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="label">Total Matches</div>
+        <div class="value">${d.total_matches}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Teams Tracked</div>
+        <div class="value">${d.total_teams}</div>
+      </div>
+    </div>
+    <div class="analytics-grid">
+      <div class="card">
+        <h3 style="margin-bottom:16px;font-size:0.95rem">Matches by Tier</h3>
+        <div style="height:200px"><canvas id="chart-tier"></canvas></div>
+      </div>
+      <div class="card">
+        <h3 style="margin-bottom:16px;font-size:0.95rem">Matches by Environment</h3>
+        <div style="height:200px"><canvas id="chart-env"></canvas></div>
+      </div>
+      <div class="card">
+        <h3 style="margin-bottom:16px;font-size:0.95rem">Top Win Rates (min 5 matches)</h3>
+        <div style="height:260px"><canvas id="chart-wr"></canvas></div>
+      </div>
+      <div class="card">
+        <h3 style="margin-bottom:12px;font-size:0.95rem">Top Events by Match Count</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Event</th><th>Matches</th></tr></thead>
+            <tbody>
+              ${d.top_events.map(e => `
+                <tr>
+                  <td style="font-size:0.82rem">${e.event}</td>
+                  <td style="color:var(--accent);font-weight:600">${e.matches}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+  setEl('analytics-content', html);
+
+  const TIER_COLORS = { S:'#ff6b6b', A:'#f5a623', B:'#4caf82', C:'#5b9cf6', D:'#9b8fd4', R:'#7a7f8e' };
+  const ENV_COLORS  = ['#f5a623','#4caf82','#5b9cf6','#9b8fd4'];
+
+  const chartDefaults = {
+    plugins: { legend: { labels: { color: '#7a7f8e', font: { size: 11 } } } },
+  };
+
+  // Tier doughnut
+  const tierKeys = Object.keys(d.tier_breakdown);
+  analyticsCharts.push(new Chart(document.getElementById('chart-tier').getContext('2d'), {
+    type: 'doughnut',
+    data: {
+      labels: tierKeys,
+      datasets: [{ data: tierKeys.map(k => d.tier_breakdown[k]),
+        backgroundColor: tierKeys.map(k => TIER_COLORS[k] || '#7a7f8e'),
+        borderWidth: 1, borderColor: '#1e2127' }]
+    },
+    options: { responsive: true, maintainAspectRatio: false, ...chartDefaults }
+  }));
+
+  // Env doughnut
+  const envKeys = Object.keys(d.env_breakdown);
+  analyticsCharts.push(new Chart(document.getElementById('chart-env').getContext('2d'), {
+    type: 'doughnut',
+    data: {
+      labels: envKeys,
+      datasets: [{ data: envKeys.map(k => d.env_breakdown[k]),
+        backgroundColor: ENV_COLORS,
+        borderWidth: 1, borderColor: '#1e2127' }]
+    },
+    options: { responsive: true, maintainAspectRatio: false, ...chartDefaults }
+  }));
+
+  // Winrate bar (top 10)
+  const wr = d.winrates.slice(0, 10);
+  analyticsCharts.push(new Chart(document.getElementById('chart-wr').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: wr.map(w => w.name),
+      datasets: [{
+        label: 'Win Rate %',
+        data: wr.map(w => w.winrate),
+        backgroundColor: '#f5a623',
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#7a7f8e', callback: v => v + '%' }, grid: { color: '#2a2d35' }, max: 100 },
+        y: { ticks: { color: '#e8eaf0', font: { size: 11 } }, grid: { display: false } },
+      }
+    }
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Head to Head
+// ---------------------------------------------------------------------------
+async function loadH2H() {
+  const t1 = document.getElementById('h2h-t1').value.trim();
+  const t2 = document.getElementById('h2h-t2').value.trim();
+  if (!t1 || !t2) return;
+  setEl('h2h-result', '<div class="loading"><div class="spinner"></div> Loading…</div>');
+  try {
+    const d = await api(`/api/analytics/h2h?team1=${encodeURIComponent(t1)}&team2=${encodeURIComponent(t2)}`);
+    renderH2H(d);
+  } catch(e) {
+    setError('h2h-result', e.message);
+  }
+}
+
+function renderH2H(d) {
+  if (!d.total_matches) {
+    setEl('h2h-result', '<div class="card"><div class="empty-msg">No matches found between these teams.</div></div>');
+    return;
+  }
+  const t1color = d.team1_wins > d.team2_wins ? 'var(--green)' : d.team1_wins < d.team2_wins ? 'var(--red)' : 'var(--muted)';
+  const t2color = d.team2_wins > d.team1_wins ? 'var(--green)' : d.team2_wins < d.team1_wins ? 'var(--red)' : 'var(--muted)';
+
+  const html = `
+    <div class="card">
+      <div class="h2h-score">
+        <div class="team-side">
+          <div class="name">${d.team1}</div>
+          <div class="wins" style="color:${t1color}">${d.team1_wins}</div>
+        </div>
+        <div class="dash">–</div>
+        <div class="team-side">
+          <div class="wins" style="color:${t2color}">${d.team2_wins}</div>
+          <div class="name">${d.team2}</div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Date</th><th>Event</th><th>Tier</th><th>Score</th><th>Winner</th><th></th></tr></thead>
+          <tbody>
+            ${d.matches.map(m => `
+              <tr>
+                <td style="color:var(--muted);font-size:0.8rem">${m.date.split(' ')[0]}</td>
+                <td style="font-size:0.8rem">${m.event}</td>
+                <td>${tierBadge(m.tier)}</td>
+                <td style="font-weight:600">${m.score}</td>
+                <td class="win-badge">${m.winner}</td>
+                <td>${m.url ? `<a href="${m.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none">HLTV ↗</a>` : ''}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  setEl('h2h-result', html);
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+loadMeta();
+loadRankings();
+setInterval(loadMeta, 60000); // refresh meta every minute
+</script>
+</body>
+</html>
