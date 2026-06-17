@@ -20,10 +20,7 @@ import bisect
 import time
 from datetime import datetime, timedelta
 from tkinter import Tk
-from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from playwright.sync_api import sync_playwright
+from typing import Dict, List, Tuple, Optional, Any # pyright: ignore[reportMissingImports]
 
 # =============================================================================
 # === DEPENDENCY MANAGEMENT ===
@@ -41,7 +38,7 @@ def check_and_install_dependencies() -> bool:
     
     # Check playwright
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import sync_playwright # pyright: ignore[reportMissingImports]
         print("[OK] playwright is installed")
     except ImportError:
         missing_deps.append("playwright")
@@ -7223,7 +7220,7 @@ def compare_csrs_vrs_rankings():
     vrs_fetch_date = datetime.now().strftime("%Y-%m-%d")
     
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import sync_playwright # pyright: ignore[reportMissingImports]
         from datetime import date as date_cls
         
         today = date_cls.today()
@@ -7440,7 +7437,7 @@ class BrowserSession:
         if self.context is not None:
             return self  # already started — no-op, safe to call twice
 
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import sync_playwright # pyright: ignore[reportMissingImports]
 
         self._playwright = sync_playwright().start()
         self.browser = self._playwright.chromium.launch(
@@ -7553,7 +7550,7 @@ def scrape_vrs_points(team_name, match_date=None, context=None):
         page = None
         owns_browser = context is None
         try:
-            from playwright.sync_api import sync_playwright
+            from playwright.sync_api import sync_playwright # pyright: ignore[reportMissingImports]
             if owns_browser:
                 p = sync_playwright().start()
                 browser = p.chromium.launch(
@@ -7793,7 +7790,7 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
     owns_browser = context is None
     
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout # type: ignore
         
         if owns_browser:
             print("  Starting browser...")
@@ -8176,7 +8173,7 @@ def scrape_event_tier(event_href: str, event_name: str = '', context=None) -> Tu
     owns_browser = context is None
 
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout # type: ignore
 
         if owns_browser:
             print("  Scraping event page for tier detection...")
@@ -8746,7 +8743,7 @@ def scrape_hltv_results(start_date: str, end_date: str = None, context=None) -> 
     seen = set()
 
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import sync_playwright # type: ignore
 
         if owns_browser:
             p = sync_playwright().start()
