@@ -1,0 +1,126 @@
+================================================================================
+CSRS SERVER INTEGRATION STATUS
+================================================================================
+Date: June 18, 2026
+Status: IN PROGRESS - Build issue with Playwright
+
+================================================================================
+WHAT HAS BEEN DONE
+================================================================================
+
+1. PROJECT ASSESSMENT
+   - Confirmed the CSRS project is complete and production-ready
+   - Contains: CSRS.py daemon, FastAPI web backend, frontend UI
+   - Uses Elo-based ranking system for esports teams
+
+2. ENVIRONMENT SETUP
+   - Created .env file at /home/laperic/ntfy/.env
+   - Filled in GITHUB_REPO, GITHUB_USERNAME, GITHUB_TOKEN
+   - Admin credentials also configured in .env
+
+3. SERVER INTEGRATION
+   - Added csrs-daemon and csrs-web services to main docker-compose.yml
+   - Services configured to use existing git-sync at /home/laperic/git-sync-root
+   - Joined services to existing caddy_net network
+   - Mounted git-sync repo path for both services
+   - Created csrs-data volume for daemon persistence
+
+4. DOCKER-COMPOSE CONFIGURATION
+   Location: /home/laperic/ntfy/docker-compose.yml
+   
+   Services added:
+   - csrs-daemon: runs CSRS.py daemon, imports matches, pushes to GitHub
+     Build: /home/laperic/git-sync-root/current/www/csrs (root) + csrs_api/Dockerfile.daemon
+     Port: internal only (no external port)
+     Env: GITHUB_TOKEN, GITHUB_REPO
+     Volumes: repo mounted RW, csrs-data volume for /data
+   
+   - csrs-web: FastAPI backend + frontend UI
+     Build: /home/laperic/git-sync-root/current/www/csrs/csrs_api + Dockerfile
+     Port: 8000 (exposed)
+     Env: CSRS_DATA_FILE, CSRS_FRONTEND_DIR
+     Volumes: repo mounted RO
+
+5. DOCKERFILE FIXES
+   - Updated Dockerfile.daemon to reference correct paths relative to build context
+   - Changed COPY paths to use csrs_api/requirements.daemon.txt (relative to repo root)
+
+================================================================================
+CURRENT ISSUE & BLOCKERS
+================================================================================
+
+Docker build for csrs-daemon is failing due to:
+  Error: Playwright browser installation (chromium) failing
+  Root cause: Missing font packages in Debian Trixie (ttf-unifont, ttf-ubuntu-font-family)
+  
+  Error line: RUN playwright install chromium --with-deps (Dockerfile.daemon:37)
+  Exit code: 100
+  
+  This is a known issue with Playwright and newer Debian base images.
+
+POTENTIAL FIXES:
+1. Replace Playwright dependencies with pre-built Chromium from system packages
+2. Use a different base image (Ubuntu-based instead of Debian slim)
+3. Skip --with-deps and install fonts manually before playwright
+4. Pre-build the chromium installation in a separate layer
+
+================================================================================
+FILE LOCATIONS & REFERENCES
+================================================================================
+
+CSRS Application:
+  - Main daemon: /home/laperic/git-sync-root/current/www/csrs/CSRS.py
+  - FastAPI backend: /home/laperic/git-sync-root/current/www/csrs/csrs_api/main.py
+  - Frontend: /home/laperic/git-sync-root/current/www/csrs/csrs_api/frontend/
+  - Dockerfiles: 
+    * Daemon: /home/laperic/git-sync-root/current/www/csrs/csrs_api/Dockerfile.daemon
+    * Web: /home/laperic/git-sync-root/current/www/csrs/csrs_api/Dockerfile
+
+Server Configuration:
+  - Main docker-compose: /home/laperic/ntfy/docker-compose.yml
+  - Environment file: /home/laperic/ntfy/.env (do not commit)
+  - git-sync root: /home/laperic/git-sync-root/current
+
+Web Access:
+  - CSRS API endpoint: http://localhost:8000
+  - Caddy reverse proxy port 80/443 available for routing
+
+Git Repository:
+  - Public repo: https://github.com/saloraxz/vaio
+  - Branch: main
+  - Auto-sync: Every 60 seconds via git-sync container
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+1. Fix Playwright browser installation issue in Dockerfile.daemon
+2. Rebuild and test csrs-daemon and csrs-web services
+3. Verify data.save file appears in csrs-data volume
+4. Test API endpoints at /api/rankings, /api/history, /api/simulate
+5. Configure Caddy routes to expose csrs-web frontend if desired
+6. Commit any remaining changes to the repo
+
+================================================================================
+COMMANDS FOR FRIEND TO USE
+================================================================================
+
+# Force git-sync to pull immediately:
+docker restart git-sync
+
+# Check service status:
+cd /home/laperic/ntfy
+docker compose ps
+
+# View logs for CSRS services:
+docker compose logs -f csrs-daemon csrs-web
+
+# Rebuild services after fixes:
+docker compose up -d --build csrs-daemon csrs-web
+
+# Clean build (remove old images):
+docker compose down
+docker rmi ntfy-csrs-daemon ntfy-csrs-web
+docker compose up -d --build csrs-daemon csrs-web
+
+================================================================================
