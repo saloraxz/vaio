@@ -20,7 +20,10 @@ import bisect
 import time
 from datetime import datetime, timedelta
 from tkinter import Tk
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from playwright.sync_api import sync_playwright
 
 # =============================================================================
 # === DEPENDENCY MANAGEMENT ===
