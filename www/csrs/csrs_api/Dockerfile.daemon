@@ -37,7 +37,7 @@ RUN pip install --no-cache-dir -r requirements.daemon.txt
 RUN playwright install chromium --with-deps
 
 # Copy CSRS application
-COPY CSRS.py .
+COPY ../CSRS.py .
 
 # data.save lives on a shared volume mounted at /data
 # batch_import.log also written there
