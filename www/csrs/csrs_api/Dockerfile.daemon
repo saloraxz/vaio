@@ -30,14 +30,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Install Python dependencies
-COPY requirements.daemon.txt .
+COPY csrs_api/requirements.daemon.txt .
 RUN pip install --no-cache-dir -r requirements.daemon.txt
 
 # Install Playwright and download Chromium
 RUN playwright install chromium --with-deps
 
 # Copy CSRS application
-COPY ../CSRS.py .
+COPY CSRS.py .
 
 # data.save lives on a shared volume mounted at /data
 # batch_import.log also written there
