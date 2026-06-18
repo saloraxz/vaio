@@ -25,6 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxcb1 \
     libxext6 \
     fonts-liberation \
+    fonts-unifont \
+    fonts-ubuntu \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -33,8 +35,8 @@ WORKDIR /app
 COPY csrs_api/requirements.daemon.txt .
 RUN pip install --no-cache-dir -r requirements.daemon.txt
 
-# Install Playwright and download Chromium
-RUN playwright install chromium --with-deps
+# Install Playwright and download Chromium (no --with-deps, deps installed above)
+RUN playwright install chromium
 
 # Copy CSRS application
 COPY CSRS.py .
