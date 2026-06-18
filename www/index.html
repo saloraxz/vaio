@@ -85,7 +85,18 @@
             <a href="/games/" class="button">Games</a>
             <a href="./nextcloud" class="button" style="--hover-color: #1e90ff;">Nextcloud</a>
         </div>
-
+        <div class="time">
+            00:00:00
+             <script>
+                function updateTime() {
+                    const now = new Date();
+                    const timeString = now.toLocaleTimeString();
+                    document.querySelector('.time').textContent = timeString;
+                }
+                setInterval(updateTime, 1000);
+                updateTime(); // Initial call to set immediately
+            </script>
+        </div>
         <div class="status">
             Connected via Tailscale : Page Version <div id="version-footer">v0.0.0</div>
             <script>
