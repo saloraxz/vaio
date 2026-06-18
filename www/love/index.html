@@ -311,10 +311,10 @@
                     const data = await response.json();
                     PASSWORD = data.password;
                 } else {
-                    PASSWORD = "watermelon"; // Fallback
+                    PASSWORD = "strawberry"; // Fallback
                 }
             } catch (e) {
-                PASSWORD = "watermelon"; // Fallback
+                PASSWORD = "strawberry"; // Fallback
                 console.log("Could not fetch password from server:", e);
             }
             checkPassword();
