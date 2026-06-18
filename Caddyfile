@@ -1,6 +1,6 @@
 fedoralap.tail055b0e.ts.net {
 
-    handle /api/console* {
+    handle_path /api/console* {
         reverse_proxy localhost:5000
     }
 

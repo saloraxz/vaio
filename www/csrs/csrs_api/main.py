@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -24,8 +25,13 @@ from pydantic import BaseModel
 # Config
 # ---------------------------------------------------------------------------
 
+# Load .env file from ~/ntfy/.env
+env_path = Path.home() / "ntfy" / ".env"
+load_dotenv(dotenv_path=env_path)
+
 DATA_FILE = Path(os.environ.get("CSRS_DATA_FILE", "data.save"))
 FRONTEND_DIR = Path(os.environ.get("CSRS_FRONTEND_DIR", "frontend"))
+LOVE_PASSWORD = os.environ.get("LOVE_PASSWORD", "watermelon")
 
 # ---------------------------------------------------------------------------
 # App
@@ -417,9 +423,15 @@ def meta():
     }
 
 
-@app.get("/health")
+@app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/love/password")
+def get_love_password():
+    """Retrieve the love page password from environment"""
+    return {"password": LOVE_PASSWORD}
 
 
 # ---------------------------------------------------------------------------
