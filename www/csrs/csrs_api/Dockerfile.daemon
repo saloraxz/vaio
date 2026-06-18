@@ -26,7 +26,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     fonts-liberation \
     fonts-unifont \
-    fonts-ubuntu \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
