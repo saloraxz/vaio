@@ -26,8 +26,8 @@ services:
   # ---------------------------------------------------------------------------
   csrs-daemon:
     build:
-      context: .
-      dockerfile: Dockerfile.daemon
+      context: ..
+      dockerfile: csrs_api/Dockerfile.daemon
     container_name: csrs-daemon
     restart: unless-stopped
     environment:
