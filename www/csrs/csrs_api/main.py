@@ -11,13 +11,12 @@ import json
 import math
 import os
 from datetime import datetime
+from math import comb
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -25,13 +24,8 @@ from pydantic import BaseModel
 # Config
 # ---------------------------------------------------------------------------
 
-# Load .env file from ~/ntfy/.env
-env_path = Path.home() / "ntfy" / ".env"
-load_dotenv(dotenv_path=env_path)
-
 DATA_FILE = Path(os.environ.get("CSRS_DATA_FILE", "data.save"))
 FRONTEND_DIR = Path(os.environ.get("CSRS_FRONTEND_DIR", "frontend"))
-LOVE_PASSWORD = os.environ.get("LOVE_PASSWORD", "watermelon")
 
 # ---------------------------------------------------------------------------
 # App
@@ -64,41 +58,210 @@ def load_data() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Elo simulation helpers (mirrors CSRS.py logic)
+# Elo simulation — exact port of CSRS.py calculate_points()
 # ---------------------------------------------------------------------------
 
-TIER_MULTIPLIERS = {"S": 2.0, "A": 1.5, "B": 1.0, "C": 0.6, "D": 0.3, "R": 0.1}
-ENV_MULTIPLIERS  = {"LAN": 1.2, "STAGE": 1.1, "STUDIO": 1.0, "ONLINE": 0.85}
-BASE_K = 32
+# Constants — must match DEFAULT_CONFIG in CSRS.py
+RATING_CAP   = 12930
+RATING_FLOOR = 0
+K_WIN        = 33
+K_LOSS       = 22
+PROVISIONAL_OPP_DIFF_CAP = 200
+
+DIMINISHING_RETURNS_ENABLED  = True
+DIMINISHING_THRESHOLD        = 1000
+DIMINISHING_MAX              = 1050
+DIMINISHING_K_WIN_MIN_PCT    = 0.0
+DIMINISHING_K_LOSS_MIN_PCT   = 1.0
+
+MISMATCH_PENALTY_ENABLED   = True
+MISMATCH_DECAY_PERCENT     = 1.0
+MISMATCH_ZERO_POINT_PERCENT = 0.70
+MISMATCH_MAX_PENALTY_PERCENT = 0.66
+MISMATCH_MAX_PENALTY_VALUE  = -0.75
+
+PITY_POINTS_ENABLED    = True
+PITY_THRESHOLD_PERCENT = 0.75
+PITY_MAX_PERCENT       = 0.65
+PITY_MAX_POINTS        = 9
+PITY_MIN_POINTS        = 6
+
+TIERS  = {"S+": 1.5, "S": 1.4, "A": 1.2, "B": 1.0, "C": 0.8, "D": 0.55}
+MAPS   = {1: 0.8, 2: 1.0, 3: 1.2}
+ENVS   = {"ONLINE": 0.8, "LAN": 1.1, "STUDIO": 1.1, "STAGE": 1.1}
 
 
-def expected_score(ra: float, rb: float) -> float:
-    return 1 / (1 + 10 ** ((rb - ra) / 400))
+def _calculate_points(
+    team_pts: float,
+    opp_pts: float,
+    result: int,        # 1 = win, 0 = loss
+    map_diff: int,      # maps won by winner (1, 2, or 3)
+    tier: str = "A",
+    env: str = "LAN",
+    is_grand_final: bool = False,
+    team_form_adj: float = 0.0,
+    opp_form_adj: float = 0.0,
+    opp_is_provisional: bool = False,
+) -> float:
+    """Exact port of CSRS.py calculate_points(). Returns new rating."""
+
+    # Diminishing returns on K
+    k_win  = K_WIN
+    k_loss = K_LOSS
+    if DIMINISHING_RETURNS_ENABLED and team_pts >= DIMINISHING_THRESHOLD:
+        pos = max(0.0, min(1.0,
+            (team_pts - DIMINISHING_THRESHOLD) / (DIMINISHING_MAX - DIMINISHING_THRESHOLD)
+        ))
+        k_win  = K_WIN  * (1.0 - pos * (1.0 - DIMINISHING_K_WIN_MIN_PCT))
+        k_loss = K_LOSS * (1.0 - pos * (1.0 - DIMINISHING_K_LOSS_MIN_PCT))
+
+    K = k_win if result == 1 else k_loss
+
+    m_tier = TIERS.get(tier.upper(), 1.0)
+    m_map  = MAPS.get(map_diff, 1.0)
+    m_env  = ENVS.get(env.upper(), 1.0)
+    gf_mult = 1.5 if is_grand_final else 1.0
+
+    # Effective ratings with form adjustments
+    team_eff = team_pts + team_form_adj
+    opp_eff  = opp_pts  + opp_form_adj
+
+    # Provisional opponent rating cap
+    if opp_is_provisional:
+        diff = opp_eff - team_eff
+        if abs(diff) > PROVISIONAL_OPP_DIFF_CAP:
+            opp_eff = team_eff + PROVISIONAL_OPP_DIFF_CAP * (1 if diff > 0 else -1)
+
+    expected = 1 / (1 + 10 ** ((opp_eff - team_eff) / 400))
+
+    # Upset factor
+    if team_eff > opp_eff and result == 0:
+        upset = team_eff / opp_eff if opp_eff > 0 else 1.0
+    elif team_eff < opp_eff and result == 1:
+        upset = opp_eff / team_eff if team_eff > 0 else 1.0
+    else:
+        upset = 1.0
+
+    change = K * (result - expected) * m_tier * m_map * gf_mult * upset
+
+    # Pity points (underdog losses)
+    pity_bonus = 0.0
+    if PITY_POINTS_ENABLED and result == 0:
+        team_rating_pct = team_pts / opp_pts if opp_pts > 0 else 0
+        if team_rating_pct <= PITY_THRESHOLD_PERCENT:
+            gap_factor = min(1.0,
+                (PITY_THRESHOLD_PERCENT - team_rating_pct) /
+                (PITY_THRESHOLD_PERCENT - PITY_MAX_PERCENT)
+            )
+            pity_base = {1: 9, 2: 6, 3: 3}.get(map_diff, 3)
+            pity_bonus = pity_base * gap_factor * m_tier * m_env * gf_mult
+            if pity_bonus < PITY_MIN_POINTS:
+                pity_bonus = float(PITY_MIN_POINTS)
+
+            gap_from_threshold = PITY_THRESHOLD_PERCENT - team_rating_pct
+            total_range = PITY_THRESHOLD_PERCENT - PITY_MAX_PERCENT
+            scale_pos = min(1.0, gap_from_threshold / total_range)
+            target_net = 0 + scale_pos * 7
+            if change + pity_bonus < target_net:
+                pity_bonus = target_net - change
+
+    # Mismatch penalty (beating much weaker teams)
+    mismatch_mult = 1.0
+    if MISMATCH_PENALTY_ENABLED and result == 1 and team_pts > 0:
+        opp_pct = opp_pts / team_pts
+        if opp_pct <= MISMATCH_DECAY_PERCENT:
+            if opp_pct > MISMATCH_ZERO_POINT_PERCENT:
+                pos = (opp_pct - MISMATCH_DECAY_PERCENT) / (MISMATCH_ZERO_POINT_PERCENT - MISMATCH_DECAY_PERCENT)
+                mismatch_mult = 1.0 - pos
+            elif opp_pct > MISMATCH_MAX_PENALTY_PERCENT:
+                pos = (opp_pct - MISMATCH_ZERO_POINT_PERCENT) / (MISMATCH_MAX_PENALTY_PERCENT - MISMATCH_ZERO_POINT_PERCENT)
+                mismatch_mult = 0.0 - pos * abs(MISMATCH_MAX_PENALTY_VALUE)
+            else:
+                mismatch_mult = MISMATCH_MAX_PENALTY_VALUE
+
+    if result == 1:
+        change *= m_env
+        change *= mismatch_mult
+    elif result == 0:
+        change += pity_bonus
+
+    new_rating = team_pts + change
+    return float(max(RATING_FLOOR, min(RATING_CAP, new_rating)))
 
 
-def simulate_elo(r1: float, r2: float, tier: str, env: str,
-                 grand_final: bool = False) -> dict:
-    k = BASE_K * TIER_MULTIPLIERS.get(tier, 1.0) * ENV_MULTIPLIERS.get(env, 1.0)
-    if grand_final:
-        k *= 1.25
-    e1 = expected_score(r1, r2)
-    e2 = 1 - e1
+def _win_probability(r1_eff: float, r2_eff: float) -> float:
+    """Win probability for team 1 given effective ratings."""
+    return 1 / (1 + 10 ** ((r2_eff - r1_eff) / 400))
 
-    # win outcome
-    d1_win = round(k * (1 - e1), 2)
-    d2_win = round(k * (0 - e2), 2)
 
-    # loss outcome
-    d1_loss = round(k * (0 - e1), 2)
-    d2_loss = round(k * (1 - e2), 2)
+def _series_win_prob(p_map: float, bo: int) -> float:
+    """Probability of winning a best-of-N series given per-map win probability."""
+    wins_needed = (bo // 2) + 1
+    total = 0.0
+    for losses in range(wins_needed):
+        # win in exactly (wins_needed + losses) maps
+        total += comb(wins_needed + losses - 1, losses) * (p_map ** wins_needed) * ((1 - p_map) ** losses)
+    return total
 
-    win_prob_t1 = round(e1 * 100, 1)
+
+def simulate_elo(
+    r1: float, r2: float,
+    tier: str, env: str,
+    grand_final: bool = False,
+    bo: int = 3,
+    form_adj_1: float = 0.0,
+    form_adj_2: float = 0.0,
+    t1_provisional: bool = False,
+    t2_provisional: bool = False,
+) -> dict:
+    """
+    Full simulation matching CSRS.py simulate_match() output.
+    Returns win probabilities and point deltas for every possible scoreline.
+    """
+    wins_needed = (bo // 2) + 1
+
+    # Effective ratings for win probability
+    eff1 = r1 + form_adj_1
+    eff2 = r2 + form_adj_2
+    p_map = _win_probability(eff1, eff2)
+    series_prob_t1 = _series_win_prob(p_map, bo)
+
+    # All possible scorelines
+    scorelines = []
+    for loser_maps in range(wins_needed):
+        # t1 wins
+        map_diff = wins_needed - loser_maps  # maps won by winner
+        new_r1 = _calculate_points(r1, r2, 1, map_diff, tier, env, grand_final,
+                                   form_adj_1, form_adj_2, t2_provisional)
+        new_r2 = _calculate_points(r2, r1, 0, map_diff, tier, env, grand_final,
+                                   form_adj_2, form_adj_1, t1_provisional)
+        scorelines.append({
+            "score": f"{wins_needed}-{loser_maps}",
+            "winner": "t1",
+            "t1_delta": round(new_r1 - r1, 2),
+            "t2_delta": round(new_r2 - r2, 2),
+            "t1_new":   round(new_r1, 2),
+            "t2_new":   round(new_r2, 2),
+        })
+
+        # t2 wins
+        new_r2b = _calculate_points(r2, r1, 1, map_diff, tier, env, grand_final,
+                                    form_adj_2, form_adj_1, t1_provisional)
+        new_r1b = _calculate_points(r1, r2, 0, map_diff, tier, env, grand_final,
+                                    form_adj_1, form_adj_2, t2_provisional)
+        scorelines.append({
+            "score": f"{loser_maps}-{wins_needed}",
+            "winner": "t2",
+            "t1_delta": round(new_r1b - r1, 2),
+            "t2_delta": round(new_r2b - r2, 2),
+            "t1_new":   round(new_r1b, 2),
+            "t2_new":   round(new_r2b, 2),
+        })
 
     return {
-        "win_probability_t1": win_prob_t1,
-        "win_probability_t2": round(100 - win_prob_t1, 1),
-        "if_t1_wins":  {"t1_delta": d1_win,  "t2_delta": d2_win},
-        "if_t2_wins":  {"t1_delta": d1_loss, "t2_delta": d2_loss},
+        "win_probability_t1": round(series_prob_t1 * 100, 1),
+        "win_probability_t2": round((1 - series_prob_t1) * 100, 1),
+        "scorelines": scorelines,
     }
 
 
@@ -270,30 +433,73 @@ class SimRequest(BaseModel):
     tier: str = "A"
     env: str = "LAN"
     grand_final: bool = False
+    bo: int = 3   # best of 1, 3, or 5
 
 
 @app.post("/api/simulate")
 def simulate(req: SimRequest):
     data = load_data()
     teams: dict = data.get("teams", {})
+    history: list = data.get("history", [])
+    provisional: dict = data.get("provisional_teams", {})
 
     def find(name: str):
-        return next((v for k, v in teams.items() if k.lower() == name.lower()), None)
+        return next(((k, v) for k, v in teams.items() if k.lower() == name.lower()), (None, None))
 
-    r1 = find(req.team1)
-    r2 = find(req.team2)
+    name1, r1 = find(req.team1)
+    name2, r2 = find(req.team2)
 
     if r1 is None:
         raise HTTPException(status_code=404, detail=f"Team '{req.team1}' not found")
     if r2 is None:
         raise HTTPException(status_code=404, detail=f"Team '{req.team2}' not found")
+    if req.bo not in (1, 3, 5):
+        raise HTTPException(status_code=400, detail="bo must be 1, 3, or 5")
 
-    result = simulate_elo(r1, r2, req.tier, req.env, req.grand_final)
+    # Calculate form adjustments from recent history (last 15 matches)
+    def form_adj(team_name: str) -> float:
+        matches = [
+            m for m in history
+            if m.get("t1", {}).get("name") == team_name
+            or m.get("t2", {}).get("name") == team_name
+        ][-15:]
+        if len(matches) < 3:
+            return 0.0
+        wins = sum(
+            1 for m in matches
+            if (m["t1"]["name"] == team_name and m["t1"]["score"] > m["t2"]["score"])
+            or (m["t2"]["name"] == team_name and m["t2"]["score"] > m["t1"]["score"])
+        )
+        win_rate = wins / len(matches)
+        # Scale -50 to +50 form adjustment (centred at 50% win rate)
+        return round((win_rate - 0.5) * 100, 2)
+
+    fa1 = form_adj(name1)
+    fa2 = form_adj(name2)
+
+    result = simulate_elo(
+        r1, r2,
+        tier=req.tier,
+        env=req.env,
+        grand_final=req.grand_final,
+        bo=req.bo,
+        form_adj_1=fa1,
+        form_adj_2=fa2,
+        t1_provisional=name1 in provisional,
+        t2_provisional=name2 in provisional,
+    )
+
+    # Get current ranks
+    ranked = sorted(teams.items(), key=lambda x: x[1], reverse=True)
+    rank1 = next((i + 1 for i, (n, _) in enumerate(ranked) if n == name1), None)
+    rank2 = next((i + 1 for i, (n, _) in enumerate(ranked) if n == name2), None)
+
     return {
-        "team1": {"name": req.team1, "points": round(r1, 2)},
-        "team2": {"name": req.team2, "points": round(r2, 2)},
+        "team1": {"name": name1, "points": round(r1, 2), "rank": rank1, "form_adj": fa1},
+        "team2": {"name": name2, "points": round(r2, 2), "rank": rank2, "form_adj": fa2},
         "tier": req.tier,
-        "env": req.env,
+        "env":  req.env,
+        "bo":   req.bo,
         "grand_final": req.grand_final,
         **result,
     }
@@ -393,8 +599,57 @@ def head_to_head(team1: str = Query(...), team2: str = Query(...)):
 
 
 # ---------------------------------------------------------------------------
-# Teams list (for autocomplete)
+# Elite Teams Over Time
 # ---------------------------------------------------------------------------
+
+@app.get("/api/analytics/elite-over-time")
+def elite_over_time(
+    top: int = Query(10, ge=2, le=30, description="Number of top teams to include"),
+):
+    data = load_data()
+    teams: dict = data.get("teams", {})
+    history: list = data.get("history", [])
+
+    # Get top N teams by current rating
+    ranked = sorted(teams.items(), key=lambda x: x[1], reverse=True)[:top]
+    top_names = {name for name, _ in ranked}
+
+    # Build per-team timeline from history
+    from collections import defaultdict
+    team_points: dict = defaultdict(list)
+
+    for entry in history:
+        for side in ("t1", "t2"):
+            name = entry[side]["name"]
+            if name in top_names:
+                team_points[name].append({
+                    "date":  entry["date"].split(" ")[0],
+                    "pts":   round(entry[side]["pts_after"], 2),
+                })
+
+    # Build a unified sorted date list across all teams
+    all_dates = sorted(set(
+        p["date"]
+        for points in team_points.values()
+        for p in points
+    ))
+
+    # For each team, produce a sparse series (only dates they played)
+    series = []
+    for name, _ in ranked:
+        points = team_points.get(name, [])
+        series.append({
+            "name":   name,
+            "points": [{"date": p["date"], "pts": p["pts"]} for p in points],
+        })
+
+    return {
+        "dates":  all_dates,
+        "series": series,
+    }
+
+
+
 
 @app.get("/api/teams")
 def list_teams(search: str = Query("")):
@@ -423,15 +678,9 @@ def meta():
     }
 
 
-@app.get("/api/health")
+@app.get("/health")
 def health():
     return {"status": "ok"}
-
-
-@app.get("/api/love/password")
-def get_love_password():
-    """Retrieve the love page password from environment"""
-    return {"password": LOVE_PASSWORD}
 
 
 # ---------------------------------------------------------------------------

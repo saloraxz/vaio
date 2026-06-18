@@ -7,10 +7,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 :root {
-  --bg:        #000000;
-  --surface:   #1c1c1a;
-  --surface2:  #3a3937;
-  --border:    #f5a623;
+  --bg:        #0d0d0f;
+  --surface:   #16181c;
+  --surface2:  #1e2127;
+  --border:    #2a2d35;
   --accent:    #f5a623;
   --accent2:   #e8891a;
   --text:      #e8eaf0;
@@ -18,11 +18,12 @@
   --green:     #4caf82;
   --red:       #e05a5a;
   --blue:      #5b9cf6;
-  --tier-s:    #FFD700;
-  --tier-a:    #C0C0C0;
-  --tier-b:    #CD7F32;
-  --tier-c:    #3cb44b;
-  --tier-d:    #e6194B;
+  --tier-sp: #ff4444;
+  --tier-s:  #FFD700;
+  --tier-a:  #C0C0C0;
+  --tier-b:  #CD7F32;
+  --tier-c:  #3cb44b;
+  --tier-d:  #e6194B;
   --radius:    8px;
   --sidebar-w: 220px;
 }
@@ -219,12 +220,12 @@ tr:last-child td { border-bottom: none; }
   font-weight: 700;
   letter-spacing: 0.5px;
 }
-.tier-S { background: rgba(255,107,107,0.15); color: var(--tier-s); }
-.tier-A { background: rgba(245,166,35,0.15);  color: var(--tier-a); }
-.tier-B { background: rgba(76,175,130,0.15);  color: var(--tier-b); }
-.tier-C { background: rgba(91,156,246,0.15);  color: var(--tier-c); }
-.tier-D { background: rgba(155,143,212,0.15); color: var(--tier-d); }
-.tier-R { background: rgba(122,127,142,0.15); color: var(--tier-r); }
+.tier-Sp { background: rgba(255,68,68,0.15);   color: var(--tier-sp); }
+.tier-S  { background: rgba(255,215,0,0.15);   color: var(--tier-s);  }
+.tier-A  { background: rgba(192,192,192,0.15); color: var(--tier-a);  }
+.tier-B  { background: rgba(205,127,50,0.15);  color: var(--tier-b);  }
+.tier-C  { background: rgba(60,180,75,0.15);   color: var(--tier-c);  }
+.tier-D  { background: rgba(230,25,75,0.15);   color: var(--tier-d);  }
 
 .prov-badge {
   display: inline-block;
@@ -259,15 +260,7 @@ tr:last-child td { border-bottom: none; }
   margin-bottom: 20px;
 }
 .sim-team-card { text-align: center; }
-.sim-team-card .team-name-big {
-  font-size: 1.3rem;
-  font-weight: 700;
-  margin-bottom: 8px;
-}
-.sim-team-card .team-pts {
-  font-size: 0.9rem;
-  color: var(--muted);
-}
+.sim-team-card .team-pts { font-size: 0.9rem; color: var(--muted); }
 .sim-vs {
   display: flex;
   align-items: center;
@@ -277,7 +270,6 @@ tr:last-child td { border-bottom: none; }
   color: var(--muted);
   padding-top: 20px;
 }
-
 .prob-bar-wrap { margin: 20px 0; }
 .prob-labels {
   display: flex;
@@ -294,25 +286,6 @@ tr:last-child td { border-bottom: none; }
 }
 .prob-bar-t1 { background: var(--accent); transition: width 0.4s; }
 .prob-bar-t2 { background: var(--blue); flex: 1; }
-
-.outcome-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-.outcome-card {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px 16px;
-}
-.outcome-card h4 { font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; }
-.outcome-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.85rem;
-  margin-bottom: 4px;
-}
 
 /* ── Team detail ── */
 .team-detail-header {
@@ -410,6 +383,7 @@ tr:last-child td { border-bottom: none; }
     <a data-page="history"><span class="icon">📋</span> Match History</a>
     <a data-page="simulate"><span class="icon">⚔️</span> Simulate</a>
     <a data-page="analytics"><span class="icon">📊</span> Analytics</a>
+    <a data-page="elite"><span class="icon">📈</span> Elite Over Time</a>
     <a data-page="h2h"><span class="icon">🔁</span> Head to Head</a>
   </nav>
   <div class="sidebar-meta" id="sidebar-meta">
@@ -442,8 +416,12 @@ tr:last-child td { border-bottom: none; }
       <input type="text" id="hist-team"  placeholder="Team…" style="width:160px">
       <select id="hist-tier">
         <option value="">All Tiers</option>
-        <option>S</option><option>A</option><option>B</option>
-        <option>C</option><option>D</option><option>R</option>
+        <option value="S+">S+</option>
+        <option value="S">S</option>
+        <option value="A">A</option>
+        <option value="B">B</option>
+        <option value="C">C</option>
+        <option value="D">D</option>
       </select>
       <input type="text" id="hist-event" placeholder="Event…" style="width:200px">
       <button onclick="loadHistory(1)">Filter</button>
@@ -476,22 +454,30 @@ tr:last-child td { border-bottom: none; }
       </div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
         <div>
+          <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">Format</div>
+          <select id="sim-bo">
+            <option value="1">Best of 1</option>
+            <option value="3" selected>Best of 3</option>
+            <option value="5">Best of 5</option>
+          </select>
+        </div>
+        <div>
           <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">Tier</div>
           <select id="sim-tier">
+            <option value="S+">S+ — Elite Major</option>
             <option value="S">S — Major</option>
             <option value="A" selected>A — Premier</option>
             <option value="B">B — A-tier</option>
             <option value="C">C — B-tier</option>
             <option value="D">D — Lower</option>
-            <option value="R">R — Regional</option>
           </select>
         </div>
         <div>
           <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">Environment</div>
           <select id="sim-env">
-            <option value="LAN">LAN</option>
+            <option value="LAN" selected>LAN</option>
             <option value="STAGE">Stage</option>
-            <option value="STUDIO" selected>Studio</option>
+            <option value="STUDIO">Studio</option>
             <option value="ONLINE">Online</option>
           </select>
         </div>
@@ -506,6 +492,7 @@ tr:last-child td { border-bottom: none; }
         </div>
       </div>
       <div id="sim-result" style="display:none">
+        <!-- Win probability bar -->
         <div class="prob-bar-wrap">
           <div class="prob-labels">
             <span id="sim-prob-t1-label"></span>
@@ -516,17 +503,23 @@ tr:last-child td { border-bottom: none; }
             <div class="prob-bar-t2"></div>
           </div>
         </div>
-        <div class="outcome-grid">
-          <div class="outcome-card">
-            <h4 id="sim-outcome1-title"></h4>
-            <div class="outcome-row"><span id="sim-o1-t1-name"></span><span id="sim-o1-t1-delta" class="delta-pos"></span></div>
-            <div class="outcome-row"><span id="sim-o1-t2-name"></span><span id="sim-o1-t2-delta" class="delta-neg"></span></div>
-          </div>
-          <div class="outcome-card">
-            <h4 id="sim-outcome2-title"></h4>
-            <div class="outcome-row"><span id="sim-o2-t1-name"></span><span id="sim-o2-t1-delta" class="delta-neg"></span></div>
-            <div class="outcome-row"><span id="sim-o2-t2-name"></span><span id="sim-o2-t2-delta" class="delta-pos"></span></div>
-          </div>
+        <!-- Form adjustments note -->
+        <div id="sim-form-note" style="font-size:0.78rem;color:var(--muted);margin-bottom:16px;text-align:center"></div>
+        <!-- Scorelines table -->
+        <div style="font-size:0.85rem;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">All Scorelines</div>
+        <div class="table-wrap">
+          <table id="sim-scorelines-table">
+            <thead>
+              <tr>
+                <th>Score</th>
+                <th id="sim-th-t1"></th>
+                <th id="sim-th-t2"></th>
+                <th id="sim-th-t1-new"></th>
+                <th id="sim-th-t2-new"></th>
+              </tr>
+            </thead>
+            <tbody id="sim-scorelines-body"></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -537,6 +530,30 @@ tr:last-child td { border-bottom: none; }
     <div class="page-header"><h2>📊 Analytics</h2></div>
     <div id="analytics-content">
       <div class="loading"><div class="spinner"></div> Loading…</div>
+    </div>
+  </div>
+
+  <!-- Elite Over Time -->
+  <div class="page" id="page-elite">
+    <div class="page-header">
+      <h2>📈 Elite Teams Over Time</h2>
+      <div style="display:flex;align-items:center;gap:10px">
+        <label style="font-size:0.8rem;color:var(--muted)">Top</label>
+        <select id="elite-top" onchange="loadElite()">
+          <option value="5">5 teams</option>
+          <option value="10" selected>10 teams</option>
+          <option value="15">15 teams</option>
+          <option value="20">20 teams</option>
+        </select>
+      </div>
+    </div>
+    <div class="card">
+      <div style="position:relative;height:420px">
+        <canvas id="elite-chart"></canvas>
+      </div>
+    </div>
+    <div class="card" style="padding:0" id="elite-legend-card">
+      <div id="elite-legend" style="padding:16px 20px;display:flex;flex-wrap:wrap;gap:12px"></div>
     </div>
   </div>
 
@@ -594,6 +611,7 @@ document.querySelectorAll('nav a[data-page]').forEach(a => {
     if (page === 'rankings')  loadRankings();
     if (page === 'history')   loadHistory(1);
     if (page === 'analytics') loadAnalytics();
+    if (page === 'elite')     loadElite();
   });
 });
 
@@ -627,7 +645,8 @@ async function apiPost(path, body) {
 function fmt(n) { return (n >= 0 ? '+' : '') + n.toFixed(2); }
 
 function tierBadge(tier) {
-  return `<span class="tier tier-${tier}">${tier}</span>`;
+  const cls = tier.replace('+', 'p');  // S+ -> Sp (CSS class can't have +)
+  return `<span class="tier tier-${cls}">${tier}</span>`;
 }
 
 function deltaClass(n) {
@@ -942,11 +961,14 @@ async function runSim() {
       team1: t1, team2: t2,
       tier: document.getElementById('sim-tier').value,
       env:  document.getElementById('sim-env').value,
+      bo:   parseInt(document.getElementById('sim-bo').value),
       grand_final: document.getElementById('sim-gf').checked,
     });
 
-    document.getElementById('sim-t1-pts').textContent = d.team1.points.toFixed(2) + ' pts';
-    document.getElementById('sim-t2-pts').textContent = d.team2.points.toFixed(2) + ' pts';
+    document.getElementById('sim-t1-pts').textContent =
+      `${d.team1.points.toFixed(2)} pts · #${d.team1.rank}`;
+    document.getElementById('sim-t2-pts').textContent =
+      `${d.team2.points.toFixed(2)} pts · #${d.team2.rank}`;
 
     const p1 = d.win_probability_t1;
     const p2 = d.win_probability_t2;
@@ -954,19 +976,39 @@ async function runSim() {
     document.getElementById('sim-prob-t2-label').textContent = `${p2}% ${d.team2.name}`;
     document.getElementById('sim-bar-t1').style.width = p1 + '%';
 
-    // Outcome 1: t1 wins
-    document.getElementById('sim-outcome1-title').textContent = `If ${d.team1.name} wins`;
-    document.getElementById('sim-o1-t1-name').textContent = d.team1.name;
-    document.getElementById('sim-o1-t2-name').textContent = d.team2.name;
-    document.getElementById('sim-o1-t1-delta').textContent = fmt(d.if_t1_wins.t1_delta);
-    document.getElementById('sim-o1-t2-delta').textContent = fmt(d.if_t1_wins.t2_delta);
+    // Form adjustment note
+    const fa1 = d.team1.form_adj;
+    const fa2 = d.team2.form_adj;
+    if (fa1 !== 0 || fa2 !== 0) {
+      document.getElementById('sim-form-note').textContent =
+        `Form adjustments applied — ${d.team1.name}: ${fa1 >= 0 ? '+' : ''}${fa1.toFixed(1)}, ` +
+        `${d.team2.name}: ${fa2 >= 0 ? '+' : ''}${fa2.toFixed(1)}`;
+    } else {
+      document.getElementById('sim-form-note').textContent = '';
+    }
 
-    // Outcome 2: t2 wins
-    document.getElementById('sim-outcome2-title').textContent = `If ${d.team2.name} wins`;
-    document.getElementById('sim-o2-t1-name').textContent = d.team1.name;
-    document.getElementById('sim-o2-t2-name').textContent = d.team2.name;
-    document.getElementById('sim-o2-t1-delta').textContent = fmt(d.if_t2_wins.t1_delta);
-    document.getElementById('sim-o2-t2-delta').textContent = fmt(d.if_t2_wins.t2_delta);
+    // Table headers
+    document.getElementById('sim-th-t1').textContent = `${d.team1.name} Δ`;
+    document.getElementById('sim-th-t2').textContent = `${d.team2.name} Δ`;
+    document.getElementById('sim-th-t1-new').textContent = `${d.team1.name} New`;
+    document.getElementById('sim-th-t2-new').textContent = `${d.team2.name} New`;
+
+    // Scorelines — t1 wins first, then t2 wins
+    const t1wins = d.scorelines.filter(s => s.winner === 't1');
+    const t2wins = d.scorelines.filter(s => s.winner === 't2');
+    const rows = [...t1wins, ...t2wins];
+
+    document.getElementById('sim-scorelines-body').innerHTML = rows.map(s => {
+      const t1won = s.winner === 't1';
+      return `
+        <tr>
+          <td style="font-weight:700;color:${t1won ? 'var(--green)' : 'var(--red)'}">${s.score}</td>
+          <td class="${deltaClass(s.t1_delta)}">${fmt(s.t1_delta)}</td>
+          <td class="${deltaClass(s.t2_delta)}">${fmt(s.t2_delta)}</td>
+          <td style="color:var(--muted);font-family:monospace">${s.t1_new.toFixed(1)}</td>
+          <td style="color:var(--muted);font-family:monospace">${s.t2_new.toFixed(1)}</td>
+        </tr>`;
+    }).join('');
 
     document.getElementById('sim-result').style.display = 'block';
   } catch(e) {
@@ -1036,7 +1078,7 @@ function renderAnalytics(d) {
   `;
   setEl('analytics-content', html);
 
-  const TIER_COLORS = { S:'#ff6b6b', A:'#f5a623', B:'#4caf82', C:'#5b9cf6', D:'#9b8fd4', R:'#7a7f8e' };
+  const TIER_COLORS = { 'S+': '#ff4444', S: '#FFD700', A: '#C0C0C0', B: '#CD7F32', C: '#3cb44b', D: '#e6194B' };
   const ENV_COLORS  = ['#f5a623','#4caf82','#5b9cf6','#9b8fd4'];
 
   const chartDefaults = {
@@ -1150,6 +1192,105 @@ function renderH2H(d) {
       </div>
     </div>`;
   setEl('h2h-result', html);
+}
+
+// ---------------------------------------------------------------------------
+// Elite Over Time
+// ---------------------------------------------------------------------------
+let eliteChart = null;
+
+// Distinct colors for up to 20 teams — chosen for visibility on dark bg
+const ELITE_COLORS = [
+  '#FFD700', '#e05a5a', '#5b9cf6', '#4caf82', '#f5a623',
+  '#c678dd', '#56b6c2', '#e06c75', '#98c379', '#61afef',
+  '#d19a66', '#abb2bf', '#be5046', '#2bbac5', '#e5c07b',
+  '#7c6f64', '#a9b7c6', '#ff79c6', '#50fa7b', '#8be9fd',
+];
+
+async function loadElite() {
+  const top = document.getElementById('elite-top').value;
+  try {
+    const d = await api(`/api/analytics/elite-over-time?top=${top}`);
+    renderElite(d);
+  } catch(e) {
+    console.error('Elite chart error:', e);
+  }
+}
+
+function renderElite(d) {
+  if (eliteChart) { eliteChart.destroy(); eliteChart = null; }
+
+  const ctx = document.getElementById('elite-chart').getContext('2d');
+
+  // Build Chart.js datasets — sparse points, Chart.js handles gaps
+  const datasets = d.series.map((team, i) => ({
+    label: team.name,
+    data: team.points.map(p => ({ x: p.date, y: p.pts })),
+    borderColor: ELITE_COLORS[i % ELITE_COLORS.length],
+    backgroundColor: 'transparent',
+    borderWidth: 2,
+    pointRadius: 3,
+    pointHoverRadius: 6,
+    pointBackgroundColor: ELITE_COLORS[i % ELITE_COLORS.length],
+    tension: 0.3,
+    spanGaps: true,
+  }));
+
+  eliteChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },  // we render our own legend below
+        tooltip: {
+          backgroundColor: '#1e2127',
+          borderColor: '#2a2d35',
+          borderWidth: 1,
+          titleColor: '#e8eaf0',
+          bodyColor: '#7a7f8e',
+          callbacks: {
+            title: items => items[0].label,
+            label: item => ` ${item.dataset.label}: ${item.parsed.y.toFixed(1)}`,
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'category',
+          ticks: { color: '#7a7f8e', maxTicksLimit: 10 },
+          grid: { color: '#2a2d35' },
+        },
+        y: {
+          ticks: { color: '#7a7f8e' },
+          grid: { color: '#2a2d35' },
+          title: { display: true, text: 'Rating', color: '#7a7f8e', font: { size: 11 } },
+        }
+      }
+    }
+  });
+
+  // Render custom legend
+  const legendEl = document.getElementById('elite-legend');
+  legendEl.innerHTML = d.series.map((team, i) => `
+    <div style="display:flex;align-items:center;gap:6px;cursor:pointer"
+         onclick="toggleEliteLine(${i})" id="elite-legend-${i}">
+      <div style="width:20px;height:3px;background:${ELITE_COLORS[i % ELITE_COLORS.length]};border-radius:2px"></div>
+      <span style="font-size:0.8rem;color:var(--text)">${team.name}</span>
+    </div>
+  `).join('');
+}
+
+function toggleEliteLine(index) {
+  if (!eliteChart) return;
+  const meta = eliteChart.getDatasetMeta(index);
+  meta.hidden = !meta.hidden;
+  eliteChart.update();
+  // Dim legend item
+  const el = document.getElementById(`elite-legend-${index}`);
+  if (el) el.style.opacity = meta.hidden ? '0.35' : '1';
 }
 
 // ---------------------------------------------------------------------------
