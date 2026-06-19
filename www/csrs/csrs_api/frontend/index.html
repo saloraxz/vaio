@@ -389,6 +389,7 @@ tr:last-child td { border-bottom: none; }
   <div class="sidebar-meta" id="sidebar-meta">
     <span>Loading...</span>
   </div>
+  
 </aside>
 
 <!-- Main content -->
@@ -673,12 +674,17 @@ function setError(id, msg) {
 // ---------------------------------------------------------------------------
 async function loadMeta() {
   try {
-    const d = await api('/api/meta');
+    const [d, versionRes] = await Promise.all([
+      api('/api/meta'),
+      fetch('/version.txt'),
+    ]);
+    const version = versionRes.ok ? (await versionRes.text()).trim() : 'unknown';
     const el = document.getElementById('sidebar-meta');
     el.innerHTML = `
       <span>${d.total_teams} teams</span>
       <span>${d.total_matches} matches</span>
       <span style="color:var(--muted);margin-top:4px">Last: ${d.last_match ? d.last_match.split(' ')[0] : '—'}</span>
+      <span style="color:var(--muted)">Version: ${version}</span>
     `;
   } catch(e) {}
 }
