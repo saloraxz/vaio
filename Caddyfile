@@ -1,3 +1,7 @@
+{
+    auto_https off
+}
+
 http://saloraxz.com, http://www.saloraxz.com {
 
     handle_path /api/console* {
