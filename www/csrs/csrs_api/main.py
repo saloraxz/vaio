@@ -86,6 +86,23 @@ PITY_MAX_PERCENT       = 0.65
 PITY_MAX_POINTS        = 9
 PITY_MIN_POINTS        = 6
 
+# Form + depreciation — exact port of DEFAULT_CONFIG in CSRS.py.
+# Used to compute the day-before-match depreciation transition point
+# on the Elite Teams Over Time graph.
+FORM_WIN_WEIGHT               = 42.5
+FORM_MAP_WEIGHT               = 42.5
+FORM_COMP_WEIGHT              = 15.0
+FORM_STREAK_BONUS_ENABLED     = True
+FORM_STREAK_BONUS_MAX         = 10.0
+FORM_STREAK_BONUS_PER_WIN     = 2
+FORM_STREAK_LOSS_RESET_COUNT  = 2
+FORM_MODIFIER_MIN             = 0.5
+FORM_MODIFIER_MAX             = 1.5
+FORM_DIMINISHING_ENABLED      = True
+FORM_DIMINISHING_THRESHOLD    = 0.85
+FORM_DIMINISHING_COMPRESSION  = 0.67
+DEPRECIATION_THRESHOLD        = 14
+
 TIERS  = {"S+": 1.5, "S": 1.4, "A": 1.2, "B": 1.0, "C": 0.8, "D": 0.55}
 MAPS   = {1: 0.8, 2: 1.0, 3: 1.2}
 ENVS   = {"ONLINE": 0.8, "LAN": 1.1, "STUDIO": 1.1, "STAGE": 1.1}
@@ -618,6 +635,149 @@ def head_to_head(team1: str = Query(...), team2: str = Query(...)):
 # ---------------------------------------------------------------------------
 # Elite Teams Over Time
 # ---------------------------------------------------------------------------
+
+def _calculate_form_at_match_index(team_name: str, match_index: int, history: list):
+    """
+    Exact port of CSRS.py calculate_form_at_match_index.
+    Calculates form using only matches strictly before `match_index`,
+    so historical transition points never leak future results.
+    Returns (grade, score, streak) or None if insufficient data.
+    """
+    if not history:
+        return None
+
+    sliced_history = history[:match_index]
+
+    team_matches = []
+    for m in sliced_history:
+        t1_name = m.get('t1', {}).get('name')
+        t2_name = m.get('t2', {}).get('name')
+        if t1_name == team_name:
+            team_matches.append(('t1', m))
+        elif t2_name == team_name:
+            team_matches.append(('t2', m))
+
+    if len(team_matches) < 3:
+        return None
+
+    recent = team_matches[-15:]
+    total_weight = 0.0
+    win_weighted = 0.0
+    map_wins_weighted = 0.0
+    map_total_weighted = 0.0
+    comp_weighted = 0.0
+    streak_chars = []
+
+    for idx, (side, m) in enumerate(recent):
+        t = m.get(side, {})
+        opp_side = 't2' if side == 't1' else 't1'
+        opp = m.get(opp_side, {})
+
+        t_score = t.get('score', 0)
+        opp_score = opp.get('score', 0)
+        won = t_score > opp_score
+
+        matches_ago = len(recent) - 1 - idx
+        exponent = 2.0
+        normalized = matches_ago / 14
+        recency = 1.0 - (normalized ** exponent) * 0.85
+        recency = max(0.15, recency)
+
+        win_weighted += (1.0 if won else 0.0) * recency
+        map_wins_weighted += t_score * recency
+        map_total_weighted += (t_score + opp_score) * recency
+
+        opp_pts = opp.get('pts_before', 500)
+        comp_weighted += (opp_pts / DIMINISHING_MAX) * recency
+
+        total_weight += recency
+        streak_chars.append('W' if won else 'L')
+
+    if total_weight == 0:
+        return None
+
+    win_rate = win_weighted / total_weight
+    map_win_rate = map_wins_weighted / map_total_weighted if map_total_weighted > 0 else 0.5
+    comp_rate = comp_weighted / total_weight
+
+    def apply_form_compression(value, threshold=FORM_DIMINISHING_THRESHOLD,
+                                compression=FORM_DIMINISHING_COMPRESSION):
+        if not FORM_DIMINISHING_ENABLED or value <= threshold:
+            return value
+        gain_above_threshold = value - threshold
+        compressed_gain = gain_above_threshold * (1.0 - compression)
+        result = threshold + compressed_gain
+        return min(1.0, max(threshold, result))
+
+    win_rate_compressed = apply_form_compression(win_rate)
+    map_win_rate_compressed = apply_form_compression(map_win_rate)
+    comp_rate_compressed = apply_form_compression(comp_rate)
+
+    win_score = win_rate_compressed * FORM_WIN_WEIGHT
+    map_score = map_win_rate_compressed * FORM_MAP_WEIGHT
+    comp_score = comp_rate_compressed * FORM_COMP_WEIGHT
+
+    base_score = win_score + map_score + comp_score
+
+    streak = ''.join(streak_chars[-15:])
+    streak_bonus = 0.0
+    consecutive_losses = 0
+
+    if FORM_STREAK_BONUS_ENABLED:
+        for result in streak:
+            if result == 'W':
+                streak_bonus += FORM_STREAK_BONUS_PER_WIN
+                streak_bonus = min(FORM_STREAK_BONUS_MAX, streak_bonus)
+                consecutive_losses = 0
+            else:
+                consecutive_losses += 1
+                if consecutive_losses >= FORM_STREAK_LOSS_RESET_COUNT:
+                    streak_bonus = 0.0
+                    consecutive_losses = 0
+                else:
+                    streak_bonus *= 0.5
+        streak_bonus = min(FORM_STREAK_BONUS_MAX, streak_bonus)
+
+    score = base_score + streak_bonus
+    score = min(score, 100.0)
+
+    total_form_points = FORM_WIN_WEIGHT + FORM_MAP_WEIGHT + FORM_COMP_WEIGHT
+    if score >= total_form_points * 0.85:   grade = 'S'
+    elif score >= total_form_points * 0.70: grade = 'A'
+    elif score >= total_form_points * 0.55: grade = 'B'
+    elif score >= total_form_points * 0.40: grade = 'C'
+    else:                                   grade = 'D'
+
+    return grade, round(score, 1), streak
+
+
+def _calculate_depreciation(current_rating: float, days_inactive: int,
+                             team_name: str = None, match_index: int = None,
+                             history: list = None) -> float:
+    """
+    Exact port of CSRS.py calculate_depreciation, adapted to take an explicit
+    match_index + history so form is computed via calculate_form_at_match_index
+    (no future-data leakage) instead of the global calculate_form.
+    """
+    if days_inactive <= DEPRECIATION_THRESHOLD:
+        return current_rating
+
+    base_decay = (((min(days_inactive, 75) - DEPRECIATION_THRESHOLD) /
+                   (75 - DEPRECIATION_THRESHOLD)) ** 2) * 0.25
+
+    form_modifier = 1.0
+    if team_name and match_index is not None and history is not None:
+        form = _calculate_form_at_match_index(team_name, match_index, history)
+        if form:
+            form_score = form[1]
+            form_modifier = 1.0 - ((form_score - 50) / 250)
+            form_modifier = max(FORM_MODIFIER_MIN, min(FORM_MODIFIER_MAX, form_modifier))
+
+    decay_factor = base_decay * form_modifier
+    depreciated_rating = current_rating * (1 - decay_factor)
+
+    return max(RATING_FLOOR, depreciated_rating)
+
 
 @app.get("/api/analytics/elite-over-time")
 def elite_over_time(
