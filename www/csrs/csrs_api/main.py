@@ -278,6 +278,21 @@ def get_rankings(
     teams: dict = data.get("teams", {})
     peaks: dict = data.get("peaks", {})
     provisional: dict = data.get("provisional_teams", {})
+    history: list = data.get("history", [])
+
+    # Build sparkline data from last 30 days of per-team ratings.
+    from collections import defaultdict
+    from datetime import timedelta
+
+    team_spark: dict = defaultdict(list)
+    cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    for entry in history:
+        date_str = entry.get("date", "")
+        if date_str[:10] < cutoff:
+            continue
+        for side in ("t1", "t2"):
+            team_name = entry[side]["name"]
+            team_spark[team_name].append(round(entry[side]["pts_after"], 2))
 
     ranked = sorted(teams.items(), key=lambda x: x[1], reverse=True)
 
@@ -286,6 +301,7 @@ def get_rankings(
         if search and search.lower() not in name.lower():
             continue
         peak_info = peaks.get(name, {})
+        spark = team_spark.get(name, [])
         results.append({
             "rank": rank,
             "name": name,
@@ -295,6 +311,7 @@ def get_rankings(
             "peak_rank": peak_info.get("rank"),
             "provisional": name in provisional,
             "matches_until_ranked": provisional.get(name, 0) if name in provisional else None,
+            "sparkline": spark,
         })
 
     return {"total": len(results), "rankings": results[:limit]}
