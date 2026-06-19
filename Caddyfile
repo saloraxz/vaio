@@ -45,6 +45,10 @@ http://saloraxz.com, http://www.saloraxz.com {
     redir /.well-known/caldav /nextcloud/remote.php/dav/ 301
 }
 
+http://dev.saloraxz.com {
+    reverse_proxy csrs-web-dev:8000
+}
+
 https://fedoralap.tail055b0e.ts.net {
     tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
 
