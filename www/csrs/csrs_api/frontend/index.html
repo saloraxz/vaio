@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CSRS — Counter Strike Rating System</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/luxon/3.4.4/luxon.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
 <style>
 :root {
   --bg:        #0d0d0f;
@@ -538,23 +540,26 @@ tr:last-child td { border-bottom: none; }
   <div class="page" id="page-elite">
     <div class="page-header">
       <h2>📈 Elite Teams Over Time</h2>
-      <div style="display:flex;align-items:center;gap:10px">
-        <label style="font-size:0.8rem;color:var(--muted)">Top</label>
-        <select id="elite-top" onchange="loadElite()">
-          <option value="5">5 teams</option>
-          <option value="10" selected>10 teams</option>
-          <option value="15">15 teams</option>
-          <option value="20">20 teams</option>
-        </select>
-      </div>
+      <p style="color:var(--muted);font-size:0.85rem;margin-top:4px">Teams that reached 850+ CSRS Elo in the selected period</p>
     </div>
     <div class="card">
-      <div style="position:relative;height:420px">
-        <canvas id="elite-chart"></canvas>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+        <div>
+          <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">Start Date</div>
+          <input type="date" id="elite-start" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:var(--radius);font-size:0.85rem">
+        </div>
+        <div>
+          <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">End Date</div>
+          <input type="date" id="elite-end" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:var(--radius);font-size:0.85rem">
+        </div>
+        <button onclick="loadElite()">Generate</button>
+        <button class="secondary" onclick="setElitePreset('all')">All Time</button>
+        <button class="secondary" onclick="setElitePreset('3m')">Last 3 Months</button>
+        <button class="secondary" onclick="setElitePreset('1m')">Last Month</button>
       </div>
     </div>
-    <div class="card" style="padding:0" id="elite-legend-card">
-      <div id="elite-legend" style="padding:16px 20px;display:flex;flex-wrap:wrap;gap:12px"></div>
+    <div id="elite-content">
+      <div class="empty-msg" style="padding:60px">Select a date range and click Generate</div>
     </div>
   </div>
 
@@ -612,7 +617,6 @@ document.querySelectorAll('nav a[data-page]').forEach(a => {
     if (page === 'rankings')  loadRankings();
     if (page === 'history')   loadHistory(1);
     if (page === 'analytics') loadAnalytics();
-    if (page === 'elite')     loadElite();
   });
 });
 
@@ -641,6 +645,35 @@ async function apiPost(path, body) {
     throw new Error(err.detail || res.statusText);
   }
   return res.json();
+}
+
+function sparklineSVG(points, width = 80, height = 28) {
+  if (!points || points.length < 2) return '<span style="color:var(--muted);font-size:0.7rem">—</span>';
+
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const range = max - min || 1;
+
+  const xs = points.map((_, i) => (i / (points.length - 1)) * width);
+  const ys = points.map(p => height - ((p - min) / range) * height);
+
+  const polyline = xs.map((x, i) => `${x.toFixed(1)},${ys[i].toFixed(1)}`).join(' ');
+
+  // Color based on trend — last vs first
+  const trend = points[points.length - 1] - points[0];
+  const color = trend > 0 ? '#4caf82' : trend < 0 ? '#e05a5a' : '#7a7f8e';
+
+  return `
+    <svg width="${width}" height="${height}" style="display:block;overflow:visible">
+      <polyline
+        points="${polyline}"
+        fill="none"
+        stroke="${color}"
+        stroke-width="1.5"
+        stroke-linejoin="round"
+        stroke-linecap="round"
+      />
+    </svg>`;
 }
 
 function fmt(n) { return (n >= 0 ? '+' : '') + n.toFixed(2); }
@@ -719,6 +752,7 @@ function renderRankings(rows) {
         <th>Points</th>
         <th>Peak</th>
         <th>Peak Rank</th>
+        <th>30d Trend</th>
       </tr></thead>
       <tbody>
         ${rows.map(r => `
@@ -733,6 +767,7 @@ function renderRankings(rows) {
             <td class="pts">${r.points.toFixed(2)}</td>
             <td class="pts" style="color:var(--muted)">${r.peak_points.toFixed(2)}</td>
             <td style="color:var(--muted)">${r.peak_rank ? '#' + r.peak_rank : '—'}</td>
+            <td>${sparklineSVG(r.sparkline)}</td>
           </tr>
         `).join('')}
       </tbody>
@@ -1207,40 +1242,116 @@ let eliteChart = null;
 
 // Distinct colors for up to 20 teams — chosen for visibility on dark bg
 const ELITE_COLORS = [
-  '#FFD700', '#e05a5a', '#5b9cf6', '#4caf82', '#f5a623',
-  '#c678dd', '#56b6c2', '#e06c75', '#98c379', '#61afef',
-  '#d19a66', '#abb2bf', '#be5046', '#2bbac5', '#e5c07b',
-  '#7c6f64', '#a9b7c6', '#ff79c6', '#50fa7b', '#8be9fd',
+  '#FFD700', '#C0C0C0', '#CD7F32', '#e6194B', '#3cb44b',
+  '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6',
+  '#bfef45', '#fabed4', '#469990', '#dcbeff', '#9A6324',
+  '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1',
 ];
 
+function setElitePreset(preset) {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  const today = fmt(now);
+
+  document.getElementById('elite-end').value = today;
+
+  if (preset === 'all') {
+    document.getElementById('elite-start').value = '2020-01-01';
+  } else if (preset === '3m') {
+    const d = new Date(now); d.setMonth(d.getMonth() - 3);
+    document.getElementById('elite-start').value = fmt(d);
+  } else if (preset === '1m') {
+    const d = new Date(now); d.setMonth(d.getMonth() - 1);
+    document.getElementById('elite-start').value = fmt(d);
+  }
+}
+
 async function loadElite() {
-  const top = document.getElementById('elite-top').value;
+  const start = document.getElementById('elite-start').value;
+  const end   = document.getElementById('elite-end').value;
+  if (!start || !end) return;
+
+  setEl('elite-content', '<div class="loading"><div class="spinner"></div> Building chart…</div>');
+
   try {
-    const d = await api(`/api/analytics/elite-over-time?top=${top}`);
+    const d = await api(`/api/analytics/elite-over-time?start_date=${start}&end_date=${end}`);
     renderElite(d);
   } catch(e) {
-    console.error('Elite chart error:', e);
+    setEl('elite-content', `<div class="error-msg">⚠ ${e.message}</div>`);
   }
 }
 
 function renderElite(d) {
   if (eliteChart) { eliteChart.destroy(); eliteChart = null; }
 
+  if (!d.series || d.series.length === 0) {
+    setEl('elite-content', '<div class="empty-msg">No teams reached 850+ Elo in this date range.</div>');
+    return;
+  }
+
+  // Split above/below threshold
+  const above = d.series.filter(s => s.above_threshold);
+  const below = d.series.filter(s => !s.above_threshold);
+
+  const html = `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div>
+          <span style="font-size:0.85rem;color:var(--muted)">${d.total_teams} elite teams · ${d.start_date} → ${d.end_date}</span>
+        </div>
+        <div style="font-size:0.78rem;color:var(--muted)">
+          Threshold: <span style="color:var(--accent);font-weight:600">${d.elite_threshold} pts</span>
+        </div>
+      </div>
+      <div style="position:relative;height:440px"><canvas id="elite-chart"></canvas></div>
+    </div>
+    <div class="card" style="padding:0">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);font-size:0.85rem;font-weight:600">Legend</div>
+      <div id="elite-legend" style="padding:8px 0"></div>
+    </div>
+  `;
+  setEl('elite-content', html);
+
   const ctx = document.getElementById('elite-chart').getContext('2d');
 
-  // Build Chart.js datasets — sparse points, Chart.js handles gaps
-  const datasets = d.series.map((team, i) => ({
-    label: team.name,
-    data: team.points.map(p => ({ x: p.date, y: p.pts })),
-    borderColor: ELITE_COLORS[i % ELITE_COLORS.length],
-    backgroundColor: 'transparent',
-    borderWidth: 2,
-    pointRadius: 3,
-    pointHoverRadius: 6,
-    pointBackgroundColor: ELITE_COLORS[i % ELITE_COLORS.length],
-    tension: 0.3,
-    spanGaps: true,
-  }));
+  // Build datasets — above threshold: full color, below: dimmed
+  const datasets = d.series.map((team, i) => {
+    const color = ELITE_COLORS[i % ELITE_COLORS.length];
+    const dimmed = !team.above_threshold;
+    const totalPts = team.points.length;
+    return {
+      label: team.name,
+      data: team.points.map(p => ({ x: p.date, y: p.pts })),
+      borderColor: dimmed ? color + '44' : color,
+      backgroundColor: 'transparent',
+      borderWidth: dimmed ? 1 : 2,
+      segment: team.has_depreciation ? {
+        borderDash: ctx2 => {
+          // dashed only where there's a large time gap (depreciation)
+          return [4, 3];
+        }
+      } : undefined,
+      pointRadius: ctx2 => {
+        const idx = ctx2.dataIndex;
+        return (idx === 0 || idx === totalPts - 1) ? 4 : 3;
+      },
+      pointBackgroundColor: ctx2 => {
+        const idx = ctx2.dataIndex;
+        if (idx === 0 || idx === totalPts - 1) return '#16181c'; // hollow ends
+        return dimmed ? color + '44' : color;
+      },
+      pointBorderColor: dimmed ? color + '44' : color,
+      pointBorderWidth: ctx2 => {
+        const idx = ctx2.dataIndex;
+        return (idx === 0 || idx === totalPts - 1) ? 2 : 1;
+      },
+      pointHoverRadius: 6,
+      tension: 0.2,
+      spanGaps: false,
+      order: dimmed ? 10 : 0,
+    };
+  });
 
   eliteChart = new Chart(ctx, {
     type: 'line',
@@ -1250,43 +1361,103 @@ function renderElite(d) {
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { display: false },  // we render our own legend below
+        legend: { display: false },
         tooltip: {
           backgroundColor: '#1e2127',
           borderColor: '#2a2d35',
           borderWidth: 1,
           titleColor: '#e8eaf0',
           bodyColor: '#7a7f8e',
+          filter: item => item.parsed.y !== null,
           callbacks: {
-            title: items => items[0].label,
-            label: item => ` ${item.dataset.label}: ${item.parsed.y.toFixed(1)}`,
+            title: items => {
+              // Format the date nicely from the raw ISO string
+              const raw = items[0].label || items[0].parsed?.x;
+              try { return new Date(raw).toISOString().slice(0, 10); } catch { return raw; }
+            },
+            label: item => {
+              const team = d.series[item.datasetIndex];
+              const pts = item.parsed.y;
+              const marker = pts >= d.elite_threshold ? '●' : '○';
+              return ` ${marker} ${item.dataset.label}: ${pts.toFixed(1)}`;
+            }
           }
         }
       },
       scales: {
         x: {
-          type: 'category',
-          ticks: { color: '#7a7f8e', maxTicksLimit: 10 },
+          type: 'time',
+          time: {
+            unit: 'day',
+            tooltipFormat: 'yyyy-MM-dd',
+            displayFormats: { day: 'MMM d', month: 'MMM yyyy' },
+          },
+          ticks: { color: '#7a7f8e', maxTicksLimit: 12, source: 'auto' },
           grid: { color: '#2a2d35' },
         },
         y: {
+          min: d.elite_threshold - 50,
           ticks: { color: '#7a7f8e' },
           grid: { color: '#2a2d35' },
-          title: { display: true, text: 'Rating', color: '#7a7f8e', font: { size: 11 } },
+          title: { display: true, text: 'CSRS Rating', color: '#7a7f8e', font: { size: 11 } },
         }
       }
-    }
+    },
+    plugins: [{
+      // Draw elite threshold line
+      afterDraw(chart) {
+        const { ctx: c, scales: { x, y } } = chart;
+        const threshY = y.getPixelForValue(d.elite_threshold);
+        c.save();
+        c.strokeStyle = '#f5a62355';
+        c.lineWidth = 1;
+        c.setLineDash([6, 4]);
+        c.beginPath();
+        c.moveTo(x.left, threshY);
+        c.lineTo(x.right, threshY);
+        c.stroke();
+        c.setLineDash([]);
+        c.fillStyle = '#f5a623aa';
+        c.font = '10px sans-serif';
+        c.fillText(`${d.elite_threshold} threshold`, x.left + 4, threshY - 4);
+        c.restore();
+      }
+    }]
   });
 
-  // Render custom legend
+  // Legend — sorted by final rating, above threshold first
   const legendEl = document.getElementById('elite-legend');
-  legendEl.innerHTML = d.series.map((team, i) => `
-    <div style="display:flex;align-items:center;gap:6px;cursor:pointer"
-         onclick="toggleEliteLine(${i})" id="elite-legend-${i}">
-      <div style="width:20px;height:3px;background:${ELITE_COLORS[i % ELITE_COLORS.length]};border-radius:2px"></div>
-      <span style="font-size:0.8rem;color:var(--text)">${team.name}</span>
-    </div>
-  `).join('');
+  let legendHTML = '';
+
+  if (above.length) {
+    legendHTML += above.map((team, i) => legendRow(team, i, d.series)).join('');
+  }
+  if (below.length && above.length) {
+    legendHTML += `<div style="padding:6px 20px;font-size:0.72rem;color:var(--muted);border-top:1px dashed var(--border)">▼ Below ${d.elite_threshold} threshold</div>`;
+  }
+  if (below.length) {
+    legendHTML += below.map((team, i) => legendRow(team, above.length + i, d.series)).join('');
+  }
+  legendEl.innerHTML = legendHTML;
+}
+
+function legendRow(team, colorIdx, allSeries) {
+  const color = ELITE_COLORS[allSeries.indexOf(team) % ELITE_COLORS.length];
+  const dimmed = !team.above_threshold;
+  const sign = team.diff >= 0 ? '+' : '';
+  const rankStr = team.rank ? `#${team.rank}` : '—';
+  const diffColor = team.diff >= 0 ? 'var(--green)' : 'var(--red)';
+
+  return `
+    <div style="display:flex;align-items:center;gap:10px;padding:6px 20px;cursor:pointer;opacity:${dimmed ? 0.45 : 1}"
+         onclick="toggleEliteLine(${allSeries.indexOf(team)})" id="elite-leg-${allSeries.indexOf(team)}">
+      <div style="width:24px;height:3px;background:${color};border-radius:2px;flex-shrink:0"></div>
+      <span style="font-size:0.72rem;color:var(--muted);width:28px">${rankStr}</span>
+      <span style="font-size:0.82rem;font-weight:600;color:${dimmed ? 'var(--muted)' : 'var(--text)'};flex:1">${team.name}</span>
+      <span style="font-size:0.78rem;color:var(--muted);font-family:monospace">${Math.round(team.initial_rating)} → ${Math.round(team.final_rating)}</span>
+      <span style="font-size:0.78rem;font-weight:600;color:${diffColor};width:52px;text-align:right">${sign}${Math.round(team.diff)}</span>
+      <span style="font-size:0.72rem;color:var(--muted);width:60px;text-align:right">peak ${Math.round(team.peak_in_range)}</span>
+    </div>`;
 }
 
 function toggleEliteLine(index) {
@@ -1294,10 +1465,19 @@ function toggleEliteLine(index) {
   const meta = eliteChart.getDatasetMeta(index);
   meta.hidden = !meta.hidden;
   eliteChart.update();
-  // Dim legend item
-  const el = document.getElementById(`elite-legend-${index}`);
-  if (el) el.style.opacity = meta.hidden ? '0.35' : '1';
+  const el = document.getElementById(`elite-leg-${index}`);
+  if (el) el.style.opacity = meta.hidden ? '0.2' : el.style.opacity === '0.45' ? '0.45' : '1';
 }
+
+// Set default dates on page load
+(function initEliteDates() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  document.getElementById('elite-end').value = fmt(now);
+  const start = new Date(now); start.setMonth(start.getMonth() - 3);
+  document.getElementById('elite-start').value = fmt(start);
+})();
 
 // ---------------------------------------------------------------------------
 // Init
