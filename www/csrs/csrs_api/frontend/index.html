@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CSRS — Counter Strike Rating System</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/luxon/3.4.4/luxon.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
 <style>
 :root {
   --bg:        #0d0d0f;
@@ -1317,38 +1319,36 @@ function renderElite(d) {
   const datasets = d.series.map((team, i) => {
     const color = ELITE_COLORS[i % ELITE_COLORS.length];
     const dimmed = !team.above_threshold;
+    const totalPts = team.points.length;
     return {
       label: team.name,
       data: team.points.map(p => ({ x: p.date, y: p.pts })),
       borderColor: dimmed ? color + '44' : color,
       backgroundColor: 'transparent',
       borderWidth: dimmed ? 1 : 2,
-      borderDash: team.has_depreciation ? [4, 3] : [],
-      pointRadius: (ctx) => {
-        const idx = ctx.dataIndex;
-        const total = team.points.length;
-        return (idx === 0 || idx === total - 1) ? 4 : 3;
+      segment: team.has_depreciation ? {
+        borderDash: ctx2 => {
+          // dashed only where there's a large time gap (depreciation)
+          return [4, 3];
+        }
+      } : undefined,
+      pointRadius: ctx2 => {
+        const idx = ctx2.dataIndex;
+        return (idx === 0 || idx === totalPts - 1) ? 4 : 3;
       },
-      pointStyle: (ctx) => {
-        const idx = ctx.dataIndex;
-        const total = team.points.length;
-        return (idx === 0 || idx === total - 1) ? 'circle' : 'circle';
-      },
-      pointBackgroundColor: (ctx) => {
-        const idx = ctx.dataIndex;
-        const total = team.points.length;
-        if (idx === 0 || idx === total - 1) return '#16181c'; // hollow
+      pointBackgroundColor: ctx2 => {
+        const idx = ctx2.dataIndex;
+        if (idx === 0 || idx === totalPts - 1) return '#16181c'; // hollow ends
         return dimmed ? color + '44' : color;
       },
       pointBorderColor: dimmed ? color + '44' : color,
-      pointBorderWidth: (ctx) => {
-        const idx = ctx.dataIndex;
-        const total = team.points.length;
-        return (idx === 0 || idx === total - 1) ? 2 : 1;
+      pointBorderWidth: ctx2 => {
+        const idx = ctx2.dataIndex;
+        return (idx === 0 || idx === totalPts - 1) ? 2 : 1;
       },
       pointHoverRadius: 6,
       tension: 0.2,
-      spanGaps: true,
+      spanGaps: false,
       order: dimmed ? 10 : 0,
     };
   });
@@ -1370,7 +1370,11 @@ function renderElite(d) {
           bodyColor: '#7a7f8e',
           filter: item => item.parsed.y !== null,
           callbacks: {
-            title: items => items[0].label,
+            title: items => {
+              // Format the date nicely from the raw ISO string
+              const raw = items[0].label || items[0].parsed?.x;
+              try { return new Date(raw).toISOString().slice(0, 10); } catch { return raw; }
+            },
             label: item => {
               const team = d.series[item.datasetIndex];
               const pts = item.parsed.y;
@@ -1385,8 +1389,13 @@ function renderElite(d) {
       },
       scales: {
         x: {
-          type: 'category',
-          ticks: { color: '#7a7f8e', maxTicksLimit: 10 },
+          type: 'time',
+          time: {
+            unit: 'day',
+            tooltipFormat: 'yyyy-MM-dd',
+            displayFormats: { day: 'MMM d', month: 'MMM yyyy' },
+          },
+          ticks: { color: '#7a7f8e', maxTicksLimit: 12, source: 'auto' },
           grid: { color: '#2a2d35' },
         },
         y: {
