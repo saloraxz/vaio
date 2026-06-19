@@ -1,4 +1,4 @@
-saloraxz.com, www.saloraxz.com {
+http://saloraxz.com, http://www.saloraxz.com {
 
     handle_path /api/console* {
         reverse_proxy localhost:5000
@@ -25,6 +25,6 @@ saloraxz.com, www.saloraxz.com {
 }
 
 # ntfy Dashboard
-ntfy.saloraxz.com:8080 {
+http://ntfy.saloraxz.com:8080 {
     reverse_proxy ntfy:80
 }
