@@ -278,6 +278,20 @@ def get_rankings(
     teams: dict = data.get("teams", {})
     peaks: dict = data.get("peaks", {})
     provisional: dict = data.get("provisional_teams", {})
+    history: list = data.get("history", [])
+
+    # Build sparkline data — last 30 days of pts_after per team
+    from collections import defaultdict
+    from datetime import timedelta
+    team_spark: dict = defaultdict(list)
+    cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    for entry in history:
+        date_str = entry.get("date", "")
+        if date_str[:10] < cutoff:
+            continue
+        for side in ("t1", "t2"):
+            name = entry[side]["name"]
+            team_spark[name].append(round(entry[side]["pts_after"], 2))
 
     ranked = sorted(teams.items(), key=lambda x: x[1], reverse=True)
 
@@ -286,6 +300,7 @@ def get_rankings(
         if search and search.lower() not in name.lower():
             continue
         peak_info = peaks.get(name, {})
+        spark = team_spark.get(name, [])
         results.append({
             "rank": rank,
             "name": name,
@@ -295,6 +310,7 @@ def get_rankings(
             "peak_rank": peak_info.get("rank"),
             "provisional": name in provisional,
             "matches_until_ranked": provisional.get(name, 0) if name in provisional else None,
+            "sparkline": spark,
         })
 
     return {"total": len(results), "rankings": results[:limit]}
@@ -599,53 +615,185 @@ def head_to_head(team1: str = Query(...), team2: str = Query(...)):
 
 
 # ---------------------------------------------------------------------------
-# Elite Teams Over Time
+# Elite Teams Over Time — matches CSRS.py display_elite_teams_over_time()
 # ---------------------------------------------------------------------------
+
+ELITE_THRESHOLD      = 850
+DEPRECIATION_THRESHOLD = 14  # days inactive before depreciation starts
+
+
+def _calculate_depreciation(current_rating: float, days_inactive: int) -> float:
+    """Port of CSRS.py calculate_depreciation() — quadratic decay, max 25% loss at 75 days."""
+    if days_inactive <= DEPRECIATION_THRESHOLD:
+        return current_rating
+    base_decay = (((min(days_inactive, 75) - DEPRECIATION_THRESHOLD) / (75 - DEPRECIATION_THRESHOLD)) ** 2) * 0.25
+    depreciated = current_rating * (1 - base_decay)
+    return max(0.0, depreciated)
+
 
 @app.get("/api/analytics/elite-over-time")
 def elite_over_time(
-    top: int = Query(10, ge=2, le=30, description="Number of top teams to include"),
+    start_date: str = Query(..., description="Start date YYYY-MM-DD"),
+    end_date:   str = Query(..., description="End date YYYY-MM-DD"),
 ):
+    """
+    Returns all teams that reached ELITE_THRESHOLD (850) during the date range,
+    with their full rating timeline including starting ratings and depreciation.
+    Matches CSRS.py display_elite_teams_over_time() logic exactly.
+    """
+    from datetime import date as date_type
+
     data = load_data()
-    teams: dict = data.get("teams", {})
     history: list = data.get("history", [])
+    teams: dict   = data.get("teams", {})
 
-    # Get top N teams by current rating
-    ranked = sorted(teams.items(), key=lambda x: x[1], reverse=True)[:top]
-    top_names = {name for name, _ in ranked}
+    try:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_dt   = datetime.strptime(end_date,   "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Dates must be YYYY-MM-DD")
 
-    # Build per-team timeline from history
-    from collections import defaultdict
-    team_points: dict = defaultdict(list)
+    sorted_hist = sorted(
+        history,
+        key=lambda m: (m.get("date", "") == "N/A", m.get("date", ""))
+    )
 
-    for entry in history:
+    # --- Pass 1: find teams that peaked >= ELITE_THRESHOLD in range ---
+    team_peaks_in_range: dict = {}
+    for m in sorted_hist:
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        try:
+            match_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if not (start_dt <= match_date <= end_dt):
+            continue
         for side in ("t1", "t2"):
-            name = entry[side]["name"]
-            if name in top_names:
-                team_points[name].append({
-                    "date":  entry["date"].split(" ")[0],
-                    "pts":   round(entry[side]["pts_after"], 2),
-                })
+            name = m[side]["name"]
+            pts  = m[side].get("pts_after")
+            if pts is not None:
+                if name not in team_peaks_in_range or pts > team_peaks_in_range[name]:
+                    team_peaks_in_range[name] = pts
 
-    # Build a unified sorted date list across all teams
-    all_dates = sorted(set(
-        p["date"]
-        for points in team_points.values()
-        for p in points
-    ))
+    elite_names = {n for n, p in team_peaks_in_range.items() if p >= ELITE_THRESHOLD}
 
-    # For each team, produce a sparse series (only dates they played)
+    # --- Find start_point_date (day before first match in range) ---
+    first_match_in_range = None
+    for m in sorted_hist:
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        try:
+            match_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if match_date >= start_dt:
+            first_match_in_range = m
+            first_match_date = match_date
+            break
+
+    from datetime import timedelta
+    if first_match_in_range:
+        start_point_date = (first_match_date - timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        start_point_date = start_date
+
+    # --- Collect starting ratings (pts_before of first match in range) ---
+    starting_ratings: dict = {}
+    for m in sorted_hist:
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        try:
+            match_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if match_date < start_dt or match_date > end_dt:
+            continue
+        for side in ("t1", "t2"):
+            name = m[side]["name"]
+            if name in elite_names and name not in starting_ratings:
+                pts_before = m[side].get("pts_before")
+                if pts_before is not None:
+                    starting_ratings[name] = pts_before
+
+    # --- Build timeline for each elite team ---
+    team_history: dict = {name: [(start_point_date, starting_ratings.get(name, teams.get(name, 1000)))]
+                          for name in elite_names}
+    all_dates = {start_point_date}
+
+    for m in sorted_hist:
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        try:
+            match_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if match_date < start_dt or match_date > end_dt:
+            continue
+        date_key = date_str[:10]
+        all_dates.add(date_key)
+        for side in ("t1", "t2"):
+            name = m[side]["name"]
+            pts  = m[side].get("pts_after")
+            if name in elite_names and pts is not None:
+                team_history[name].append((date_key, round(pts, 2)))
+
+    all_dates.add(end_date)
+    all_dates_sorted = sorted(all_dates)
+
+    # --- Build series with depreciation applied to end point ---
     series = []
-    for name, _ in ranked:
-        points = team_points.get(name, [])
+    for name in sorted(elite_names, key=lambda n: teams.get(n, 0), reverse=True):
+        pts_list = team_history.get(name, [])
+        if len(pts_list) < 2:
+            continue
+
+        # Apply depreciation from last match to end_date
+        last_date_str, last_rating = pts_list[-1]
+        try:
+            last_date_obj = datetime.strptime(last_date_str, "%Y-%m-%d").date()
+            end_date_obj  = datetime.strptime(end_date, "%Y-%m-%d").date()
+            days_inactive = (end_date_obj - last_date_obj).days
+        except ValueError:
+            days_inactive = 0
+
+        depreciated_end = _calculate_depreciation(last_rating, days_inactive)
+        final_rating = round(depreciated_end, 2)
+        has_depreciation = days_inactive > DEPRECIATION_THRESHOLD
+
+        # End point
+        end_pts = [(end_date, final_rating)]
+
+        initial_rating = pts_list[0][1]
+        diff = final_rating - initial_rating
+        peak = team_peaks_in_range.get(name, last_rating)
+        current_rank = sorted(teams.items(), key=lambda x: x[1], reverse=True)
+        rank = next((i + 1 for i, (n, _) in enumerate(current_rank) if n == name), None)
+
         series.append({
-            "name":   name,
-            "points": [{"date": p["date"], "pts": p["pts"]} for p in points],
+            "name":             name,
+            "points":           [{"date": d, "pts": p} for d, p in pts_list] + [{"date": end_date, "pts": final_rating}],
+            "initial_rating":   round(initial_rating, 2),
+            "final_rating":     final_rating,
+            "peak_in_range":    round(peak, 2),
+            "diff":             round(diff, 2),
+            "rank":             rank,
+            "above_threshold":  final_rating >= ELITE_THRESHOLD,
+            "has_depreciation": has_depreciation,
         })
 
     return {
-        "dates":  all_dates,
-        "series": series,
+        "start_date":        start_date,
+        "end_date":          end_date,
+        "start_point_date":  start_point_date,
+        "elite_threshold":   ELITE_THRESHOLD,
+        "all_dates":         all_dates_sorted,
+        "total_teams":       len(series),
+        "series":            series,
     }
 
 
