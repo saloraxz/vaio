@@ -45,6 +45,30 @@ http://saloraxz.com, http://www.saloraxz.com {
     redir /.well-known/caldav /nextcloud/remote.php/dav/ 301
 }
 
+http://dev.saloraxz.com {
+    handle /api/* {
+        reverse_proxy csrs-web-dev:8000
+    }
+
+    handle_path /csrs* {
+        reverse_proxy csrs-web-dev:8000
+    }
+
+    @version_file path /version.txt
+    handle @version_file {
+        root * /srv/repo-dev/current/www
+        header Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+        header Pragma "no-cache"
+        header Expires "0"
+        file_server
+    }
+
+    handle {
+        root * /srv/repo-dev/current/www
+        file_server
+    }
+}
+
 https://fedoralap.tail055b0e.ts.net {
     tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
 
