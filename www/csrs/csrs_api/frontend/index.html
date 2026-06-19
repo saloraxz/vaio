@@ -855,7 +855,7 @@ async function loadMeta() {
     el.innerHTML = `
       <span>${d.total_teams} teams</span>
       <span>${d.total_matches} matches</span>
-      <span style="color:var(--muted);margin-top:4px">Last: ${d.last_match ? d.last_match.split(' ')[0] : '—'}</span>
+      <span style="color:var(--muted);margin-top:4px">Last Match: ${d.last_match ? d.last_match.split(' ')[0] : '—'}</span>
       <span style="color:var(--muted)">Version: ${version}</span>
     `;
   } catch(e) {}

@@ -206,6 +206,108 @@ def _calculate_points(
     return float(max(RATING_FLOOR, min(RATING_CAP, new_rating)))
 
 
+def _build_match_date_index(history_list: list) -> dict:
+    """
+    Build {team_name: sorted_list_of_datetimes} index from history.
+    Mirrors CSRS.py build_match_date_index — used to avoid O(n) scans per team.
+    """
+    from datetime import datetime
+    index: dict = {}
+    for m in history_list:
+        t1_name = m.get("t1", {}).get("name")
+        t2_name = m.get("t2", {}).get("name")
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        try:
+            clean = date_str.replace(" UTC", "").strip()
+            try:
+                match_date = datetime.strptime(clean, "%Y-%m-%d %H:%M")
+            except ValueError:
+                match_date = datetime.strptime(clean[:10], "%Y-%m-%d")
+        except Exception:
+            continue
+        for name in (t1_name, t2_name):
+            if name:
+                index.setdefault(name, []).append(match_date)
+    for name in index:
+        index[name].sort()
+    return index
+
+
+def _get_last_match_date(team_name: str,
+                         before_date=None,
+                         index: dict = None,
+                         history_list: list = None):
+    """
+    Return the most recent match datetime for *team_name* that is strictly
+    before *before_date*.  If *before_date* is None, return the last match.
+    Pass *index* (from _build_match_date_index) for O(log n) lookups.
+    """
+    import bisect
+    from datetime import datetime
+
+    if index is not None:
+        dates = index.get(team_name)
+        if not dates:
+            return None
+        if before_date is None:
+            return dates[-1]
+        idx = bisect.bisect_left(dates, before_date)
+        return dates[idx - 1] if idx > 0 else None
+
+    # Fallback: linear scan
+    if history_list is None:
+        return None
+    team_dates = []
+    for m in history_list:
+        if m.get("t1", {}).get("name") != team_name and m.get("t2", {}).get("name") != team_name:
+            continue
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        try:
+            clean = date_str.replace(" UTC", "").strip()
+            try:
+                md = datetime.strptime(clean, "%Y-%m-%d %H:%M")
+            except ValueError:
+                md = datetime.strptime(clean[:10], "%Y-%m-%d")
+            if before_date is None or md < before_date:
+                team_dates.append(md)
+        except Exception:
+            continue
+    return max(team_dates) if team_dates else None
+
+
+def _apply_depreciation(team_name: str,
+                        current_rating: float,
+                        match_date=None,
+                        index: dict = None,
+                        history_list: list = None,
+                        form_score: float = None) -> float:
+    """
+    Mirrors CSRS.py apply_depreciation_to_rating + calculate_depreciation.
+    Returns the depreciated rating before a match (or before 'now' for display).
+    Pass form_score to skip an extra form calculation.
+    """
+    last_match = _get_last_match_date(team_name,
+                                      before_date=match_date,
+                                      index=index,
+                                      history_list=history_list)
+    if last_match is None:
+        return current_rating
+
+    if match_date is None:
+        from datetime import datetime
+        match_date = datetime.now()
+
+    days_inactive = (match_date - last_match).days
+    return _calculate_depreciation(current_rating, days_inactive,
+                                   team_name=team_name,
+                                   match_index=None,
+                                   history=None)
+
+
 def _win_probability(r1_eff: float, r2_eff: float) -> float:
     """Win probability for team 1 given effective ratings."""
     return 1 / (1 + 10 ** ((r2_eff - r1_eff) / 400))
@@ -311,18 +413,42 @@ def get_rankings(
             team_name = entry[side]["name"]
             team_spark[team_name].append(round(entry[side]["pts_after"], 2))
 
-    ranked = sorted(teams.items(), key=lambda x: x[1], reverse=True)
+    from datetime import datetime
+
+    # Build date index for O(log n) last-match lookups
+    date_index = _build_match_date_index(history)
+    today = datetime.now()
+
+    # Compute depreciated display ratings
+    team_display: dict = {}
+    for name, pts in teams.items():
+        last = _get_last_match_date(name, index=date_index)
+        if last is None:
+            team_display[name] = pts
+            continue
+        days_inactive = (today - last).days
+        team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
+
+    # Sort by depreciated rating so rank reflects real standing
+    ranked = sorted(teams.items(), key=lambda x: team_display[x[0]], reverse=True)
 
     results = []
     for rank, (name, pts) in enumerate(ranked, 1):
         if search and search.lower() not in name.lower():
             continue
+        dep_pts = team_display[name]
+        dep_loss = round(pts - dep_pts, 2)
+        last_match = _get_last_match_date(name, index=date_index)
+        days_inactive = (today - last_match).days if last_match else 0
         peak_info = peaks.get(name, {})
         spark = team_spark.get(name, [])
         results.append({
             "rank": rank,
             "name": name,
-            "points": round(pts, 2),
+            "points": round(dep_pts, 2),
+            "raw_points": round(pts, 2),
+            "depreciation_loss": dep_loss if dep_loss > 0 else 0,
+            "days_inactive": days_inactive,
             "peak_points": round(peak_info.get("points", pts), 2),
             "peak_date": peak_info.get("date"),
             "peak_rank": peak_info.get("rank"),
@@ -355,7 +481,24 @@ def get_team(team_name: str):
 
     pts = teams[matched]
     ranked = sorted(teams.items(), key=lambda x: x[1], reverse=True)
-    rank = next((i + 1 for i, (n, _) in enumerate(ranked) if n == matched), None)
+
+    # Apply depreciation for display
+    from datetime import datetime
+    date_index = _build_match_date_index(history)
+    today = datetime.now()
+    last_match_dt = _get_last_match_date(matched, index=date_index)
+    days_inactive = (today - last_match_dt).days if last_match_dt else 0
+    dep_pts = _calculate_depreciation(pts, days_inactive, team_name=matched)
+    dep_loss = round(pts - dep_pts, 2)
+
+    # Rank by depreciated ratings
+    team_dep = {}
+    for n, p in teams.items():
+        lm = _get_last_match_date(n, index=date_index)
+        di = (today - lm).days if lm else 0
+        team_dep[n] = _calculate_depreciation(p, di, team_name=n)
+    ranked_dep = sorted(team_dep.items(), key=lambda x: x[1], reverse=True)
+    rank = next((i + 1 for i, (n, _) in enumerate(ranked_dep) if n == matched), None)
 
     # build rating history timeline
     timeline = []
@@ -391,7 +534,10 @@ def get_team(team_name: str):
 
     return {
         "name": matched,
-        "points": round(pts, 2),
+        "points": round(dep_pts, 2),
+        "raw_points": round(pts, 2),
+        "depreciation_loss": dep_loss if dep_loss > 0 else 0,
+        "days_inactive": days_inactive,
         "rank": rank,
         "peak": peak_info,
         "total_matches": len(timeline),
@@ -511,8 +657,24 @@ def simulate(req: SimRequest):
     fa1 = form_adj(name1)
     fa2 = form_adj(name2)
 
+    # Apply depreciation — ratings decay when teams are inactive
+    from datetime import datetime
+    date_index = _build_match_date_index(history)
+    today = datetime.now()
+
+    def dep_rating(team_name: str, raw_pts: float) -> tuple:
+        last = _get_last_match_date(team_name, index=date_index)
+        if last is None:
+            return raw_pts, 0, 0
+        days = (today - last).days
+        dep = _calculate_depreciation(raw_pts, days, team_name=team_name)
+        return dep, round(raw_pts - dep, 2), days
+
+    r1_dep, r1_dep_loss, r1_days = dep_rating(name1, r1)
+    r2_dep, r2_dep_loss, r2_days = dep_rating(name2, r2)
+
     result = simulate_elo(
-        r1, r2,
+        r1_dep, r2_dep,
         tier=req.tier,
         env=req.env,
         grand_final=req.grand_final,
@@ -523,14 +685,38 @@ def simulate(req: SimRequest):
         t2_provisional=name2 in provisional,
     )
 
-    # Get current ranks
-    ranked = sorted(teams.items(), key=lambda x: x[1], reverse=True)
+    # Get current ranks using depreciated ratings
+    dep_all = {}
+    di_index = _build_match_date_index(history)
+    from datetime import datetime as _dt
+    _now = _dt.now()
+    for n, p in teams.items():
+        lm = _get_last_match_date(n, index=di_index)
+        di = (_now - lm).days if lm else 0
+        dep_all[n] = _calculate_depreciation(p, di, team_name=n)
+    ranked = sorted(dep_all.items(), key=lambda x: x[1], reverse=True)
     rank1 = next((i + 1 for i, (n, _) in enumerate(ranked) if n == name1), None)
     rank2 = next((i + 1 for i, (n, _) in enumerate(ranked) if n == name2), None)
 
     return {
-        "team1": {"name": name1, "points": round(r1, 2), "rank": rank1, "form_adj": fa1},
-        "team2": {"name": name2, "points": round(r2, 2), "rank": rank2, "form_adj": fa2},
+        "team1": {
+            "name": name1,
+            "points": round(r1_dep, 2),
+            "raw_points": round(r1, 2),
+            "depreciation_loss": r1_dep_loss,
+            "days_inactive": r1_days,
+            "rank": rank1,
+            "form_adj": fa1,
+        },
+        "team2": {
+            "name": name2,
+            "points": round(r2_dep, 2),
+            "raw_points": round(r2, 2),
+            "depreciation_loss": r2_dep_loss,
+            "days_inactive": r2_days,
+            "rank": rank2,
+            "form_adj": fa2,
+        },
         "tier": req.tier,
         "env":  req.env,
         "bo":   req.bo,
