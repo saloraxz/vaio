@@ -5,8 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CSRS — Counter Strike Rating System</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/luxon/3.4.4/luxon.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
 <style>
 :root {
   --bg:        #0d0d0f;
@@ -69,22 +67,69 @@ body {
   margin-top: 2px;
 }
 
-nav { flex: 1; padding: 12px 0; }
-nav a {
+nav { flex: 1; padding: 12px 0; overflow-y: auto; }
+
+/* Top-level link (no children) */
+nav > a {
   display: flex;
   align-items: center;
-  gap: 10px;
   padding: 10px 20px;
   color: var(--muted);
   text-decoration: none;
   font-size: 0.875rem;
+  font-weight: 500;
   transition: all 0.15s;
   cursor: pointer;
   border-left: 3px solid transparent;
 }
-nav a:hover { color: var(--text); background: var(--surface2); }
-nav a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(245,166,35,0.08); }
-nav a .icon { font-size: 1rem; width: 20px; text-align: center; }
+nav > a:hover { color: var(--text); background: var(--surface2); }
+nav > a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(245,166,35,0.08); }
+
+/* Dropdown category group */
+.nav-group { border-left: 3px solid transparent; }
+.nav-group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s;
+}
+.nav-group-toggle:hover { color: var(--text); background: var(--surface2); }
+.nav-group-toggle .chevron {
+  font-size: 0.65rem;
+  color: var(--muted);
+  transition: transform 0.2s ease;
+}
+.nav-group.open .nav-group-toggle .chevron { transform: rotate(90deg); }
+.nav-group.open .nav-group-toggle { color: var(--text); }
+.nav-group.has-active > .nav-group-toggle { color: var(--accent); }
+.nav-group.has-active { border-left-color: var(--accent); }
+
+.nav-subnav {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.22s ease;
+}
+.nav-group.open .nav-subnav { max-height: 400px; }
+
+.nav-subnav a {
+  display: block;
+  padding: 8px 20px 8px 38px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.82rem;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  margin-left: -3px;
+  transition: all 0.15s;
+}
+.nav-subnav a:hover { color: var(--text); background: var(--surface2); }
+.nav-subnav a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(245,166,35,0.08); }
 
 .sidebar-meta {
   padding: 12px 20px;
@@ -320,6 +365,27 @@ tr:last-child td { border-bottom: none; }
 }
 @media (max-width: 900px) { .analytics-grid { grid-template-columns: 1fr; } }
 
+.analytics-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.analytics-tab {
+  padding: 10px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+  margin-bottom: -1px;
+}
+.analytics-tab:hover { color: var(--text); }
+.analytics-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.analytics-subpage { display: none; }
+.analytics-subpage.active { display: block; }
+
 /* ── H2H ── */
 .h2h-score {
   display: flex;
@@ -381,12 +447,22 @@ tr:last-child td { border-bottom: none; }
     <p>Counter Strike Rating System</p>
   </div>
   <nav>
-    <a class="active" data-page="rankings"><span class="icon">🏆</span> Rankings</a>
-    <a data-page="history"><span class="icon">📋</span> Match History</a>
-    <a data-page="simulate"><span class="icon">⚔️</span> Simulate</a>
-    <a data-page="analytics"><span class="icon">📊</span> Analytics</a>
-    <a data-page="elite"><span class="icon">📈</span> Elite Over Time</a>
-    <a data-page="h2h"><span class="icon">🔁</span> Head to Head</a>
+    <a class="active" data-page="rankings">Rankings</a>
+    <a data-page="history">Match History</a>
+    <a data-page="simulate">Simulate</a>
+
+    <div class="nav-group open has-active" id="nav-group-analytics">
+      <div class="nav-group-toggle" onclick="toggleNavGroup('analytics')">
+        <span>Analytics</span>
+        <span class="chevron">&#9656;</span>
+      </div>
+      <div class="nav-subnav">
+        <a data-page="analytics" data-sub="summary" class="active">Summary</a>
+        <a data-page="analytics" data-sub="elite">Elite Over Time</a>
+      </div>
+    </div>
+
+    <a data-page="h2h">Head to Head</a>
   </nav>
   <div class="sidebar-meta" id="sidebar-meta">
     <span>Loading...</span>
@@ -400,7 +476,7 @@ tr:last-child td { border-bottom: none; }
   <!-- Rankings -->
   <div class="page active" id="page-rankings">
     <div class="page-header">
-      <h2>🏆 Rankings</h2>
+      <h2>Rankings</h2>
       <div class="controls" style="margin:0">
         <input type="text" id="rank-search" placeholder="Search team…" style="width:200px">
       </div>
@@ -414,7 +490,7 @@ tr:last-child td { border-bottom: none; }
 
   <!-- Match History -->
   <div class="page" id="page-history">
-    <div class="page-header"><h2>📋 Match History</h2></div>
+    <div class="page-header"><h2>Match History</h2></div>
     <div class="controls">
       <input type="text" id="hist-team"  placeholder="Team…" style="width:160px">
       <select id="hist-tier">
@@ -440,7 +516,7 @@ tr:last-child td { border-bottom: none; }
 
   <!-- Simulate -->
   <div class="page" id="page-simulate">
-    <div class="page-header"><h2>⚔️ Match Simulator</h2></div>
+    <div class="page-header"><h2>Match Simulator</h2></div>
     <div class="card">
       <div class="sim-layout">
         <div class="sim-team-card">
@@ -530,42 +606,48 @@ tr:last-child td { border-bottom: none; }
 
   <!-- Analytics -->
   <div class="page" id="page-analytics">
-    <div class="page-header"><h2>📊 Analytics</h2></div>
-    <div id="analytics-content">
-      <div class="loading"><div class="spinner"></div> Loading…</div>
-    </div>
-  </div>
+    <div class="page-header"><h2>Analytics</h2></div>
 
-  <!-- Elite Over Time -->
-  <div class="page" id="page-elite">
-    <div class="page-header">
-      <h2>📈 Elite Teams Over Time</h2>
-      <p style="color:var(--muted);font-size:0.85rem;margin-top:4px">Teams that reached 850+ CSRS Elo in the selected period</p>
+    <div class="analytics-tabs">
+      <div class="analytics-tab active" data-analytics-sub="summary" onclick="showAnalyticsSub('summary')">Summary</div>
+      <div class="analytics-tab" data-analytics-sub="elite" onclick="showAnalyticsSub('elite')">Elite Over Time</div>
     </div>
-    <div class="card">
-      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
-        <div>
-          <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">Start Date</div>
-          <input type="date" id="elite-start" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:var(--radius);font-size:0.85rem">
-        </div>
-        <div>
-          <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">End Date</div>
-          <input type="date" id="elite-end" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:var(--radius);font-size:0.85rem">
-        </div>
-        <button onclick="loadElite()">Generate</button>
-        <button class="secondary" onclick="setElitePreset('all')">All Time</button>
-        <button class="secondary" onclick="setElitePreset('3m')">Last 3 Months</button>
-        <button class="secondary" onclick="setElitePreset('1m')">Last Month</button>
+
+    <!-- Summary sub-tab -->
+    <div class="analytics-subpage active" id="analytics-sub-summary">
+      <div id="analytics-content">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
       </div>
     </div>
-    <div id="elite-content">
-      <div class="empty-msg" style="padding:60px">Select a date range and click Generate</div>
+
+    <!-- Elite Over Time sub-tab -->
+    <div class="analytics-subpage" id="analytics-sub-elite">
+      <p style="color:var(--muted);font-size:0.85rem;margin:-8px 0 16px">Teams that reached 850+ CSRS Elo in the selected period</p>
+      <div class="card">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+          <div>
+            <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">Start Date</div>
+            <input type="date" id="elite-start" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:var(--radius);font-size:0.85rem">
+          </div>
+          <div>
+            <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">End Date</div>
+            <input type="date" id="elite-end" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:var(--radius);font-size:0.85rem">
+          </div>
+          <button onclick="loadElite()">Generate</button>
+          <button class="secondary" onclick="setElitePreset('all')">All Time</button>
+          <button class="secondary" onclick="setElitePreset('3m')">Last 3 Months</button>
+          <button class="secondary" onclick="setElitePreset('1m')">Last Month</button>
+        </div>
+      </div>
+      <div id="elite-content">
+        <div class="empty-msg" style="padding:60px">Select a date range and click Generate</div>
+      </div>
     </div>
   </div>
 
   <!-- H2H -->
   <div class="page" id="page-h2h">
-    <div class="page-header"><h2>🔁 Head to Head</h2></div>
+    <div class="page-header"><h2>Head to Head</h2></div>
     <div class="card">
       <div class="controls" style="margin-bottom:0">
         <input type="text" id="h2h-t1" placeholder="Team 1…" style="width:200px">
@@ -604,21 +686,67 @@ function showPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
-  const navLink = document.querySelector(`nav a[data-page="${name}"]`);
-  if (navLink) navLink.classList.add('active');
+
+  // Activate matching nav link(s) — top-level or inside a dropdown group
+  document.querySelectorAll(`nav a[data-page="${name}"]`).forEach(a => a.classList.add('active'));
+
+  // Sync the "has-active" state on dropdown groups
+  document.querySelectorAll('.nav-group').forEach(g => {
+    const hasActive = g.querySelector('a.active') !== null;
+    g.classList.toggle('has-active', hasActive);
+  });
+
   prevPage = currentPage;
   currentPage = name;
+}
+
+function toggleNavGroup(key) {
+  const group = document.getElementById('nav-group-' + key);
+  if (group) group.classList.toggle('open');
 }
 
 document.querySelectorAll('nav a[data-page]').forEach(a => {
   a.addEventListener('click', () => {
     const page = a.dataset.page;
+    const sub  = a.dataset.sub;
+
     showPage(page);
+
+    if (sub) {
+      // Mark the right sub-link active within its group and switch sub-tab
+      document.querySelectorAll(`nav a[data-page="${page}"][data-sub]`).forEach(el => el.classList.remove('active'));
+      a.classList.add('active');
+      if (page === 'analytics') showAnalyticsSub(sub);
+    }
+
     if (page === 'rankings')  loadRankings();
     if (page === 'history')   loadHistory(1);
-    if (page === 'analytics') loadAnalytics();
+    if (page === 'analytics' && (!sub || sub === 'summary')) loadAnalytics();
+    if (page === 'analytics' && sub === 'elite') {
+      // Lazily generate the elite chart the first time this tab is opened
+      if (!eliteChart) loadElite();
+    }
   });
 });
+
+function showAnalyticsSub(sub) {
+  document.querySelectorAll('.analytics-subpage').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.analytics-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('analytics-sub-' + sub).classList.add('active');
+  document.querySelector(`.analytics-tab[data-analytics-sub="${sub}"]`).classList.add('active');
+
+  // Keep the sidebar sub-nav in sync with whichever tab is active
+  document.querySelectorAll('nav a[data-page="analytics"][data-sub]').forEach(el => {
+    el.classList.toggle('active', el.dataset.sub === sub);
+  });
+
+  if (sub === 'summary' && !document.getElementById('analytics-content').dataset.loaded) {
+    loadAnalytics();
+  }
+  if (sub === 'elite' && !eliteChart) {
+    loadElite();
+  }
+}
 
 function goBack() { showPage(prevPage); }
 
@@ -699,7 +827,7 @@ function setLoading(id) {
 }
 
 function setError(id, msg) {
-  setEl(id, `<div class="error-msg">⚠ ${msg}</div>`);
+  setEl(id, `<div class="error-msg">${msg}</div>`);
 }
 
 // ---------------------------------------------------------------------------
@@ -848,7 +976,7 @@ function renderHistory(rows) {
                 <small class="${deltaClass(h.t2.pts_delta)}" style="font-size:0.7rem;margin-left:4px">${fmt(h.t2.pts_delta)}</small>
               </td>
               <td>
-                ${h.url ? `<a href="${h.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none">HLTV ↗</a>` : ''}
+                ${h.url ? `<a href="${h.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none">HLTV</a>` : ''}
               </td>
             </tr>`;
         }).join('')}
@@ -1118,6 +1246,7 @@ function renderAnalytics(d) {
     </div>
   `;
   setEl('analytics-content', html);
+  document.getElementById('analytics-content').dataset.loaded = '1';
 
   const TIER_COLORS = { 'S+': '#ff4444', S: '#FFD700', A: '#C0C0C0', B: '#CD7F32', C: '#3cb44b', D: '#e6194B' };
   const ENV_COLORS  = ['#f5a623','#4caf82','#5b9cf6','#9b8fd4'];
@@ -1225,7 +1354,7 @@ function renderH2H(d) {
                 <td>${tierBadge(m.tier)}</td>
                 <td style="font-weight:600">${m.score}</td>
                 <td class="win-badge">${m.winner}</td>
-                <td>${m.url ? `<a href="${m.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none">HLTV ↗</a>` : ''}</td>
+                <td>${m.url ? `<a href="${m.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none">HLTV</a>` : ''}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -1278,7 +1407,7 @@ async function loadElite() {
     const d = await api(`/api/analytics/elite-over-time?start_date=${start}&end_date=${end}`);
     renderElite(d);
   } catch(e) {
-    setEl('elite-content', `<div class="error-msg">⚠ ${e.message}</div>`);
+    setEl('elite-content', `<div class="error-msg">${e.message}</div>`);
   }
 }
 
@@ -1319,36 +1448,38 @@ function renderElite(d) {
   const datasets = d.series.map((team, i) => {
     const color = ELITE_COLORS[i % ELITE_COLORS.length];
     const dimmed = !team.above_threshold;
-    const totalPts = team.points.length;
     return {
       label: team.name,
       data: team.points.map(p => ({ x: p.date, y: p.pts })),
       borderColor: dimmed ? color + '44' : color,
       backgroundColor: 'transparent',
       borderWidth: dimmed ? 1 : 2,
-      segment: team.has_depreciation ? {
-        borderDash: ctx2 => {
-          // dashed only where there's a large time gap (depreciation)
-          return [4, 3];
-        }
-      } : undefined,
-      pointRadius: ctx2 => {
-        const idx = ctx2.dataIndex;
-        return (idx === 0 || idx === totalPts - 1) ? 4 : 3;
+      borderDash: team.has_depreciation ? [4, 3] : [],
+      pointRadius: (ctx) => {
+        const idx = ctx.dataIndex;
+        const total = team.points.length;
+        return (idx === 0 || idx === total - 1) ? 4 : 3;
       },
-      pointBackgroundColor: ctx2 => {
-        const idx = ctx2.dataIndex;
-        if (idx === 0 || idx === totalPts - 1) return '#16181c'; // hollow ends
+      pointStyle: (ctx) => {
+        const idx = ctx.dataIndex;
+        const total = team.points.length;
+        return (idx === 0 || idx === total - 1) ? 'circle' : 'circle';
+      },
+      pointBackgroundColor: (ctx) => {
+        const idx = ctx.dataIndex;
+        const total = team.points.length;
+        if (idx === 0 || idx === total - 1) return '#16181c'; // hollow
         return dimmed ? color + '44' : color;
       },
       pointBorderColor: dimmed ? color + '44' : color,
-      pointBorderWidth: ctx2 => {
-        const idx = ctx2.dataIndex;
-        return (idx === 0 || idx === totalPts - 1) ? 2 : 1;
+      pointBorderWidth: (ctx) => {
+        const idx = ctx.dataIndex;
+        const total = team.points.length;
+        return (idx === 0 || idx === total - 1) ? 2 : 1;
       },
       pointHoverRadius: 6,
       tension: 0.2,
-      spanGaps: false,
+      spanGaps: true,
       order: dimmed ? 10 : 0,
     };
   });
@@ -1370,29 +1501,23 @@ function renderElite(d) {
           bodyColor: '#7a7f8e',
           filter: item => item.parsed.y !== null,
           callbacks: {
-            title: items => {
-              // Format the date nicely from the raw ISO string
-              const raw = items[0].label || items[0].parsed?.x;
-              try { return new Date(raw).toISOString().slice(0, 10); } catch { return raw; }
-            },
+            title: items => items[0].label,
             label: item => {
               const team = d.series[item.datasetIndex];
               const pts = item.parsed.y;
-              const marker = pts >= d.elite_threshold ? '●' : '○';
-              return ` ${marker} ${item.dataset.label}: ${pts.toFixed(1)}`;
+              const marker = pts >= d.elite_threshold ? 'Elite' : 'Below';
+              return ` ${item.dataset.label}: ${pts.toFixed(1)} (${marker})`;
             }
           }
+        },
+        annotation: {
+          // Elite threshold line drawn via afterDraw
         }
       },
       scales: {
         x: {
-          type: 'time',
-          time: {
-            unit: 'day',
-            tooltipFormat: 'yyyy-MM-dd',
-            displayFormats: { day: 'MMM d', month: 'MMM yyyy' },
-          },
-          ticks: { color: '#7a7f8e', maxTicksLimit: 12, source: 'auto' },
+          type: 'category',
+          ticks: { color: '#7a7f8e', maxTicksLimit: 10 },
           grid: { color: '#2a2d35' },
         },
         y: {
@@ -1433,7 +1558,7 @@ function renderElite(d) {
     legendHTML += above.map((team, i) => legendRow(team, i, d.series)).join('');
   }
   if (below.length && above.length) {
-    legendHTML += `<div style="padding:6px 20px;font-size:0.72rem;color:var(--muted);border-top:1px dashed var(--border)">▼ Below ${d.elite_threshold} threshold</div>`;
+    legendHTML += `<div style="padding:6px 20px;font-size:0.72rem;color:var(--muted);border-top:1px dashed var(--border)">Below ${d.elite_threshold} threshold</div>`;
   }
   if (below.length) {
     legendHTML += below.map((team, i) => legendRow(team, above.length + i, d.series)).join('');
