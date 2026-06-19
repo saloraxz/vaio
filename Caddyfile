@@ -46,7 +46,27 @@ http://saloraxz.com, http://www.saloraxz.com {
 }
 
 http://dev.saloraxz.com {
-    reverse_proxy csrs-web-dev:8000
+    handle /api/* {
+        reverse_proxy csrs-web-dev:8000
+    }
+
+    handle_path /csrs* {
+        reverse_proxy csrs-web-dev:8000
+    }
+
+    @version_file path /version.txt
+    handle @version_file {
+        root * /srv/repo-dev/current/www
+        header Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+        header Pragma "no-cache"
+        header Expires "0"
+        file_server
+    }
+
+    handle {
+        root * /srv/repo-dev/current/www
+        file_server
+    }
 }
 
 https://fedoralap.tail055b0e.ts.net {
