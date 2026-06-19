@@ -1353,7 +1353,71 @@ async function loadElite() {
   }
 }
 
+function normalizeElitePayload(payload) {
+  const startInput = document.getElementById('elite-start')?.value || '—';
+  const endInput = document.getElementById('elite-end')?.value || '—';
+  const eliteThreshold = Number.isFinite(payload?.elite_threshold)
+    ? payload.elite_threshold
+    : 850;
+
+  const incomingSeries = Array.isArray(payload?.series) ? payload.series : [];
+  const incomingDates = Array.isArray(payload?.all_dates)
+    ? payload.all_dates
+    : (Array.isArray(payload?.dates) ? payload.dates : []);
+
+  // Old API shape: { dates: [...], series: [{ name, points:[{date, pts}] }] }
+  const looksLikeOldShape = incomingSeries.length > 0
+    && incomingSeries[0]
+    && Array.isArray(incomingSeries[0].points)
+    && incomingSeries[0].above_threshold === undefined;
+
+  if (!looksLikeOldShape) {
+    return {
+      ...payload,
+      elite_threshold: eliteThreshold,
+      total_teams: payload?.total_teams ?? incomingSeries.length,
+      start_date: payload?.start_date ?? startInput,
+      end_date: payload?.end_date ?? endInput,
+      all_dates: incomingDates,
+    };
+  }
+
+  const series = incomingSeries.map((team) => {
+    const points = (team.points || [])
+      .filter(p => p && p.date)
+      .map(p => ({ date: p.date, pts: Number(p.pts) }));
+
+    const values = points.map(p => p.pts).filter(v => Number.isFinite(v));
+    const initial = values.length ? values[0] : 0;
+    const final = values.length ? values[values.length - 1] : 0;
+    const peak = values.length ? Math.max(...values) : 0;
+
+    return {
+      name: team.name,
+      points,
+      rank: null,
+      has_depreciation: false,
+      initial_rating: initial,
+      final_rating: final,
+      peak_in_range: peak,
+      diff: final - initial,
+      above_threshold: peak >= eliteThreshold,
+    };
+  });
+
+  return {
+    all_dates: incomingDates,
+    series,
+    elite_threshold: eliteThreshold,
+    total_teams: series.length,
+    start_date: payload?.start_date ?? startInput,
+    end_date: payload?.end_date ?? endInput,
+  };
+}
+
 function renderElite(d) {
+  d = normalizeElitePayload(d);
+
   if (eliteChart) { eliteChart.destroy(); eliteChart = null; }
 
   if (!d.series || d.series.length === 0) {
@@ -1390,7 +1454,9 @@ function renderElite(d) {
   // scrambled x-axis. The backend already returns all_dates pre-sorted;
   // every dataset is plotted against this exact same axis so Chart.js
   // doesn't have to guess label order from first-appearance.
-  const labels = d.all_dates && d.all_dates.length ? d.all_dates : [];
+  const labels = d.all_dates && d.all_dates.length
+    ? d.all_dates
+    : [...new Set(d.series.flatMap(team => (team.points || []).map(p => p.date)))].sort();
 
   // Build datasets — above threshold: full color, below: dimmed
   const datasets = d.series.map((team, i) => {
