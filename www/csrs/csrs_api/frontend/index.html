@@ -427,6 +427,29 @@ tr:last-child td { border-bottom: none; }
 
 .empty-msg { color: var(--muted); text-align: center; padding: 40px; }
 
+/* ── Elite legend ── */
+.elite-legend-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 20px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+.elite-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 20px;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+.elite-legend-row:hover { background: var(--surface2); }
+
 /* ── Search dropdown ── */
 .search-wrap { position: relative; display: inline-block; }
 .search-dropdown {
@@ -1465,20 +1488,23 @@ function renderElite(d) {
 
   if (eliteChart) { eliteChart.destroy(); eliteChart = null; }
 
-  if (!d.series || d.series.length === 0) {
+  // Only teams that actually reached the elite threshold in this range —
+  // sorted by final rating so legend rank (#1, #2…) is meaningful.
+  const series = (d.series || [])
+    .filter(s => s.above_threshold)
+    .slice()
+    .sort((a, b) => b.final_rating - a.final_rating);
+
+  if (series.length === 0) {
     setEl('elite-content', '<div class="empty-msg">No teams reached 850+ Elo in this date range.</div>');
     return;
   }
-
-  // Split above/below threshold
-  const above = d.series.filter(s => s.above_threshold);
-  const below = d.series.filter(s => !s.above_threshold);
 
   const html = `
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div>
-          <span style="font-size:0.85rem;color:var(--muted)">${d.total_teams} elite teams · ${d.start_date} → ${d.end_date}</span>
+          <span style="font-size:0.85rem;color:var(--muted)">${series.length} elite teams · ${d.start_date} → ${d.end_date}</span>
         </div>
         <div style="font-size:0.78rem;color:var(--muted)">
           Threshold: <span style="color:var(--accent);font-weight:600">${d.elite_threshold} pts</span>
@@ -1488,6 +1514,14 @@ function renderElite(d) {
     </div>
     <div class="card" style="padding:0">
       <div style="padding:14px 20px;border-bottom:1px solid var(--border);font-size:0.85rem;font-weight:600">Legend</div>
+      <div class="elite-legend-head">
+        <span style="width:24px;flex-shrink:0"></span>
+        <span style="width:28px">#</span>
+        <span style="flex:1">Team</span>
+        <span style="width:110px;text-align:right">Rating</span>
+        <span style="width:52px;text-align:right">Change</span>
+        <span style="width:70px;text-align:right">Peak</span>
+      </div>
       <div id="elite-legend" style="padding:8px 0"></div>
     </div>
   `;
@@ -1501,12 +1535,10 @@ function renderElite(d) {
   // doesn't have to guess label order from first-appearance.
   const labels = d.all_dates && d.all_dates.length
     ? d.all_dates
-    : [...new Set(d.series.flatMap(team => (team.points || []).map(p => p.date)))].sort();
+    : [...new Set(series.flatMap(team => (team.points || []).map(p => p.date)))].sort();
 
-  // Build datasets — above threshold: full color, below: dimmed
-  const datasets = d.series.map((team, i) => {
+  const datasets = series.map((team, i) => {
     const color = ELITE_COLORS[i % ELITE_COLORS.length];
-    const dimmed = !team.above_threshold;
 
     // Map each team's points onto the shared label axis. Dates the team
     // didn't play on become null, and spanGaps bridges the connecting line.
@@ -1523,9 +1555,9 @@ function renderElite(d) {
     return {
       label: team.name,
       data: dataPoints,
-      borderColor: dimmed ? color + '44' : color,
+      borderColor: color,
       backgroundColor: 'transparent',
-      borderWidth: dimmed ? 1 : 2,
+      borderWidth: 2,
       borderDash: team.has_depreciation ? [4, 3] : [],
       pointRadius: (ctx) => {
         const idx = ctx.dataIndex;
@@ -1536,17 +1568,16 @@ function renderElite(d) {
       pointBackgroundColor: (ctx) => {
         const idx = ctx.dataIndex;
         if (idx === firstIdx || idx === lastIdx) return '#16181c'; // hollow
-        return dimmed ? color + '44' : color;
+        return color;
       },
-      pointBorderColor: dimmed ? color + '44' : color,
+      pointBorderColor: color,
       pointBorderWidth: (ctx) => {
         const idx = ctx.dataIndex;
         return (idx === firstIdx || idx === lastIdx) ? 2 : 1;
       },
       pointHoverRadius: 6,
-      tension: 0.2,
+      tension: 0,          // straight lines, no smoothing
       spanGaps: true,
-      order: dimmed ? 10 : 0,
     };
   });
 
@@ -1568,11 +1599,7 @@ function renderElite(d) {
           filter: item => item.parsed.y !== null && item.parsed.y !== undefined,
           callbacks: {
             title: items => items[0].label,
-            label: item => {
-              const pts = item.parsed.y;
-              const marker = pts >= d.elite_threshold ? 'Elite' : 'Below';
-              return ` ${item.dataset.label}: ${pts.toFixed(1)} (${marker})`;
-            }
+            label: item => ` ${item.dataset.label}: ${item.parsed.y.toFixed(1)}`
           }
         },
       },
@@ -1584,67 +1611,33 @@ function renderElite(d) {
           grid: { color: '#2a2d35' },
         },
         y: {
-          min: d.elite_threshold - 50,
+          min: d.elite_threshold,
           ticks: { color: '#7a7f8e' },
           grid: { color: '#2a2d35' },
           title: { display: true, text: 'CSRS Rating', color: '#7a7f8e', font: { size: 11 } },
         }
       }
-    },
-    plugins: [{
-      // Draw elite threshold line
-      afterDraw(chart) {
-        const { ctx: c, scales: { x, y } } = chart;
-        const threshY = y.getPixelForValue(d.elite_threshold);
-        c.save();
-        c.strokeStyle = '#f5a62355';
-        c.lineWidth = 1;
-        c.setLineDash([6, 4]);
-        c.beginPath();
-        c.moveTo(x.left, threshY);
-        c.lineTo(x.right, threshY);
-        c.stroke();
-        c.setLineDash([]);
-        c.fillStyle = '#f5a623aa';
-        c.font = '10px sans-serif';
-        c.fillText(`${d.elite_threshold} threshold`, x.left + 4, threshY - 4);
-        c.restore();
-      }
-    }]
+    }
   });
 
-  // Legend — sorted by final rating, above threshold first
+  // Legend — ranked by final rating
   const legendEl = document.getElementById('elite-legend');
-  let legendHTML = '';
-
-  if (above.length) {
-    legendHTML += above.map((team, i) => legendRow(team, i, d.series)).join('');
-  }
-  if (below.length && above.length) {
-    legendHTML += `<div style="padding:6px 20px;font-size:0.72rem;color:var(--muted);border-top:1px dashed var(--border)">Below ${d.elite_threshold} threshold</div>`;
-  }
-  if (below.length) {
-    legendHTML += below.map((team, i) => legendRow(team, above.length + i, d.series)).join('');
-  }
-  legendEl.innerHTML = legendHTML;
+  legendEl.innerHTML = series.map((team, i) => legendRow(team, i)).join('');
 }
 
-function legendRow(team, colorIdx, allSeries) {
-  const color = ELITE_COLORS[allSeries.indexOf(team) % ELITE_COLORS.length];
-  const dimmed = !team.above_threshold;
+function legendRow(team, idx) {
+  const color = ELITE_COLORS[idx % ELITE_COLORS.length];
   const sign = team.diff >= 0 ? '+' : '';
-  const rankStr = team.rank ? `#${team.rank}` : '—';
   const diffColor = team.diff >= 0 ? 'var(--green)' : 'var(--red)';
 
   return `
-    <div style="display:flex;align-items:center;gap:10px;padding:6px 20px;cursor:pointer;opacity:${dimmed ? 0.45 : 1}"
-         onclick="toggleEliteLine(${allSeries.indexOf(team)})" id="elite-leg-${allSeries.indexOf(team)}">
-      <div style="width:24px;height:3px;background:${color};border-radius:2px;flex-shrink:0"></div>
-      <span style="font-size:0.72rem;color:var(--muted);width:28px">${rankStr}</span>
-      <span style="font-size:0.82rem;font-weight:600;color:${dimmed ? 'var(--muted)' : 'var(--text)'};flex:1">${team.name}</span>
-      <span style="font-size:0.78rem;color:var(--muted);font-family:monospace">${Math.round(team.initial_rating)} → ${Math.round(team.final_rating)}</span>
-      <span style="font-size:0.78rem;font-weight:600;color:${diffColor};width:52px;text-align:right">${sign}${Math.round(team.diff)}</span>
-      <span style="font-size:0.72rem;color:var(--muted);width:60px;text-align:right">peak ${Math.round(team.peak_in_range)}</span>
+    <div class="elite-legend-row" onclick="toggleEliteLine(${idx})" id="elite-leg-${idx}">
+      <span style="width:24px;flex-shrink:0"><span style="display:inline-block;width:24px;height:3px;background:${color};border-radius:2px"></span></span>
+      <span style="width:28px;font-size:0.72rem;color:var(--muted)">#${idx + 1}</span>
+      <span style="flex:1;font-size:0.82rem;font-weight:600;color:var(--text)">${team.name}</span>
+      <span style="width:110px;text-align:right;font-size:0.78rem;color:var(--muted);font-family:monospace">${Math.round(team.initial_rating)} → ${Math.round(team.final_rating)}</span>
+      <span style="width:52px;text-align:right;font-size:0.78rem;font-weight:600;color:${diffColor}">${sign}${Math.round(team.diff)}</span>
+      <span style="width:70px;text-align:right;font-size:0.72rem;color:var(--muted)">peak ${Math.round(team.peak_in_range)}</span>
     </div>`;
 }
 
@@ -1654,8 +1647,9 @@ function toggleEliteLine(index) {
   meta.hidden = !meta.hidden;
   eliteChart.update();
   const el = document.getElementById(`elite-leg-${index}`);
-  if (el) el.style.opacity = meta.hidden ? '0.2' : el.style.opacity === '0.45' ? '0.45' : '1';
+  if (el) el.style.opacity = meta.hidden ? '0.35' : '1';
 }
+
 
 // Set default dates on page load
 (function initEliteDates() {
