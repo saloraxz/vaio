@@ -28,6 +28,32 @@ http://saloraxz.com, http://www.saloraxz.com, http://fedoralap.tail055b0e.ts.net
     redir /.well-known/caldav /nextcloud/remote.php/dav/ 301
 }
 
+https://fedoralap.tail055b0e.ts.net {
+    tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
+
+    handle_path /api/console* {
+        reverse_proxy localhost:5000
+    }
+
+    handle_path /nextcloud* {
+        reverse_proxy nextcloud-app:80 {
+            header_up Host {http.request.host}
+            header_up X-Real-IP {http.request.remote}
+            header_up X-Forwarded-For {http.request.remote}
+            header_up X-Forwarded-Proto {http.request.scheme}
+        }
+    }
+
+    handle {
+        root * /srv/repo/current/www
+        file_server
+    }
+
+    redir /.well-known/carddav /nextcloud/remote.php/dav/ 301
+    redir /.well-known/caldav /nextcloud/remote.php/dav/ 301
+}
+
+
 # ntfy Dashboard
 http://ntfy.saloraxz.com:8080 {
     reverse_proxy ntfy:80
