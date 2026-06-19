@@ -2,10 +2,14 @@
     auto_https off
 }
 
-http://saloraxz.com, http://www.saloraxz.com, {
+http://saloraxz.com, http://www.saloraxz.com {
 
     handle_path /api/console* {
         reverse_proxy localhost:5000
+    }
+
+    handle /api/* {
+        reverse_proxy csrs-web:8000
     }
 
     # Nextcloud
@@ -37,6 +41,10 @@ https://fedoralap.tail055b0e.ts.net {
 
     handle_path /api/console* {
         reverse_proxy localhost:5000
+    }
+
+    handle /api/* {
+        reverse_proxy csrs-web:8000
     }
 
     handle_path /nextcloud* {
