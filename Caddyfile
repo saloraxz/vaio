@@ -8,7 +8,7 @@ http://saloraxz.com, http://www.saloraxz.com, http://fedoralap.tail055b0e.ts.net
         reverse_proxy localhost:5000
     }
 
-    # 1. Routes Nextcloud traffic to the container name and strips the path
+    # Nextcloud
     handle_path /nextcloud* {
         reverse_proxy nextcloud-app:80 {
             header_up Host {http.request.host}
@@ -18,7 +18,11 @@ http://saloraxz.com, http://www.saloraxz.com, http://fedoralap.tail055b0e.ts.net
         }
     }
 
-    # 2. Catch-all block handles your standard files last
+    handle_path /csrs* {
+        reverse_proxy csrs-web:8000
+    }
+
+    # Catch-all standard files
     handle {
         root * /srv/repo/current/www
         file_server
