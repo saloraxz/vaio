@@ -26,6 +26,14 @@ http://saloraxz.com, http://www.saloraxz.com {
         reverse_proxy csrs-web:8000
     }
 
+    handle = /version.txt {
+        root * /srv/repo/current/www
+        header Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+        header Pragma "no-cache"
+        header Expires "0"
+        file_server
+    }
+
     # Catch-all standard files
     handle {
         root * /srv/repo/current/www
@@ -58,6 +66,14 @@ https://fedoralap.tail055b0e.ts.net {
 
     handle_path /csrs* {
         reverse_proxy csrs-web:8000
+    }
+
+    handle = /version.txt {
+        root * /srv/repo/current/www
+        header Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+        header Pragma "no-cache"
+        header Expires "0"
+        file_server
     }
 
     handle {
