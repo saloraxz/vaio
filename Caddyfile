@@ -1,4 +1,4 @@
-fedoralap.tail055b0e.ts.net {
+saloraxz.com, www.saloraxz.com {
 
     handle_path /api/console* {
         reverse_proxy localhost:5000
@@ -25,7 +25,6 @@ fedoralap.tail055b0e.ts.net {
 }
 
 # ntfy Dashboard
-fedoralap.tail055b0e.ts.net:8080 {
-    tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
+ntfy.saloraxz.com:8080 {
     reverse_proxy ntfy:80
 }
