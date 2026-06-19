@@ -2,7 +2,7 @@
     auto_https off
 }
 
-http://saloraxz.com, http://www.saloraxz.com {
+http://saloraxz.com, http://www.saloraxz.com, http://fedoralap.tail055b0e.ts.net {
 
     handle_path /api/console* {
         reverse_proxy localhost:5000
