@@ -89,7 +89,7 @@
             <a href="#" data-topic="server_alerts" class="button smart-link">Server Alerts</a>
             <a href="#" data-topic="" class="button smart-link">Open ntfy</a>
             
-            <a href="../" class="button button-home">Back</a>
+            <a href="/" class="button button-home">Back</a>
         </div>
 
         <input type="text" id="topicSearch" placeholder="Go to topic..."
@@ -121,14 +121,16 @@
         async function getBestUrl(topic = "") {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 1200); // 1.2s timeout
+            const normalizedTopic = String(topic).trim();
+            const topicPath = normalizedTopic ? `/${encodeURIComponent(normalizedTopic)}` : "";
 
             try {
                 // Try Tailscale port
                 await fetch(PRIVATE_BASE, { mode: 'no-cors', signal: controller.signal });
-                return `${PRIVATE_BASE}/${topic}`;
+                return `${PRIVATE_BASE}${topicPath}`;
             } catch (e) {
                 // Fallback to Funnel port
-                return `${PUBLIC_BASE}/${topic}`;
+                return `${PUBLIC_BASE}${topicPath}`;
             } finally {
                 clearTimeout(timeoutId);
             }
