@@ -69,6 +69,14 @@ http://dev.saloraxz.com {
     }
 }
 
+http://raw.saloraxz.com {
+    # Text-only CSRS raw view sourced from the dev backend.
+    handle {
+        rewrite * /api/raw.txt
+        reverse_proxy csrs-web-dev:8000
+    }
+}
+
 https://fedoralap.tail055b0e.ts.net {
     tls /certs/fedoralap.tail055b0e.ts.net.crt /certs/fedoralap.tail055b0e.ts.net.key
 

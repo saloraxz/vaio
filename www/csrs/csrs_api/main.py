@@ -17,6 +17,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -26,6 +27,7 @@ from pydantic import BaseModel
 
 DATA_FILE = Path(os.environ.get("CSRS_DATA_FILE", "data.save"))
 FRONTEND_DIR = Path(os.environ.get("CSRS_FRONTEND_DIR", "frontend"))
+SOURCE_REF = os.environ.get("CSRS_SOURCE_REF", "unknown")
 
 # ---------------------------------------------------------------------------
 # App
@@ -1206,6 +1208,54 @@ def meta():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/raw.txt", response_class=PlainTextResponse)
+def raw_text(limit: int = Query(25, ge=1, le=200), matches: int = Query(20, ge=1, le=200)):
+    """Render CSRS data in plain text for raw.saloraxz.com."""
+    data = load_data()
+    teams: dict = data.get("teams", {})
+    history: list = data.get("history", [])
+
+    ranked = sorted(teams.items(), key=lambda x: x[1], reverse=True)[:limit]
+    recent = list(reversed(history))[:matches]
+
+    lines = [
+        "CSRS RAW DATA (TEXT ONLY)",
+        "========================",
+        f"source_ref: {SOURCE_REF}",
+        f"generated: {datetime.now().isoformat(timespec='seconds')}",
+        f"data_file: {DATA_FILE}",
+        f"total_teams: {len(teams)}",
+        f"total_matches: {len(history)}",
+        "",
+        f"TOP {len(ranked)} RANKINGS",
+        "----------------",
+    ]
+
+    for idx, (name, pts) in enumerate(ranked, 1):
+        lines.append(f"{idx:>3}. {name} | {pts:.2f}")
+
+    lines.extend([
+        "",
+        f"RECENT {len(recent)} MATCHES",
+        "-----------------",
+    ])
+
+    for m in recent:
+        t1 = m.get("t1", {})
+        t2 = m.get("t2", {})
+        date = str(m.get("date", "N/A"))
+        event = str(m.get("event", "N/A"))
+        tier = str(m.get("tier", "N/A"))
+        env = str(m.get("env", "N/A"))
+        lines.append(
+            f"{date} | {event} | tier={tier} env={env} | "
+            f"{t1.get('name', '?')} {t1.get('score', '?')}-{t2.get('score', '?')} {t2.get('name', '?')}"
+        )
+
+    lines.extend(["", "END"])
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
