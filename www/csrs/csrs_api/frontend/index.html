@@ -1627,6 +1627,53 @@ function renderElite(d) {
     };
   });
 
+  // Build legend HTML
+  const beHtml = barelySeries.length ? `
+    <div class="barely-elite-section">
+      <div class="barely-elite-header" id="be-toggle" onclick="toggleBarelySection()">
+        <span class="be-chev">&#9662;</span>
+        <span>Briefly Crossed Threshold</span>
+        <span style="margin-left:6px;font-size:0.6rem;opacity:0.7">${barelySeries.length} team${barelySeries.length > 1 ? 's' : ''} — peaked above ${THRESH} but fell back</span>
+      </div>
+      <div class="barely-elite-rows" id="be-rows" style="max-height:800px">
+        ${barelySeries.map((team, i) => legendRow(team, solidSeries.length + i, true)).join('')}
+      </div>
+    </div>` : '';
+
+  const html = `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <span style="font-size:0.85rem;color:var(--muted)">
+          ${solidSeries.length} elite${barelySeries.length ? ` + <span style="opacity:0.6">${barelySeries.length} briefly</span>` : ''} · ${d.start_date} → ${d.end_date}
+        </span>
+        <span style="font-size:0.78rem;color:var(--muted)">
+          Threshold: <span style="color:var(--accent);font-weight:600">${THRESH} pts</span>
+        </span>
+      </div>
+      <div style="position:relative;height:460px"><canvas id="elite-chart"></canvas></div>
+    </div>
+    <div class="card" style="padding:0">
+      <div style="padding:12px 20px 10px;border-bottom:1px solid var(--border);font-size:0.85rem;font-weight:600;display:flex;align-items:center;justify-content:space-between">
+        <span>Teams</span>
+        <span style="font-size:0.7rem;color:var(--muted);font-weight:400">hover row → ✕ to remove · click to toggle</span>
+      </div>
+      <div class="elite-legend-head">
+        <span style="width:28px;flex-shrink:0"></span>
+        <span style="width:32px">#</span>
+        <span style="flex:1">Team</span>
+        <span style="width:110px;text-align:right">Start → End</span>
+        <span style="width:52px;text-align:right">Δ</span>
+        <span style="width:66px;text-align:right">Peak</span>
+        <span style="width:20px"></span>
+      </div>
+      <div id="elite-legend" style="padding:2px 0">
+        ${solidSeries.map((team, i) => legendRow(team, i, false)).join('')}
+      </div>
+      ${beHtml}
+    </div>`;
+
+  setEl('elite-content', html);
+
   const ctx = document.getElementById('elite-chart').getContext('2d');
   eliteChart = new Chart(ctx, {
     type: 'line',
@@ -1690,53 +1737,6 @@ function renderElite(d) {
       }
     }]
   });
-
-  // Build legend HTML
-  const beHtml = barelySeries.length ? `
-    <div class="barely-elite-section">
-      <div class="barely-elite-header" id="be-toggle" onclick="toggleBarelySection()">
-        <span class="be-chev">&#9662;</span>
-        <span>Briefly Crossed Threshold</span>
-        <span style="margin-left:6px;font-size:0.6rem;opacity:0.7">${barelySeries.length} team${barelySeries.length > 1 ? 's' : ''} — peaked above ${THRESH} but fell back</span>
-      </div>
-      <div class="barely-elite-rows" id="be-rows" style="max-height:800px">
-        ${barelySeries.map((team, i) => legendRow(team, solidSeries.length + i, true)).join('')}
-      </div>
-    </div>` : '';
-
-  const html = `
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-        <span style="font-size:0.85rem;color:var(--muted)">
-          ${solidSeries.length} elite${barelySeries.length ? ` + <span style="opacity:0.6">${barelySeries.length} briefly</span>` : ''} · ${d.start_date} → ${d.end_date}
-        </span>
-        <span style="font-size:0.78rem;color:var(--muted)">
-          Threshold: <span style="color:var(--accent);font-weight:600">${THRESH} pts</span>
-        </span>
-      </div>
-      <div style="position:relative;height:460px"><canvas id="elite-chart"></canvas></div>
-    </div>
-    <div class="card" style="padding:0">
-      <div style="padding:12px 20px 10px;border-bottom:1px solid var(--border);font-size:0.85rem;font-weight:600;display:flex;align-items:center;justify-content:space-between">
-        <span>Teams</span>
-        <span style="font-size:0.7rem;color:var(--muted);font-weight:400">hover row → ✕ to remove · click to toggle</span>
-      </div>
-      <div class="elite-legend-head">
-        <span style="width:28px;flex-shrink:0"></span>
-        <span style="width:32px">#</span>
-        <span style="flex:1">Team</span>
-        <span style="width:110px;text-align:right">Start → End</span>
-        <span style="width:52px;text-align:right">Δ</span>
-        <span style="width:66px;text-align:right">Peak</span>
-        <span style="width:20px"></span>
-      </div>
-      <div id="elite-legend" style="padding:2px 0">
-        ${solidSeries.map((team, i) => legendRow(team, i, false)).join('')}
-      </div>
-      ${beHtml}
-    </div>`;
-
-  setEl('elite-content', html);
 }
 
 function legendRow(team, dsIndex, isBarely) {
