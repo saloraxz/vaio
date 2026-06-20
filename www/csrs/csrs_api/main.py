@@ -1210,8 +1210,157 @@ def health():
     return {"status": "ok"}
 
 
+def _parse_match_datetime(date_str: str):
+    """Parse CSRS history date strings into datetime values."""
+    if not date_str:
+        return None
+
+    clean = str(date_str).replace(" UTC", "").strip()
+    if not clean or clean == "N/A":
+        return None
+
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(clean[:16] if fmt == "%Y-%m-%d %H:%M" else clean[:10], fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _build_daily_rating_snapshots(history: list) -> tuple:
+    """
+    Build daily end-of-day Elo snapshots from chronological match history.
+    Returns:
+      - daily_snapshots: {"YYYY-MM-DD": {team_name: pts_after}}
+      - daily_match_counts: {"YYYY-MM-DD": int}
+    """
+    sortable = []
+    for idx, match in enumerate(history):
+        dt = _parse_match_datetime(match.get("date", ""))
+        if dt is None:
+            continue
+        sortable.append((dt, idx, match))
+
+    sortable.sort(key=lambda x: (x[0], x[1]))
+
+    current_points = {}
+    daily_snapshots = {}
+    daily_match_counts = {}
+
+    current_day = None
+
+    for dt, _, match in sortable:
+        day_key = dt.strftime("%Y-%m-%d")
+
+        if current_day is None:
+            current_day = day_key
+        elif day_key != current_day:
+            daily_snapshots[current_day] = dict(current_points)
+            current_day = day_key
+
+        t1 = match.get("t1", {})
+        t2 = match.get("t2", {})
+
+        t1_name = t1.get("name")
+        t2_name = t2.get("name")
+
+        if t1_name:
+            current_points.setdefault(t1_name, float(t1.get("pts_before", 0.0)))
+            current_points[t1_name] = float(t1.get("pts_after", current_points[t1_name]))
+
+        if t2_name:
+            current_points.setdefault(t2_name, float(t2.get("pts_before", 0.0)))
+            current_points[t2_name] = float(t2.get("pts_after", current_points[t2_name]))
+
+        daily_match_counts[day_key] = daily_match_counts.get(day_key, 0) + 1
+
+    if current_day is not None:
+        daily_snapshots[current_day] = dict(current_points)
+
+    return daily_snapshots, daily_match_counts
+
+
+def _top_rankings_for_snapshot(points_by_team: dict, limit: int) -> list:
+    ranked = sorted(points_by_team.items(), key=lambda x: x[1], reverse=True)[:limit]
+    return [
+        {
+            "rank": idx,
+            "name": name,
+            "points": round(float(pts), 2),
+        }
+        for idx, (name, pts) in enumerate(ranked, 1)
+    ]
+
+
+@app.get("/api/raw/elo-per-day")
+def raw_elo_per_day(
+    days: int = Query(30, ge=1, le=3650),
+    teams: int = Query(10, ge=1, le=100),
+):
+    """Return end-of-day Elo ranking snapshots for the most recent days."""
+    data = load_data()
+    history: list = data.get("history", [])
+
+    daily_snapshots, daily_match_counts = _build_daily_rating_snapshots(history)
+    all_dates = sorted(daily_snapshots.keys())
+    selected_dates = all_dates[-days:]
+
+    rows = []
+    for day in selected_dates:
+        rows.append({
+            "date": day,
+            "matches": daily_match_counts.get(day, 0),
+            "top": _top_rankings_for_snapshot(daily_snapshots[day], teams),
+        })
+
+    return {
+        "days_requested": days,
+        "teams_per_day": teams,
+        "days_returned": len(rows),
+        "data": rows,
+    }
+
+
+@app.get("/api/raw/on-this-day")
+def raw_on_this_day(
+    month: int = Query(datetime.now().month, ge=1, le=12),
+    day: int = Query(datetime.now().day, ge=1, le=31),
+    limit: int = Query(10, ge=1, le=100),
+):
+    """Return historical rankings captured on a given month/day across years."""
+    data = load_data()
+    history: list = data.get("history", [])
+
+    daily_snapshots, daily_match_counts = _build_daily_rating_snapshots(history)
+
+    matches = []
+    for date_key in sorted(daily_snapshots.keys(), reverse=True):
+        dt = _parse_match_datetime(date_key)
+        if dt is None:
+            continue
+        if dt.month == month and dt.day == day:
+            matches.append({
+                "date": date_key,
+                "year": dt.year,
+                "matches": daily_match_counts.get(date_key, 0),
+                "top": _top_rankings_for_snapshot(daily_snapshots[date_key], limit),
+            })
+
+    return {
+        "target": f"{month:02d}-{day:02d}",
+        "limit": limit,
+        "snapshots": matches,
+    }
+
+
 @app.get("/api/raw.txt", response_class=PlainTextResponse)
-def raw_text(limit: int = Query(25, ge=1, le=200), matches: int = Query(20, ge=1, le=200)):
+def raw_text(
+    limit: int = Query(25, ge=1, le=200),
+    matches: int = Query(20, ge=1, le=200),
+    daily_days: int = Query(14, ge=1, le=3650),
+    daily_teams: int = Query(5, ge=1, le=50),
+    on_this_day_limit: int = Query(5, ge=1, le=50),
+):
     """Render CSRS data in plain text for raw.saloraxz.com."""
     data = load_data()
     teams: dict = data.get("teams", {})
@@ -1219,6 +1368,29 @@ def raw_text(limit: int = Query(25, ge=1, le=200), matches: int = Query(20, ge=1
 
     ranked = sorted(teams.items(), key=lambda x: x[1], reverse=True)[:limit]
     recent = list(reversed(history))[:matches]
+
+    daily_snapshots, daily_match_counts = _build_daily_rating_snapshots(history)
+    all_snapshot_dates = sorted(daily_snapshots.keys())
+    daily_rows = []
+    for day in all_snapshot_dates[-daily_days:]:
+        top = _top_rankings_for_snapshot(daily_snapshots[day], daily_teams)
+        daily_rows.append({
+            "date": day,
+            "matches": daily_match_counts.get(day, 0),
+            "top": top,
+        })
+
+    today = datetime.now()
+    today_key = today.strftime("%m-%d")
+    on_this_day_rows = []
+    for day in sorted(daily_snapshots.keys(), reverse=True):
+        if day[5:] != today_key:
+            continue
+        on_this_day_rows.append({
+            "date": day,
+            "matches": daily_match_counts.get(day, 0),
+            "top": _top_rankings_for_snapshot(daily_snapshots[day], on_this_day_limit),
+        })
 
     lines = [
         "CSRS RAW DATA (TEXT ONLY)",
@@ -1228,6 +1400,7 @@ def raw_text(limit: int = Query(25, ge=1, le=200), matches: int = Query(20, ge=1
         f"data_file: {DATA_FILE}",
         f"total_teams: {len(teams)}",
         f"total_matches: {len(history)}",
+        f"daily_snapshot_days: {len(all_snapshot_dates)}",
         "",
         f"TOP {len(ranked)} RANKINGS",
         "----------------",
@@ -1253,6 +1426,38 @@ def raw_text(limit: int = Query(25, ge=1, le=200), matches: int = Query(20, ge=1
             f"{date} | {event} | tier={tier} env={env} | "
             f"{t1.get('name', '?')} {t1.get('score', '?')}-{t2.get('score', '?')} {t2.get('name', '?')}"
         )
+
+    lines.extend([
+        "",
+        f"ELO PER DAY (LAST {len(daily_rows)} DAYS, TOP {daily_teams})",
+        "---------------------------------------------",
+    ])
+
+    if not daily_rows:
+        lines.append("No daily snapshots available.")
+    else:
+        for row in daily_rows:
+            top_str = " | ".join([
+                f"#{item['rank']} {item['name']} {item['points']:.2f}"
+                for item in row["top"]
+            ])
+            lines.append(f"{row['date']} | matches={row['matches']} | {top_str}")
+
+    lines.extend([
+        "",
+        f"ON THIS DAY RANKINGS ({today_key}, TOP {on_this_day_limit})",
+        "-------------------------------------",
+    ])
+
+    if not on_this_day_rows:
+        lines.append("No historical snapshots for this month/day.")
+    else:
+        for row in on_this_day_rows:
+            top_str = " | ".join([
+                f"#{item['rank']} {item['name']} {item['points']:.2f}"
+                for item in row["top"]
+            ])
+            lines.append(f"{row['date']} | matches={row['matches']} | {top_str}")
 
     lines.extend(["", "END"])
     return "\n".join(lines) + "\n"
