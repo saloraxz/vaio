@@ -444,11 +444,58 @@ tr:last-child td { border-bottom: none; }
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 20px;
+  padding: 5px 20px;
   cursor: pointer;
   transition: background 0.15s, opacity 0.15s;
 }
 .elite-legend-row:hover { background: var(--surface2); }
+.elite-legend-row.dismissed { display: none; }
+
+.legend-close-btn {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  font-size: 0.72rem;
+  color: transparent;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+  margin-left: 2px;
+  line-height: 1;
+  user-select: none;
+}
+.elite-legend-row:hover .legend-close-btn { color: var(--muted); }
+.legend-close-btn:hover {
+  color: var(--red) !important;
+  background: rgba(224, 90, 90, 0.15);
+}
+
+.barely-elite-section { border-top: 1px solid var(--border); margin-top: 2px; }
+.barely-elite-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px 5px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.barely-elite-header:hover { color: var(--text); }
+.barely-elite-header .be-chev {
+  font-size: 0.6rem;
+  transition: transform 0.2s;
+  display: inline-block;
+}
+.barely-elite-header.be-collapsed .be-chev { transform: rotate(-90deg); }
+.barely-elite-rows { overflow: hidden; transition: max-height 0.3s ease; }
+.barely-elite-rows.be-collapsed { max-height: 0 !important; }
 
 /* ── Search dropdown ── */
 .search-wrap { position: relative; display: inline-block; }
@@ -1483,104 +1530,104 @@ function normalizeElitePayload(payload) {
   };
 }
 
+// ── Elite chart state ──────────────────────────────────────────────────────
+// allEliteSeries: full ordered array (solid + barely) used for dataset index
+let allEliteSeries = [];
+
 function renderElite(d) {
   d = normalizeElitePayload(d);
-
   if (eliteChart) { eliteChart.destroy(); eliteChart = null; }
+  allEliteSeries = [];
 
-  // Only teams that actually reached the elite threshold in this range —
-  // sorted by final rating so legend rank (#1, #2…) is meaningful.
-  const series = (d.series || [])
-    .filter(s => s.above_threshold)
-    .slice()
-    .sort((a, b) => b.final_rating - a.final_rating);
+  // Backend marks above_threshold based on *final* rating only.
+  // We want ALL teams whose peak_in_range >= threshold — they reached elite
+  // even if they couldn't hold it. Split into:
+  //   solidSeries  — still above threshold at end of range
+  //   barelySeries — peaked above but fell back below by end
+  const THRESH = d.elite_threshold;
+  const allReached = (d.series || []).filter(s => s.peak_in_range >= THRESH);
 
-  if (series.length === 0) {
+  if (allReached.length === 0) {
     setEl('elite-content', '<div class="empty-msg">No teams reached 850+ Elo in this date range.</div>');
     return;
   }
 
-  const html = `
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <div>
-          <span style="font-size:0.85rem;color:var(--muted)">${series.length} elite teams · ${d.start_date} → ${d.end_date}</span>
-        </div>
-        <div style="font-size:0.78rem;color:var(--muted)">
-          Threshold: <span style="color:var(--accent);font-weight:600">${d.elite_threshold} pts</span>
-        </div>
-      </div>
-      <div style="position:relative;height:440px"><canvas id="elite-chart"></canvas></div>
-    </div>
-    <div class="card" style="padding:0">
-      <div style="padding:14px 20px;border-bottom:1px solid var(--border);font-size:0.85rem;font-weight:600">Legend</div>
-      <div class="elite-legend-head">
-        <span style="width:24px;flex-shrink:0"></span>
-        <span style="width:28px">#</span>
-        <span style="flex:1">Team</span>
-        <span style="width:110px;text-align:right">Rating</span>
-        <span style="width:52px;text-align:right">Change</span>
-        <span style="width:70px;text-align:right">Peak</span>
-      </div>
-      <div id="elite-legend" style="padding:8px 0"></div>
-    </div>
-  `;
-  setEl('elite-content', html);
+  const solidSeries  = allReached.filter(s => s.above_threshold)
+                                  .sort((a, b) => b.final_rating - a.final_rating);
+  const barelySeries = allReached.filter(s => !s.above_threshold)
+                                  .sort((a, b) => b.peak_in_range - a.peak_in_range);
 
-  const ctx = document.getElementById('elite-chart').getContext('2d');
+  // Unified dataset order: solid teams first, barely-elite after
+  allEliteSeries = [...solidSeries, ...barelySeries];
 
-  // Explicit, chronologically-sorted label list — this is what fixes the
-  // scrambled x-axis. The backend already returns all_dates pre-sorted;
-  // every dataset is plotted against this exact same axis so Chart.js
-  // doesn't have to guess label order from first-appearance.
   const labels = d.all_dates && d.all_dates.length
     ? d.all_dates
-    : [...new Set(series.flatMap(team => (team.points || []).map(p => p.date)))].sort();
+    : [...new Set(allEliteSeries.flatMap(t => (t.points || []).map(p => p.date)))].sort();
 
-  const datasets = series.map((team, i) => {
-    const color = ELITE_COLORS[i % ELITE_COLORS.length];
+  const datasets = allEliteSeries.map((team, i) => {
+    const color    = ELITE_COLORS[i % ELITE_COLORS.length];
+    const isBarely = i >= solidSeries.length;
+    const hasFlags = team.points.length > 0 && 'match' in team.points[0];
 
-    // Map each team's points onto the shared label axis. Dates the team
-    // didn't play on become null, and spanGaps bridges the connecting line.
     const byDate = {};
-    team.points.forEach(p => { byDate[p.date] = p.pts; });
-    const dataPoints = labels.map(l => (l in byDate ? byDate[l] : null));
+    team.points.forEach(p => { byDate[p.date] = p; });
+    const dataPoints = labels.map(l => { const p = byDate[l]; return p ? p.pts : null; });
 
-    // Track which label-indices are real data points (first/last get a
-    // hollow marker), since nulls no longer count toward "first/last".
-    const realIdx = dataPoints.map((v, idx) => v !== null ? idx : -1).filter(idx => idx !== -1);
+    const realIdx  = dataPoints.map((v, i) => v !== null ? i : -1).filter(i => i !== -1);
     const firstIdx = realIdx[0];
     const lastIdx  = realIdx[realIdx.length - 1];
+
+    // Match dots only on match days; start/end get hollow circle
+    const pointRadius = labels.map((l, idx) => {
+      const p = byDate[l];
+      if (!p) return 0;
+      if (idx === firstIdx || idx === lastIdx) return 4;
+      if (!hasFlags) return 3;
+      return p.match ? 3 : 0;
+    });
+
+    const pointBg = labels.map((l, idx) => {
+      const p = byDate[l];
+      if (!p) return 'transparent';
+      if (idx === firstIdx || idx === lastIdx) return '#16181c'; // hollow
+      if (hasFlags && !p.match) return 'transparent';
+      return (hasFlags && !p.above) ? color + '66' : color;
+    });
 
     return {
       label: team.name,
       data: dataPoints,
-      borderColor: color,
+      borderColor: isBarely ? color + 'bb' : color,
       backgroundColor: 'transparent',
-      borderWidth: 2,
-      borderDash: team.has_depreciation ? [4, 3] : [],
-      pointRadius: (ctx) => {
-        const idx = ctx.dataIndex;
-        if (ctx.raw === null || ctx.raw === undefined) return 0;
-        return (idx === firstIdx || idx === lastIdx) ? 4 : 3;
-      },
+      borderWidth: isBarely ? 1.5 : 2,
+      pointRadius,
       pointStyle: 'circle',
-      pointBackgroundColor: (ctx) => {
-        const idx = ctx.dataIndex;
-        if (idx === firstIdx || idx === lastIdx) return '#16181c'; // hollow
-        return color;
-      },
+      pointBackgroundColor: pointBg,
       pointBorderColor: color,
-      pointBorderWidth: (ctx) => {
-        const idx = ctx.dataIndex;
-        return (idx === firstIdx || idx === lastIdx) ? 2 : 1;
-      },
+      pointBorderWidth: 1.5,
       pointHoverRadius: 6,
-      tension: 0,          // straight lines, no smoothing
+      tension: 0,
       spanGaps: true,
+      segment: hasFlags ? {
+        borderDash: ctx => {
+          const p = byDate[labels[ctx.p1DataIndex]];
+          // Barely-elite teams always dashed; solid teams dashed while depreciating
+          return (isBarely || (p && p.deprecated)) ? [5, 4] : [];
+        },
+        borderColor: ctx => {
+          const p = byDate[labels[ctx.p1DataIndex]];
+          if (isBarely) return color + 'aa';
+          if (p && p.deprecated) return color + '88';
+          return color;
+        },
+      } : (isBarely ? {
+        borderDash: () => [5, 4],
+        borderColor: () => color + 'aa',
+      } : {}),
     };
   });
 
+  const ctx = document.getElementById('elite-chart').getContext('2d');
   eliteChart = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets },
@@ -1599,46 +1646,134 @@ function renderElite(d) {
           filter: item => item.parsed.y !== null && item.parsed.y !== undefined,
           callbacks: {
             title: items => items[0].label,
-            label: item => ` ${item.dataset.label}: ${item.parsed.y.toFixed(1)}`
+            label: item => {
+              const team = allEliteSeries[item.datasetIndex];
+              const p    = team?.points?.find(pt => pt.date === item.label);
+              const isB  = item.datasetIndex >= solidSeries.length;
+              const sym  = item.parsed.y >= THRESH ? '●' : '○';
+              const tag  = isB ? ' [briefly elite]' : '';
+              const dep  = (p && p.deprecated) ? ' ~decay' : '';
+              return ` ${sym} ${item.dataset.label}${tag}: ${item.parsed.y.toFixed(1)}${dep}`;
+            }
           }
         },
       },
       scales: {
         x: {
           type: 'category',
-          labels: labels,
+          labels,
           ticks: { color: '#7a7f8e', maxTicksLimit: 10 },
-          grid: { color: '#2a2d35' },
+          grid:  { color: '#2a2d35' },
         },
         y: {
-          min: d.elite_threshold,
+          min: THRESH - 40,
           ticks: { color: '#7a7f8e' },
-          grid: { color: '#2a2d35' },
+          grid:  { color: '#2a2d35' },
           title: { display: true, text: 'CSRS Rating', color: '#7a7f8e', font: { size: 11 } },
         }
       }
-    }
+    },
+    plugins: [{
+      afterDraw(chart) {
+        const { ctx: c, scales: { x, y } } = chart;
+        const ty = y.getPixelForValue(THRESH);
+        c.save();
+        c.strokeStyle = '#f5a62344';
+        c.lineWidth = 1;
+        c.setLineDash([6, 4]);
+        c.beginPath(); c.moveTo(x.left, ty); c.lineTo(x.right, ty); c.stroke();
+        c.setLineDash([]);
+        c.fillStyle = '#f5a623bb';
+        c.font = '10px sans-serif';
+        c.fillText(`${THRESH}`, x.left + 4, ty - 4);
+        c.restore();
+      }
+    }]
   });
 
-  // Legend — ranked by final rating
-  const legendEl = document.getElementById('elite-legend');
-  legendEl.innerHTML = series.map((team, i) => legendRow(team, i)).join('');
+  // Build legend HTML
+  const beHtml = barelySeries.length ? `
+    <div class="barely-elite-section">
+      <div class="barely-elite-header" id="be-toggle" onclick="toggleBarelySection()">
+        <span class="be-chev">&#9662;</span>
+        <span>Briefly Crossed Threshold</span>
+        <span style="margin-left:6px;font-size:0.6rem;opacity:0.7">${barelySeries.length} team${barelySeries.length > 1 ? 's' : ''} — peaked above ${THRESH} but fell back</span>
+      </div>
+      <div class="barely-elite-rows" id="be-rows" style="max-height:800px">
+        ${barelySeries.map((team, i) => legendRow(team, solidSeries.length + i, true)).join('')}
+      </div>
+    </div>` : '';
+
+  const html = `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <span style="font-size:0.85rem;color:var(--muted)">
+          ${solidSeries.length} elite${barelySeries.length ? ` + <span style="opacity:0.6">${barelySeries.length} briefly</span>` : ''} · ${d.start_date} → ${d.end_date}
+        </span>
+        <span style="font-size:0.78rem;color:var(--muted)">
+          Threshold: <span style="color:var(--accent);font-weight:600">${THRESH} pts</span>
+        </span>
+      </div>
+      <div style="position:relative;height:460px"><canvas id="elite-chart"></canvas></div>
+    </div>
+    <div class="card" style="padding:0">
+      <div style="padding:12px 20px 10px;border-bottom:1px solid var(--border);font-size:0.85rem;font-weight:600;display:flex;align-items:center;justify-content:space-between">
+        <span>Teams</span>
+        <span style="font-size:0.7rem;color:var(--muted);font-weight:400">hover row → ✕ to remove · click to toggle</span>
+      </div>
+      <div class="elite-legend-head">
+        <span style="width:28px;flex-shrink:0"></span>
+        <span style="width:32px">#</span>
+        <span style="flex:1">Team</span>
+        <span style="width:110px;text-align:right">Start → End</span>
+        <span style="width:52px;text-align:right">Δ</span>
+        <span style="width:66px;text-align:right">Peak</span>
+        <span style="width:20px"></span>
+      </div>
+      <div id="elite-legend" style="padding:2px 0">
+        ${solidSeries.map((team, i) => legendRow(team, i, false)).join('')}
+      </div>
+      ${beHtml}
+    </div>`;
+
+  setEl('elite-content', html);
 }
 
-function legendRow(team, idx) {
-  const color = ELITE_COLORS[idx % ELITE_COLORS.length];
-  const sign = team.diff >= 0 ? '+' : '';
+function legendRow(team, dsIndex, isBarely) {
+  const color     = ELITE_COLORS[dsIndex % ELITE_COLORS.length];
+  const sign      = team.diff >= 0 ? '+' : '';
   const diffColor = team.diff >= 0 ? 'var(--green)' : 'var(--red)';
+  const RANK_COLORS = { 1: '#FFD700', 2: '#C0C0C0', 3: '#CD7F32' };
+  const nameColor = isBarely ? 'var(--muted)' : (RANK_COLORS[team.rank] || 'var(--text)');
+  const rankStr   = team.rank ? `#${team.rank}` : '—';
+
+  // Swatch: dashed line for barely-elite, solid for confirmed elite
+  const swatch = isBarely
+    ? `<span style="display:inline-block;width:24px;height:0;border-top:2px dashed ${color};opacity:0.7;vertical-align:middle"></span>`
+    : `<span style="display:inline-block;width:24px;height:3px;background:${color};border-radius:2px"></span>`;
+
+  // For barely-elite, show peak instead of final (since final is below threshold)
+  const ratingDisplay = isBarely
+    ? `peak <span style="color:var(--accent)">${Math.round(team.peak_in_range)}</span>`
+    : `${Math.round(team.initial_rating)} → ${Math.round(team.final_rating)}`;
 
   return `
-    <div class="elite-legend-row" onclick="toggleEliteLine(${idx})" id="elite-leg-${idx}">
-      <span style="width:24px;flex-shrink:0"><span style="display:inline-block;width:24px;height:3px;background:${color};border-radius:2px"></span></span>
-      <span style="width:28px;font-size:0.72rem;color:var(--muted)">#${idx + 1}</span>
-      <span style="flex:1;font-size:0.82rem;font-weight:600;color:var(--text)">${team.name}</span>
-      <span style="width:110px;text-align:right;font-size:0.78rem;color:var(--muted);font-family:monospace">${Math.round(team.initial_rating)} → ${Math.round(team.final_rating)}</span>
+    <div class="elite-legend-row" id="elite-leg-${dsIndex}"
+         onclick="handleLegendClick(event,${dsIndex})"
+         style="${isBarely ? 'opacity:0.65' : ''}">
+      <span style="width:28px;flex-shrink:0;display:flex;align-items:center">${swatch}</span>
+      <span style="width:32px;font-size:0.72rem;color:var(--muted)">${rankStr}</span>
+      <span style="flex:1;font-size:0.82rem;font-weight:600;color:${nameColor}">${team.name}</span>
+      <span style="width:110px;text-align:right;font-size:0.75rem;color:var(--muted);font-family:monospace">${ratingDisplay}</span>
       <span style="width:52px;text-align:right;font-size:0.78rem;font-weight:600;color:${diffColor}">${sign}${Math.round(team.diff)}</span>
-      <span style="width:70px;text-align:right;font-size:0.72rem;color:var(--muted)">peak ${Math.round(team.peak_in_range)}</span>
+      <span style="width:66px;text-align:right;font-size:0.72rem;color:var(--muted)">⌃ ${Math.round(team.peak_in_range)}</span>
+      <span class="legend-close-btn" onclick="dismissEliteLine(event,${dsIndex})" title="Remove">✕</span>
     </div>`;
+}
+
+function handleLegendClick(event, dsIndex) {
+  if (event.target.classList.contains('legend-close-btn')) return;
+  toggleEliteLine(dsIndex);
 }
 
 function toggleEliteLine(index) {
@@ -1647,7 +1782,26 @@ function toggleEliteLine(index) {
   meta.hidden = !meta.hidden;
   eliteChart.update();
   const el = document.getElementById(`elite-leg-${index}`);
-  if (el) el.style.opacity = meta.hidden ? '0.35' : '1';
+  if (!el) return;
+  const wasBarely = el.closest('.barely-elite-rows') !== null;
+  el.style.opacity = meta.hidden ? '0.22' : (wasBarely ? '0.65' : '1');
+}
+
+function dismissEliteLine(event, index) {
+  event.stopPropagation();
+  if (!eliteChart) return;
+  eliteChart.getDatasetMeta(index).hidden = true;
+  eliteChart.update();
+  const el = document.getElementById(`elite-leg-${index}`);
+  if (el) el.classList.add('dismissed');
+}
+
+function toggleBarelySection() {
+  const hdr  = document.getElementById('be-toggle');
+  const rows = document.getElementById('be-rows');
+  if (!hdr || !rows) return;
+  hdr.classList.toggle('be-collapsed');
+  rows.classList.toggle('be-collapsed');
 }
 
 
