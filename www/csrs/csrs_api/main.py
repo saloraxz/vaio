@@ -439,8 +439,6 @@ def get_rankings(
             team_name = entry[side]["name"]
             team_spark[team_name].append(round(entry[side]["pts_after"], 2))
 
-    from datetime import datetime
-
     # Build date index for O(log n) last-match lookups
     date_index = _build_match_date_index(history)
     today = datetime.now()
