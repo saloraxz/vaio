@@ -104,19 +104,20 @@
             </script>
         </div>
         <div class="status">
-            Connected via <div class="from"></div> : Page Version <div id="version-footer">v0.0.0</div>
+            Connected via <span class="from"></span> : Page Version <div id="version-footer">v0.0.0</div>
             <script>
-                function checkConnection() {
-                    const fromDiv = document.querySelector('.from');
-                    if (navigator.onLine) {
-                        fromDiv.textContent = "Tailscale";
-                    } else {
-                        fromDiv.textContent = "Localhost";
-                    }
+                // Display the "from" source based on Tailscale, Public Internet, or local access
+                const fromSpan = document.querySelector('.from');
+                if (window.location.hostname === "fedoralap.tail055b0e.ts.net") {
+                    fromSpan.textContent = "Tailscale";
+                } else if (window.location.hostname === "saloraxz.com") {
+                    fromSpan.textContent = "Public Internet";
+                } else if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+                    fromSpan.textContent = "Local Network";
+                } else {
+                    fromSpan.textContent = "Unknown Source";
                 }
-                window.addEventListener('online', checkConnection);
-                window.addEventListener('offline', checkConnection);
-                checkConnection(); // Initial check on page load
+
                 function checkCockpit() {
                     const btn = document.getElementById('cockpitBtn');
                     const originalText = btn.innerText;
