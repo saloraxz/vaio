@@ -1537,20 +1537,41 @@ function renderElite(d) {
     ? d.all_dates
     : [...new Set(series.flatMap(team => (team.points || []).map(p => p.date)))].sort();
 
+  // Backend now sends day-by-day points: {date, pts, match, above, deprecated}.
+  // This gives true flat lines between matches (no diagonal interpolation
+  // across sparse gaps) and a real gradual depreciation curve instead of
+  // a single end-point snap.
   const datasets = series.map((team, i) => {
     const color = ELITE_COLORS[i % ELITE_COLORS.length];
+    const hasFlags = team.points.length > 0 && 'match' in team.points[0];
 
-    // Map each team's points onto the shared label axis. Dates the team
-    // didn't play on become null, and spanGaps bridges the connecting line.
     const byDate = {};
-    team.points.forEach(p => { byDate[p.date] = p.pts; });
-    const dataPoints = labels.map(l => (l in byDate ? byDate[l] : null));
+    team.points.forEach(p => { byDate[p.date] = p; });
+    const dataPoints = labels.map(l => {
+      const p = byDate[l];
+      return p ? p.pts : null;
+    });
 
-    // Track which label-indices are real data points (first/last get a
-    // hollow marker), since nulls no longer count toward "first/last".
+    // Only show dots on actual match days — depreciation days stay dotless
+    // so the curve reads as a smooth decay rather than a dotted mess.
     const realIdx = dataPoints.map((v, idx) => v !== null ? idx : -1).filter(idx => idx !== -1);
     const firstIdx = realIdx[0];
     const lastIdx  = realIdx[realIdx.length - 1];
+
+    const pointRadius = labels.map((l, idx) => {
+      const p = byDate[l];
+      if (!p) return 0;
+      if (!hasFlags) return (idx === firstIdx || idx === lastIdx) ? 4 : 3;
+      return p.match ? 3 : 0;
+    });
+
+    const pointBg = labels.map((l, idx) => {
+      const p = byDate[l];
+      if (!p) return 'transparent';
+      if (idx === firstIdx || idx === lastIdx) return '#16181c'; // hollow start/end
+      if (hasFlags && !p.match) return 'transparent';
+      return (hasFlags && !p.above) ? color + '66' : color;
+    });
 
     return {
       label: team.name,
@@ -1558,26 +1579,26 @@ function renderElite(d) {
       borderColor: color,
       backgroundColor: 'transparent',
       borderWidth: 2,
-      borderDash: team.has_depreciation ? [4, 3] : [],
-      pointRadius: (ctx) => {
-        const idx = ctx.dataIndex;
-        if (ctx.raw === null || ctx.raw === undefined) return 0;
-        return (idx === firstIdx || idx === lastIdx) ? 4 : 3;
-      },
+      pointRadius,
       pointStyle: 'circle',
-      pointBackgroundColor: (ctx) => {
-        const idx = ctx.dataIndex;
-        if (idx === firstIdx || idx === lastIdx) return '#16181c'; // hollow
-        return color;
-      },
+      pointBackgroundColor: pointBg,
       pointBorderColor: color,
-      pointBorderWidth: (ctx) => {
-        const idx = ctx.dataIndex;
-        return (idx === firstIdx || idx === lastIdx) ? 2 : 1;
-      },
+      pointBorderWidth: 1.5,
       pointHoverRadius: 6,
-      tension: 0,          // straight lines, no smoothing
+      tension: 0,          // flat lines, no smoothing — matches CSRS.py
       spanGaps: true,
+      // Per-segment styling: dashed + dimmed while depreciating
+      segment: hasFlags ? {
+        borderDash: ctx => {
+          const p = byDate[labels[ctx.p1DataIndex]];
+          return (p && p.deprecated) ? [4, 3] : [];
+        },
+        borderColor: ctx => {
+          const p = byDate[labels[ctx.p1DataIndex]];
+          if (p && p.deprecated) return color + '99';
+          return color;
+        },
+      } : {},
     };
   });
 
@@ -1599,7 +1620,14 @@ function renderElite(d) {
           filter: item => item.parsed.y !== null && item.parsed.y !== undefined,
           callbacks: {
             title: items => items[0].label,
-            label: item => ` ${item.dataset.label}: ${item.parsed.y.toFixed(1)}`
+            label: item => {
+              const team = series[item.datasetIndex];
+              const p = team?.points?.find(pt => pt.date === item.label);
+              const elite = item.parsed.y >= d.elite_threshold ? '●' : '○';
+              const dep   = (p && p.deprecated) ? ' ~decaying' : '';
+              const mtch  = (p && p.match)      ? ' ◆match'    : '';
+              return ` ${elite} ${item.dataset.label}: ${item.parsed.y.toFixed(1)}${dep}${mtch}`;
+            }
           }
         },
       },
@@ -1611,13 +1639,33 @@ function renderElite(d) {
           grid: { color: '#2a2d35' },
         },
         y: {
-          min: d.elite_threshold,
+          min: d.elite_threshold - 40,
           ticks: { color: '#7a7f8e' },
           grid: { color: '#2a2d35' },
           title: { display: true, text: 'CSRS Rating', color: '#7a7f8e', font: { size: 11 } },
         }
       }
-    }
+    },
+    plugins: [{
+      // Draws the dashed 850 elite-threshold line across the chart
+      afterDraw(chart) {
+        const { ctx: c, scales: { x, y } } = chart;
+        const threshY = y.getPixelForValue(d.elite_threshold);
+        c.save();
+        c.strokeStyle = '#f5a62355';
+        c.lineWidth = 1;
+        c.setLineDash([6, 4]);
+        c.beginPath();
+        c.moveTo(x.left, threshY);
+        c.lineTo(x.right, threshY);
+        c.stroke();
+        c.setLineDash([]);
+        c.fillStyle = '#f5a623aa';
+        c.font = '10px sans-serif';
+        c.fillText(`${d.elite_threshold}`, x.left + 4, threshY - 4);
+        c.restore();
+      }
+    }]
   });
 
   // Legend — ranked by final rating
@@ -1629,12 +1677,16 @@ function legendRow(team, idx) {
   const color = ELITE_COLORS[idx % ELITE_COLORS.length];
   const sign = team.diff >= 0 ? '+' : '';
   const diffColor = team.diff >= 0 ? 'var(--green)' : 'var(--red)';
+  // Gold/silver/bronze for the team's actual current global rank (#1/#2/#3)
+  const RANK_COLORS = { 1: '#FFD700', 2: '#C0C0C0', 3: '#CD7F32' };
+  const nameColor = RANK_COLORS[team.rank] || 'var(--text)';
+  const rankStr = team.rank ? `#${team.rank}` : '—';
 
   return `
     <div class="elite-legend-row" onclick="toggleEliteLine(${idx})" id="elite-leg-${idx}">
       <span style="width:24px;flex-shrink:0"><span style="display:inline-block;width:24px;height:3px;background:${color};border-radius:2px"></span></span>
-      <span style="width:28px;font-size:0.72rem;color:var(--muted)">#${idx + 1}</span>
-      <span style="flex:1;font-size:0.82rem;font-weight:600;color:var(--text)">${team.name}</span>
+      <span style="width:28px;font-size:0.72rem;color:var(--muted)">${rankStr}</span>
+      <span style="flex:1;font-size:0.82rem;font-weight:600;color:${nameColor}">${team.name}</span>
       <span style="width:110px;text-align:right;font-size:0.78rem;color:var(--muted);font-family:monospace">${Math.round(team.initial_rating)} → ${Math.round(team.final_rating)}</span>
       <span style="width:52px;text-align:right;font-size:0.78rem;font-weight:600;color:${diffColor}">${sign}${Math.round(team.diff)}</span>
       <span style="width:70px;text-align:right;font-size:0.72rem;color:var(--muted)">peak ${Math.round(team.peak_in_range)}</span>
