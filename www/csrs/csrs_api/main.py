@@ -1360,6 +1360,8 @@ def raw_text(
     daily_days: int = Query(14, ge=1, le=3650),
     daily_teams: int = Query(5, ge=1, le=50),
     on_this_day_limit: int = Query(5, ge=1, le=50),
+    month: Optional[int] = Query(None, ge=1, le=12, description="Month for on-this-day (1-12, defaults to today)"),
+    day: Optional[int] = Query(None, ge=1, le=31, description="Day for on-this-day (1-31, defaults to today)"),
 ):
     """Render CSRS data in plain text for raw.saloraxz.com."""
     data = load_data()
@@ -1372,24 +1374,26 @@ def raw_text(
     daily_snapshots, daily_match_counts = _build_daily_rating_snapshots(history)
     all_snapshot_dates = sorted(daily_snapshots.keys())
     daily_rows = []
-    for day in all_snapshot_dates[-daily_days:]:
-        top = _top_rankings_for_snapshot(daily_snapshots[day], daily_teams)
+    for d in all_snapshot_dates[-daily_days:]:
+        top = _top_rankings_for_snapshot(daily_snapshots[d], daily_teams)
         daily_rows.append({
-            "date": day,
-            "matches": daily_match_counts.get(day, 0),
+            "date": d,
+            "matches": daily_match_counts.get(d, 0),
             "top": top,
         })
 
     today = datetime.now()
-    today_key = today.strftime("%m-%d")
+    otd_month = month if month is not None else today.month
+    otd_day = day if day is not None else today.day
+    otd_key = f"{otd_month:02d}-{otd_day:02d}"
     on_this_day_rows = []
-    for day in sorted(daily_snapshots.keys(), reverse=True):
-        if day[5:] != today_key:
+    for d in sorted(daily_snapshots.keys(), reverse=True):
+        if d[5:] != otd_key:
             continue
         on_this_day_rows.append({
-            "date": day,
-            "matches": daily_match_counts.get(day, 0),
-            "top": _top_rankings_for_snapshot(daily_snapshots[day], on_this_day_limit),
+            "date": d,
+            "matches": daily_match_counts.get(d, 0),
+            "top": _top_rankings_for_snapshot(daily_snapshots[d], on_this_day_limit),
         })
 
     lines = [
@@ -1445,7 +1449,7 @@ def raw_text(
 
     lines.extend([
         "",
-        f"ON THIS DAY RANKINGS ({today_key}, TOP {on_this_day_limit})",
+        f"ON THIS DAY RANKINGS ({otd_key}, TOP {on_this_day_limit})",
         "-------------------------------------",
     ])
 
