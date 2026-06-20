@@ -68,6 +68,11 @@ K_WIN        = 33
 K_LOSS       = 22
 PROVISIONAL_OPP_DIFF_CAP = 200
 
+# Provisional team's OWN change multiplier — applied on top of opponent cap.
+# Match 1 = 3.0x, match 2 = 2.5x, match 3 = 2.0x, then graduates.
+PROVISIONAL_MATCH_THRESHOLD = 3
+PROVISIONAL_K_FACTORS = {1: 3.0, 2: 2.5, 3: 2.0}
+
 DIMINISHING_RETURNS_ENABLED  = True
 DIMINISHING_THRESHOLD        = 1000
 DIMINISHING_MAX              = 1050
@@ -332,10 +337,16 @@ def simulate_elo(
     form_adj_2: float = 0.0,
     t1_provisional: bool = False,
     t2_provisional: bool = False,
+    t1_provisional_matches: int = 0,
+    t2_provisional_matches: int = 0,
 ) -> dict:
     """
     Full simulation matching CSRS.py simulate_match() output.
     Returns win probabilities and point deltas for every possible scoreline.
+
+    Provisional teams get their OWN rating change multiplied by 2x-3x
+    (match 1 = 3.0x, match 2 = 2.5x, match 3 = 2.0x) on top of the
+    opponent-rating-cap effect, exactly matching CSRS.py's live import flow.
     """
     wins_needed = (bo // 2) + 1
 
@@ -344,6 +355,15 @@ def simulate_elo(
     eff2 = r2 + form_adj_2
     p_map = _win_probability(eff1, eff2)
     series_prob_t1 = _series_win_prob(p_map, bo)
+
+    # Provisional K-multiplier — about to play match (matches_played + 1)
+    t1_k = PROVISIONAL_K_FACTORS.get(t1_provisional_matches + 1, 1.0) if t1_provisional else 1.0
+    t2_k = PROVISIONAL_K_FACTORS.get(t2_provisional_matches + 1, 1.0) if t2_provisional else 1.0
+
+    def apply_provisional_k(new_rating: float, before: float, k: float) -> float:
+        if k == 1.0:
+            return new_rating
+        return min(max(RATING_FLOOR, before + (new_rating - before) * k), RATING_CAP)
 
     # All possible scorelines
     scorelines = []
@@ -354,6 +374,8 @@ def simulate_elo(
                                    form_adj_1, form_adj_2, t2_provisional)
         new_r2 = _calculate_points(r2, r1, 0, map_diff, tier, env, grand_final,
                                    form_adj_2, form_adj_1, t1_provisional)
+        new_r1 = apply_provisional_k(new_r1, r1, t1_k)
+        new_r2 = apply_provisional_k(new_r2, r2, t2_k)
         scorelines.append({
             "score": f"{wins_needed}-{loser_maps}",
             "winner": "t1",
@@ -368,6 +390,8 @@ def simulate_elo(
                                     form_adj_2, form_adj_1, t1_provisional)
         new_r1b = _calculate_points(r1, r2, 0, map_diff, tier, env, grand_final,
                                     form_adj_1, form_adj_2, t2_provisional)
+        new_r2b = apply_provisional_k(new_r2b, r2, t2_k)
+        new_r1b = apply_provisional_k(new_r1b, r1, t1_k)
         scorelines.append({
             "score": f"{loser_maps}-{wins_needed}",
             "winner": "t2",
@@ -636,23 +660,14 @@ def simulate(req: SimRequest):
     if req.bo not in (1, 3, 5):
         raise HTTPException(status_code=400, detail="bo must be 1, 3, or 5")
 
-    # Calculate form adjustments from recent history (last 15 matches)
+    # Form adjustment — exact port of CSRS.py: form_adj = form_score - 50,
+    # using the real weighted win/map/comp + streak formula, not a raw win rate.
     def form_adj(team_name: str) -> float:
-        matches = [
-            m for m in history
-            if m.get("t1", {}).get("name") == team_name
-            or m.get("t2", {}).get("name") == team_name
-        ][-15:]
-        if len(matches) < 3:
+        form = _calculate_form_at_match_index(team_name, len(history), history)
+        if not form:
             return 0.0
-        wins = sum(
-            1 for m in matches
-            if (m["t1"]["name"] == team_name and m["t1"]["score"] > m["t2"]["score"])
-            or (m["t2"]["name"] == team_name and m["t2"]["score"] > m["t1"]["score"])
-        )
-        win_rate = wins / len(matches)
-        # Scale -50 to +50 form adjustment (centred at 50% win rate)
-        return round((win_rate - 0.5) * 100, 2)
+        _, score, _ = form
+        return round(score - 50, 2)
 
     fa1 = form_adj(name1)
     fa2 = form_adj(name2)
@@ -1053,12 +1068,12 @@ def elite_over_time(
                 if pts_before is not None:
                     starting_ratings[name] = pts_before
 
-    # --- Build timeline for each elite team ---
-    team_history: dict = {name: [(start_point_date, starting_ratings.get(name, teams.get(name, 1000)))]
-                          for name in elite_names}
+    # --- Build sparse match timeline per team, tracking global match_index
+    #     (index into `history`) so depreciation can use form-at-that-point ---
+    sparse: dict = {name: [] for name in elite_names}  # list of (date, pts, match_index)
     all_dates = {start_point_date}
 
-    for m in sorted_hist:
+    for idx, m in enumerate(history):
         date_str = m.get("date", "")
         if not date_str or date_str == "N/A":
             continue
@@ -1074,51 +1089,79 @@ def elite_over_time(
             name = m[side]["name"]
             pts  = m[side].get("pts_after")
             if name in elite_names and pts is not None:
-                team_history[name].append((date_key, round(pts, 2)))
+                sparse[name].append((date_key, round(pts, 2), idx))
 
     all_dates.add(end_date)
-    all_dates_sorted = sorted(all_dates)
 
-    # --- Build series with depreciation applied to end point ---
+    # --- Expand each team to day-by-day points with incremental depreciation ---
     series = []
     for name in sorted(elite_names, key=lambda n: teams.get(n, 0), reverse=True):
-        pts_list = team_history.get(name, [])
-        if len(pts_list) < 2:
+        matches = sparse.get(name, [])
+        if not matches:
             continue
 
-        # Apply depreciation from last match to end_date
-        last_date_str, last_rating = pts_list[-1]
-        try:
-            last_date_obj = datetime.strptime(last_date_str, "%Y-%m-%d").date()
-            end_date_obj  = datetime.strptime(end_date, "%Y-%m-%d").date()
-            days_inactive = (end_date_obj - last_date_obj).days
-        except ValueError:
-            days_inactive = 0
+        matches.sort(key=lambda t: t[0])  # ensure chronological
+        start_rating = starting_ratings.get(name, teams.get(name, 1000))
 
-        depreciated_end = _calculate_depreciation(last_rating, days_inactive)
-        final_rating = round(depreciated_end, 2)
-        has_depreciation = days_inactive > DEPRECIATION_THRESHOLD
+        # match_dates: date -> (pts, match_index)
+        match_dates = {d: (p, mi) for d, p, mi in matches}
 
-        # End point
-        end_pts = [(end_date, final_rating)]
+        first_match_date = datetime.strptime(matches[0][0], "%Y-%m-%d").date()
+        start_point = max(start_dt, first_match_date - timedelta(days=1))
 
-        initial_rating = pts_list[0][1]
-        diff = final_rating - initial_rating
-        peak = team_peaks_in_range.get(name, last_rating)
+        day_points = []
+        current_rating    = start_rating
+        last_match_day     = first_match_date
+        last_match_index   = matches[0][2]
+
+        current_day = start_point
+        while current_day <= end_dt:
+            date_key = current_day.strftime("%Y-%m-%d")
+            if date_key in match_dates:
+                current_rating, last_match_index = match_dates[date_key]
+                last_match_day = current_day
+
+            days_inactive = (current_day - last_match_day).days
+            display_rating = _calculate_depreciation(
+                current_rating, days_inactive,
+                team_name=name, match_index=last_match_index + 1, history=history
+            )
+
+            day_points.append({
+                "date":       date_key,
+                "pts":        round(display_rating, 2),
+                "match":      date_key in match_dates,
+                "above":      display_rating >= ELITE_THRESHOLD,
+                "deprecated": days_inactive > DEPRECIATION_THRESHOLD,
+            })
+            current_day += timedelta(days=1)
+
+        if not day_points:
+            continue
+
+        final_rating   = day_points[-1]["pts"]
+        initial_rating = day_points[0]["pts"]
+        diff           = final_rating - initial_rating
+        peak           = team_peaks_in_range.get(name, current_rating)
+        above_thresh   = final_rating >= ELITE_THRESHOLD
+        has_depreciation = any(p["deprecated"] for p in day_points)
+
         current_rank = sorted(teams.items(), key=lambda x: x[1], reverse=True)
         rank = next((i + 1 for i, (n, _) in enumerate(current_rank) if n == name), None)
 
         series.append({
             "name":             name,
-            "points":           [{"date": d, "pts": p} for d, p in pts_list] + [{"date": end_date, "pts": final_rating}],
+            "points":           day_points,
             "initial_rating":   round(initial_rating, 2),
             "final_rating":     final_rating,
             "peak_in_range":    round(peak, 2),
             "diff":             round(diff, 2),
             "rank":             rank,
-            "above_threshold":  final_rating >= ELITE_THRESHOLD,
+            "above_threshold":  above_thresh,
             "has_depreciation": has_depreciation,
         })
+
+    all_dates_sorted = sorted(all_dates | {p["date"] for s in series for p in s["points"]})
 
     return {
         "start_date":        start_date,
@@ -1171,3 +1214,4 @@ def health():
 
 if FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+    
