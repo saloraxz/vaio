@@ -93,6 +93,8 @@ PITY_MAX_PERCENT       = 0.65
 PITY_MAX_POINTS        = 9
 PITY_MIN_POINTS        = 6
 
+ELITE_THRESHOLD        = 850
+
 # Form + depreciation — exact port of DEFAULT_CONFIG in CSRS.py.
 # Used to compute the day-before-match depreciation transition point
 # on the Elite Teams Over Time graph.
