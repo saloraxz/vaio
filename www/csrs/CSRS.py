@@ -20,7 +20,7 @@ import bisect
 import time
 from datetime import datetime, timedelta
 from tkinter import Tk
-from typing import Dict, List, Tuple, Optional, Any # pyright: ignore[reportMissingImports]
+from typing import Dict, List, Tuple, Optional, Any
 
 # =============================================================================
 # === DEPENDENCY MANAGEMENT ===
@@ -38,7 +38,7 @@ def check_and_install_dependencies() -> bool:
     
     # Check playwright
     try:
-        from playwright.sync_api import sync_playwright # pyright: ignore[reportMissingImports]
+        from playwright.sync_api import sync_playwright
         print("[OK] playwright is installed")
     except ImportError:
         missing_deps.append("playwright")
@@ -7220,7 +7220,7 @@ def compare_csrs_vrs_rankings():
     vrs_fetch_date = datetime.now().strftime("%Y-%m-%d")
     
     try:
-        from playwright.sync_api import sync_playwright # pyright: ignore[reportMissingImports]
+        from playwright.sync_api import sync_playwright
         from datetime import date as date_cls
         
         today = date_cls.today()
@@ -7437,7 +7437,7 @@ class BrowserSession:
         if self.context is not None:
             return self  # already started — no-op, safe to call twice
 
-        from playwright.sync_api import sync_playwright # pyright: ignore[reportMissingImports]
+        from playwright.sync_api import sync_playwright
 
         self._playwright = sync_playwright().start()
         self.browser = self._playwright.chromium.launch(
@@ -7550,7 +7550,7 @@ def scrape_vrs_points(team_name, match_date=None, context=None):
         page = None
         owns_browser = context is None
         try:
-            from playwright.sync_api import sync_playwright # pyright: ignore[reportMissingImports]
+            from playwright.sync_api import sync_playwright
             if owns_browser:
                 p = sync_playwright().start()
                 browser = p.chromium.launch(
@@ -7790,7 +7790,7 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
     owns_browser = context is None
     
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout # type: ignore
+        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
         
         if owns_browser:
             print("  Starting browser...")
@@ -8173,7 +8173,7 @@ def scrape_event_tier(event_href: str, event_name: str = '', context=None) -> Tu
     owns_browser = context is None
 
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout # type: ignore
+        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
         if owns_browser:
             print("  Scraping event page for tier detection...")
@@ -8743,7 +8743,7 @@ def scrape_hltv_results(start_date: str, end_date: str = None, context=None) -> 
     seen = set()
 
     try:
-        from playwright.sync_api import sync_playwright # type: ignore
+        from playwright.sync_api import sync_playwright
 
         if owns_browser:
             p = sync_playwright().start()
@@ -9533,6 +9533,31 @@ if __name__ == "__main__":
 
     if args.auto or args.daemon:
         DAEMON_INTERVAL_MINUTES = 30
+        FORCE_TRIGGER_FILE = os.path.join(
+            os.environ.get("CSRS_DATA_DIR", "."), "force_import.trigger"
+        )
+
+        def _sleep_with_trigger_check(total_seconds: int):
+            """
+            Sleep in short increments, checking for a force-trigger file.
+            If found, delete it and return early so the daemon re-runs
+            the import immediately instead of waiting out the full interval.
+            Lets the admin panel "Run Import Now" button wake a sleeping
+            daemon instead of spawning a separate, disconnected process.
+            """
+            checked_every = 5  # seconds
+            elapsed = 0
+            while elapsed < total_seconds:
+                if os.path.exists(FORCE_TRIGGER_FILE):
+                    try:
+                        os.remove(FORCE_TRIGGER_FILE)
+                    except OSError:
+                        pass
+                    _batch_log("  [TRIGGER] Force-import signal received — running now.")
+                    return
+                time.sleep(checked_every)
+                elapsed += checked_every
+
         if args.daemon:
             _batch_log(
                 f"=== CSRS Daemon started — "
@@ -9540,6 +9565,12 @@ if __name__ == "__main__":
                 f"lookback {args.lookback}h ==="
             )
             print(f"CSRS daemon running. Ctrl+C to stop.")
+            # Clear any stale trigger file from a previous run on startup
+            if os.path.exists(FORCE_TRIGGER_FILE):
+                try:
+                    os.remove(FORCE_TRIGGER_FILE)
+                except OSError:
+                    pass
             try:
                 while True:
                     run_auto_import(lookback_hours=args.lookback)
@@ -9547,9 +9578,10 @@ if __name__ == "__main__":
                     _batch_log(
                         f"  Next check at "
                         f"{next_run.strftime('%H:%M:%S')} — "
-                        f"sleeping {DAEMON_INTERVAL_MINUTES} min."
+                        f"sleeping {DAEMON_INTERVAL_MINUTES} min "
+                        f"(or until force-triggered)."
                     )
-                    time.sleep(DAEMON_INTERVAL_MINUTES * 60)
+                    _sleep_with_trigger_check(DAEMON_INTERVAL_MINUTES * 60)
             except KeyboardInterrupt:
                 _batch_log("=== CSRS Daemon stopped by user ===")
                 print("\nDaemon stopped.")

@@ -17,7 +17,6 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -27,7 +26,6 @@ from pydantic import BaseModel
 
 DATA_FILE = Path(os.environ.get("CSRS_DATA_FILE", "data.save"))
 FRONTEND_DIR = Path(os.environ.get("CSRS_FRONTEND_DIR", "frontend"))
-SOURCE_REF = os.environ.get("CSRS_SOURCE_REF", "unknown")
 
 # ---------------------------------------------------------------------------
 # App
@@ -92,8 +90,6 @@ PITY_THRESHOLD_PERCENT = 0.75
 PITY_MAX_PERCENT       = 0.65
 PITY_MAX_POINTS        = 9
 PITY_MIN_POINTS        = 6
-
-ELITE_THRESHOLD        = 850
 
 # Form + depreciation — exact port of DEFAULT_CONFIG in CSRS.py.
 # Used to compute the day-before-match depreciation transition point
@@ -441,6 +437,8 @@ def get_rankings(
             team_name = entry[side]["name"]
             team_spark[team_name].append(round(entry[side]["pts_after"], 2))
 
+    from datetime import datetime
+
     # Build date index for O(log n) last-match lookups
     date_index = _build_match_date_index(history)
     today = datetime.now()
@@ -492,6 +490,8 @@ def get_rankings(
 
 @app.get("/api/team/{team_name}")
 def get_team(team_name: str):
+    from datetime import datetime, timedelta
+
     data = load_data()
     teams: dict = data.get("teams", {})
     history: list = data.get("history", [])
@@ -500,21 +500,19 @@ def get_team(team_name: str):
 
     # resolve alias
     resolved = aliases.get(team_name.lower(), team_name)
-    # case-insensitive match
     matched = next((t for t in teams if t.lower() == resolved.lower()), None)
     if not matched:
         raise HTTPException(status_code=404, detail=f"Team '{team_name}' not found")
 
     pts = teams[matched]
-    ranked = sorted(teams.items(), key=lambda x: x[1], reverse=True)
-
-    # Apply depreciation for display
-    from datetime import datetime
     date_index = _build_match_date_index(history)
     today = datetime.now()
+    cutoff_3m = today - timedelta(days=90)
+
+    # Depreciation
     last_match_dt = _get_last_match_date(matched, index=date_index)
     days_inactive = (today - last_match_dt).days if last_match_dt else 0
-    dep_pts = _calculate_depreciation(pts, days_inactive, team_name=matched)
+    dep_pts = _calculate_depreciation(pts, days_inactive, team_name=matched, history=history)
     dep_loss = round(pts - dep_pts, 2)
 
     # Rank by depreciated ratings
@@ -522,11 +520,11 @@ def get_team(team_name: str):
     for n, p in teams.items():
         lm = _get_last_match_date(n, index=date_index)
         di = (today - lm).days if lm else 0
-        team_dep[n] = _calculate_depreciation(p, di, team_name=n)
+        team_dep[n] = _calculate_depreciation(p, di, team_name=n, history=history)
     ranked_dep = sorted(team_dep.items(), key=lambda x: x[1], reverse=True)
     rank = next((i + 1 for i, (n, _) in enumerate(ranked_dep) if n == matched), None)
 
-    # build rating history timeline
+    # Build full timeline
     timeline = []
     for entry in history:
         side = None
@@ -552,9 +550,65 @@ def get_team(team_name: str):
             "pts_after": round(me["pts_after"], 2),
             "pts_delta": round(me["pts_after"] - me["pts_before"], 2),
             "tier": entry["tier"],
-            "env": entry["env"],
+            "env": entry.get("env", "LAN"),
             "url": entry.get("url"),
         })
+
+    # 3-month filtered subset
+    def parse_date(s):
+        try:
+            return datetime.strptime(s.replace(" UTC", "").strip()[:10], "%Y-%m-%d")
+        except Exception:
+            return None
+
+    timeline_3m = [
+        m for m in timeline
+        if (pd := parse_date(m["date"])) and pd >= cutoff_3m
+    ]
+
+    # All-time stats
+    total_matches = len(timeline)
+    wins_all      = sum(1 for t in timeline if t["won"])
+    losses_all    = total_matches - wins_all
+
+    # 3-month stats
+    wins_3m   = sum(1 for t in timeline_3m if t["won"])
+    losses_3m = len(timeline_3m) - wins_3m
+    pts_delta_3m = round(
+        timeline_3m[-1]["pts_after"] - timeline_3m[0]["pts_before"], 2
+    ) if timeline_3m else 0.0
+
+    # Form — only from matches within the 3-month window (max 15)
+    # Build a history slice containing only 3m matches, preserving global indices
+    # so _calculate_form_at_match_index gets the right pts_before values.
+    # Easiest: find the global index of the first 3m match, then call with that slice.
+    first_3m_global_idx = None
+    for gi, entry in enumerate(history):
+        t1n = entry.get("t1", {}).get("name")
+        t2n = entry.get("t2", {}).get("name")
+        if t1n != matched and t2n != matched:
+            continue
+        pd = parse_date(entry.get("date", ""))
+        if pd and pd >= cutoff_3m:
+            first_3m_global_idx = gi
+            break
+
+    form_data = None
+    if first_3m_global_idx is not None:
+        # Restrict streak/score to 3-month-window matches only
+        form_3m = _calculate_form_at_match_index(
+            matched, len(history), history,
+            n=len(timeline_3m) if timeline_3m else 15
+        )
+        if form_3m:
+            grade, score, streak = form_3m
+            recent_5 = streak[-5:] if len(streak) >= 5 else streak
+            form_data = {
+                "grade": grade,
+                "score": round(score, 1),
+                "streak": streak,
+                "recent": recent_5,
+            }
 
     peak_info = peaks.get(matched, {})
 
@@ -566,10 +620,17 @@ def get_team(team_name: str):
         "days_inactive": days_inactive,
         "rank": rank,
         "peak": peak_info,
-        "total_matches": len(timeline),
-        "wins": sum(1 for t in timeline if t["won"]),
-        "losses": sum(1 for t in timeline if not t["won"]),
+        "form": form_data,
+        # All-time
+        "total_matches": total_matches,
+        "wins": wins_all,
+        "losses": losses_all,
+        # 3-month window
+        "wins_3m": wins_3m,
+        "losses_3m": losses_3m,
+        "pts_delta_3m": pts_delta_3m,
         "timeline": timeline,
+        "timeline_3m": timeline_3m,
     }
 
 
@@ -700,6 +761,8 @@ def simulate(req: SimRequest):
         form_adj_2=fa2,
         t1_provisional=name1 in provisional,
         t2_provisional=name2 in provisional,
+        t1_provisional_matches=provisional.get(name1, 0),
+        t2_provisional_matches=provisional.get(name2, 0),
     )
 
     # Get current ranks using depreciated ratings
@@ -724,6 +787,8 @@ def simulate(req: SimRequest):
             "days_inactive": r1_days,
             "rank": rank1,
             "form_adj": fa1,
+            "provisional": name1 in provisional,
+            "provisional_matches_played": provisional.get(name1, 0),
         },
         "team2": {
             "name": name2,
@@ -733,6 +798,8 @@ def simulate(req: SimRequest):
             "days_inactive": r2_days,
             "rank": rank2,
             "form_adj": fa2,
+            "provisional": name2 in provisional,
+            "provisional_matches_played": provisional.get(name2, 0),
         },
         "tier": req.tier,
         "env":  req.env,
@@ -839,9 +906,11 @@ def head_to_head(team1: str = Query(...), team2: str = Query(...)):
 # Elite Teams Over Time — matches CSRS.py display_elite_teams_over_time()
 # ---------------------------------------------------------------------------
 
-def _calculate_form_at_match_index(team_name: str, match_index: int, history: list):
+def _calculate_form_at_match_index(team_name: str, match_index: int, history: list, n: int = 15):
     """
-    Exact port of CSRS.py calculate_form_at_match_index.
+    Exact port of CSRS.py calculate_form_at_match_index (default n=15, matching
+    CSRS.py exactly). The `n` parameter is an extension used by get_team() to
+    compute a 3-month-windowed form score — CSRS.py itself never varies it.
     Calculates form using only matches strictly before `match_index`,
     so historical transition points never leak future results.
     Returns (grade, score, streak) or None if insufficient data.
@@ -863,7 +932,7 @@ def _calculate_form_at_match_index(team_name: str, match_index: int, history: li
     if len(team_matches) < 3:
         return None
 
-    recent = team_matches[-15:]
+    recent = team_matches[-n:]
     total_weight = 0.0
     win_weighted = 0.0
     map_wins_weighted = 0.0
@@ -882,7 +951,7 @@ def _calculate_form_at_match_index(team_name: str, match_index: int, history: li
 
         matches_ago = len(recent) - 1 - idx
         exponent = 2.0
-        normalized = matches_ago / 14
+        normalized = matches_ago / max(1, len(recent) - 1)
         recency = 1.0 - (normalized ** exponent) * 0.85
         recency = max(0.15, recency)
 
@@ -922,7 +991,7 @@ def _calculate_form_at_match_index(team_name: str, match_index: int, history: li
 
     base_score = win_score + map_score + comp_score
 
-    streak = ''.join(streak_chars[-15:])
+    streak = ''.join(streak_chars[-n:])
     streak_bonus = 0.0
     consecutive_losses = 0
 
@@ -1208,263 +1277,6 @@ def meta():
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
-def _parse_match_datetime(date_str: str):
-    """Parse CSRS history date strings into datetime values."""
-    if not date_str:
-        return None
-
-    clean = str(date_str).replace(" UTC", "").strip()
-    if not clean or clean == "N/A":
-        return None
-
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(clean[:16] if fmt == "%Y-%m-%d %H:%M" else clean[:10], fmt)
-        except Exception:
-            continue
-    return None
-
-
-def _build_daily_rating_snapshots(history: list) -> tuple:
-    """
-    Build daily end-of-day Elo snapshots from chronological match history.
-    Returns:
-      - daily_snapshots: {"YYYY-MM-DD": {team_name: pts_after}}
-      - daily_match_counts: {"YYYY-MM-DD": int}
-    """
-    sortable = []
-    for idx, match in enumerate(history):
-        dt = _parse_match_datetime(match.get("date", ""))
-        if dt is None:
-            continue
-        sortable.append((dt, idx, match))
-
-    sortable.sort(key=lambda x: (x[0], x[1]))
-
-    current_points = {}
-    daily_snapshots = {}
-    daily_match_counts = {}
-
-    current_day = None
-
-    for dt, _, match in sortable:
-        day_key = dt.strftime("%Y-%m-%d")
-
-        if current_day is None:
-            current_day = day_key
-        elif day_key != current_day:
-            daily_snapshots[current_day] = dict(current_points)
-            current_day = day_key
-
-        t1 = match.get("t1", {})
-        t2 = match.get("t2", {})
-
-        t1_name = t1.get("name")
-        t2_name = t2.get("name")
-
-        if t1_name:
-            current_points.setdefault(t1_name, float(t1.get("pts_before", 0.0)))
-            current_points[t1_name] = float(t1.get("pts_after", current_points[t1_name]))
-
-        if t2_name:
-            current_points.setdefault(t2_name, float(t2.get("pts_before", 0.0)))
-            current_points[t2_name] = float(t2.get("pts_after", current_points[t2_name]))
-
-        daily_match_counts[day_key] = daily_match_counts.get(day_key, 0) + 1
-
-    if current_day is not None:
-        daily_snapshots[current_day] = dict(current_points)
-
-    return daily_snapshots, daily_match_counts
-
-
-def _top_rankings_for_snapshot(points_by_team: dict, limit: int) -> list:
-    ranked = sorted(points_by_team.items(), key=lambda x: x[1], reverse=True)[:limit]
-    return [
-        {
-            "rank": idx,
-            "name": name,
-            "points": round(float(pts), 2),
-        }
-        for idx, (name, pts) in enumerate(ranked, 1)
-    ]
-
-
-@app.get("/api/raw/elo-per-day")
-def raw_elo_per_day(
-    days: int = Query(30, ge=1, le=3650),
-    teams: int = Query(10, ge=1, le=100),
-):
-    """Return end-of-day Elo ranking snapshots for the most recent days."""
-    data = load_data()
-    history: list = data.get("history", [])
-
-    daily_snapshots, daily_match_counts = _build_daily_rating_snapshots(history)
-    all_dates = sorted(daily_snapshots.keys())
-    selected_dates = all_dates[-days:]
-
-    rows = []
-    for day in selected_dates:
-        rows.append({
-            "date": day,
-            "matches": daily_match_counts.get(day, 0),
-            "top": _top_rankings_for_snapshot(daily_snapshots[day], teams),
-        })
-
-    return {
-        "days_requested": days,
-        "teams_per_day": teams,
-        "days_returned": len(rows),
-        "data": rows,
-    }
-
-
-@app.get("/api/raw/on-this-day")
-def raw_on_this_day(
-    month: int = Query(datetime.now().month, ge=1, le=12),
-    day: int = Query(datetime.now().day, ge=1, le=31),
-    limit: int = Query(10, ge=1, le=100),
-):
-    """Return historical rankings captured on a given month/day across years."""
-    data = load_data()
-    history: list = data.get("history", [])
-
-    daily_snapshots, daily_match_counts = _build_daily_rating_snapshots(history)
-
-    matches = []
-    for date_key in sorted(daily_snapshots.keys(), reverse=True):
-        dt = _parse_match_datetime(date_key)
-        if dt is None:
-            continue
-        if dt.month == month and dt.day == day:
-            matches.append({
-                "date": date_key,
-                "year": dt.year,
-                "matches": daily_match_counts.get(date_key, 0),
-                "top": _top_rankings_for_snapshot(daily_snapshots[date_key], limit),
-            })
-
-    return {
-        "target": f"{month:02d}-{day:02d}",
-        "limit": limit,
-        "snapshots": matches,
-    }
-
-
-@app.get("/api/raw.txt", response_class=PlainTextResponse)
-def raw_text(
-    limit: int = Query(25, ge=1, le=200),
-    matches: int = Query(20, ge=1, le=200),
-    daily_days: int = Query(14, ge=1, le=3650),
-    daily_teams: int = Query(5, ge=1, le=50),
-    on_this_day_limit: int = Query(5, ge=1, le=50),
-    month: Optional[int] = Query(None, ge=1, le=12, description="Month for on-this-day (1-12, defaults to today)"),
-    day: Optional[int] = Query(None, ge=1, le=31, description="Day for on-this-day (1-31, defaults to today)"),
-):
-    """Render CSRS data in plain text for raw.saloraxz.com."""
-    data = load_data()
-    teams: dict = data.get("teams", {})
-    history: list = data.get("history", [])
-
-    ranked = sorted(teams.items(), key=lambda x: x[1], reverse=True)[:limit]
-    recent = list(reversed(history))[:matches]
-
-    daily_snapshots, daily_match_counts = _build_daily_rating_snapshots(history)
-    all_snapshot_dates = sorted(daily_snapshots.keys())
-    daily_rows = []
-    for d in all_snapshot_dates[-daily_days:]:
-        top = _top_rankings_for_snapshot(daily_snapshots[d], daily_teams)
-        daily_rows.append({
-            "date": d,
-            "matches": daily_match_counts.get(d, 0),
-            "top": top,
-        })
-
-    today = datetime.now()
-    otd_month = month if month is not None else today.month
-    otd_day = day if day is not None else today.day
-    otd_key = f"{otd_month:02d}-{otd_day:02d}"
-    on_this_day_rows = []
-    for d in sorted(daily_snapshots.keys(), reverse=True):
-        if d[5:] != otd_key:
-            continue
-        on_this_day_rows.append({
-            "date": d,
-            "matches": daily_match_counts.get(d, 0),
-            "top": _top_rankings_for_snapshot(daily_snapshots[d], on_this_day_limit),
-        })
-
-    lines = [
-        "CSRS RAW DATA (TEXT ONLY)",
-        "========================",
-        f"source_ref: {SOURCE_REF}",
-        f"generated: {datetime.now().isoformat(timespec='seconds')}",
-        f"data_file: {DATA_FILE}",
-        f"total_teams: {len(teams)}",
-        f"total_matches: {len(history)}",
-        f"daily_snapshot_days: {len(all_snapshot_dates)}",
-        "",
-        f"TOP {len(ranked)} RANKINGS",
-        "----------------",
-    ]
-
-    for idx, (name, pts) in enumerate(ranked, 1):
-        lines.append(f"{idx:>3}. {name} | {pts:.2f}")
-
-    lines.extend([
-        "",
-        f"RECENT {len(recent)} MATCHES",
-        "-----------------",
-    ])
-
-    for m in recent:
-        t1 = m.get("t1", {})
-        t2 = m.get("t2", {})
-        date = str(m.get("date", "N/A"))
-        event = str(m.get("event", "N/A"))
-        tier = str(m.get("tier", "N/A"))
-        env = str(m.get("env", "N/A"))
-        lines.append(
-            f"{date} | {event} | tier={tier} env={env} | "
-            f"{t1.get('name', '?')} {t1.get('score', '?')}-{t2.get('score', '?')} {t2.get('name', '?')}"
-        )
-
-    lines.extend([
-        "",
-        f"ELO PER DAY (LAST {len(daily_rows)} DAYS, TOP {daily_teams})",
-        "---------------------------------------------",
-    ])
-
-    if not daily_rows:
-        lines.append("No daily snapshots available.")
-    else:
-        for row in daily_rows:
-            top_str = " | ".join([
-                f"#{item['rank']} {item['name']} {item['points']:.2f}"
-                for item in row["top"]
-            ])
-            lines.append(f"{row['date']} | matches={row['matches']} | {top_str}")
-
-    lines.extend([
-        "",
-        f"ON THIS DAY RANKINGS ({otd_key}, TOP {on_this_day_limit})",
-        "-------------------------------------",
-    ])
-
-    if not on_this_day_rows:
-        lines.append("No historical snapshots for this month/day.")
-    else:
-        for row in on_this_day_rows:
-            top_str = " | ".join([
-                f"#{item['rank']} {item['name']} {item['points']:.2f}"
-                for item in row["top"]
-            ])
-            lines.append(f"{row['date']} | matches={row['matches']} | {top_str}")
-
-    lines.extend(["", "END"])
-    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
