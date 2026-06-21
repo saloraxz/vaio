@@ -1646,6 +1646,9 @@ function renderElite(d) {
 
   // Hard-floor the y-axis at the elite threshold — anything below 850 is out
   // of scope for this chart, so we don't extend the axis down to show dips.
+  // The transition marker at a decayed line's end still plots at its true
+  // (possibly sub-850) value; if that's below the floor it sits at/below
+  // the visible bottom edge rather than the axis expanding to fit it.
   let maxVal = d.elite_threshold;
   series.forEach(team => team.points.forEach(p => {
     if (p.pts > maxVal) maxVal = p.pts;
@@ -1783,21 +1786,30 @@ function attachAutocomplete(inputId, dropdownId, kind, onSelect) {
   function renderDropdown(items) {
     currentItems = items;
     highlightIdx = -1;
+    dd.innerHTML = '';
     if (!items.length) {
       dd.innerHTML = '<div class="search-dropdown-empty">No teams found</div>';
       dd.classList.add('open');
       return;
     }
-    dd.innerHTML = items.map((name, i) => `
-      <div class="search-dropdown-item" data-idx="${i}" onclick="(function(){
-        document.getElementById('${inputId}').value = ${JSON.stringify(name)};
-        document.getElementById('${dropdownId}').classList.remove('open');
-        document.getElementById('${dropdownId}').innerHTML = '';
-        (${onSelect.toString()})(${JSON.stringify(name)});
-      })()">
-        <span>${name}</span>
-      </div>
-    `).join('');
+    items.forEach((name, i) => {
+      const item = document.createElement('div');
+      item.className = 'search-dropdown-item';
+      item.dataset.idx = String(i);
+      const span = document.createElement('span');
+      span.textContent = name;
+      item.appendChild(span);
+      // Real listener with `name` captured by closure — avoids serializing
+      // onSelect.toString() into an HTML attribute, which broke for any name
+      // containing a quote character (the embedded JSON.stringify() output
+      // terminated the onclick="..." attribute early).
+      item.addEventListener('click', () => {
+        input.value = name;
+        closeDropdown();
+        onSelect(name);
+      });
+      dd.appendChild(item);
+    });
     dd.classList.add('open');
   }
 
