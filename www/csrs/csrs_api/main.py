@@ -440,8 +440,6 @@ def get_rankings(
             team_name = entry[side]["name"]
             team_spark[team_name].append(round(entry[side]["pts_after"], 2))
 
-    from datetime import datetime
-
     # Build date index for O(log n) last-match lookups
     date_index = _build_match_date_index(history)
     today = datetime.now()
@@ -1142,6 +1140,37 @@ def elite_over_time(
                 if pts_before is not None:
                     starting_ratings[name] = pts_before
 
+    # --- Carry forward each team's rating from BEFORE the window, so a short
+    #     range (e.g. "Last Month") doesn't start a team's line mid-chart at
+    #     their first in-range match — it should pick up wherever their
+    #     rating actually was the moment start_dt began, exactly like the
+    #     "3 months" / "all time" views already show. We scan history once,
+    #     in order, tracking each elite team's pts_after and its global index
+    #     for every match strictly before start_dt; the last one we see is
+    #     their carried-forward state at the start of the window.
+    carried_rating: dict = {}   # name -> pts_after just before start_dt
+    carried_index:  dict = {}   # name -> global history index of that match
+    carried_date:   dict = {}   # name -> date() of that match
+    for idx, m in enumerate(history):
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        try:
+            match_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if match_date >= start_dt:
+            continue
+        for side in ("t1", "t2"):
+            name = m[side]["name"]
+            if name not in elite_names:
+                continue
+            pts = m[side].get("pts_after")
+            if pts is not None:
+                carried_rating[name] = pts
+                carried_index[name] = idx
+                carried_date[name] = match_date
+
     # --- Build sparse match timeline per team, tracking global match_index
     #     (index into `history`) so depreciation can use form-at-that-point ---
     sparse: dict = {name: [] for name in elite_names}  # list of (date, pts, match_index)
@@ -1175,18 +1204,32 @@ def elite_over_time(
             continue
 
         matches.sort(key=lambda t: t[0])  # ensure chronological
-        start_rating = starting_ratings.get(name, teams.get(name, 1000))
 
         # match_dates: date -> (pts, match_index)
         match_dates = {d: (p, mi) for d, p, mi in matches}
 
         first_match_date = datetime.strptime(matches[0][0], "%Y-%m-%d").date()
-        start_point = max(start_dt, first_match_date - timedelta(days=1))
+
+        if name in carried_rating:
+            # Team already had a rating going into this window (from a match
+            # before start_dt) — start the line at start_dt itself, carrying
+            # forward that rating (with depreciation applied for any gap up
+            # to the window) instead of starting mid-chart at the first
+            # in-range match.
+            start_rating     = carried_rating[name]
+            start_point       = start_dt
+            last_match_day    = carried_date[name]
+            last_match_index  = carried_index[name]
+        else:
+            # No match before start_dt for this team — fall back to the old
+            # behavior: start one day before their first in-range match.
+            start_rating      = starting_ratings.get(name, teams.get(name, 1000))
+            start_point        = max(start_dt, first_match_date - timedelta(days=1))
+            last_match_day     = first_match_date
+            last_match_index   = matches[0][2]
 
         day_points = []
         current_rating    = start_rating
-        last_match_day     = first_match_date
-        last_match_index   = matches[0][2]
 
         current_day = start_point
         while current_day <= end_dt:

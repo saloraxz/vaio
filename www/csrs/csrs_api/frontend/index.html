@@ -1556,7 +1556,7 @@ function renderElite(d) {
     ? d.all_dates
     : [...new Set(series.flatMap(team => (team.points || []).map(p => p.date)))].sort();
 
-  // Build per-team byDate lookup (stored on dataset for the custom dash plugin)
+  // Build per-team byDate lookup (used for marker styling and tooltips)
   const datasets = series.map((team, i) => {
     const color = ELITE_COLORS[i % ELITE_COLORS.length];
     const hasFlags = team.points.length > 0 && 'match' in team.points[0];
@@ -1569,39 +1569,31 @@ function renderElite(d) {
     const firstIdx = realIdx[0];
     const lastIdx  = realIdx[realIdx.length - 1];
 
-    // Dots on match days; hollow at start/end like CSRS.py; smaller white-outline
-    // dots on "transition" days — the flat-to-diagonal bend the day before a
-    // match, ported from CSRS.py's circle markers (changelog #12). The very
-    // last point also gets this transition treatment when the line trails
-    // off mid-decay (deprecated), so a dashed segment never just stops with
-    // nothing marking where it ends.
+    // Dots on match days; hollow at start/end like CSRS.py. The last point
+    // also gets a regular solid dot when the line trails off mid-decay, so a
+    // segment never just stops with nothing marking where it ends.
     const endIsTransition = p => p && p.deprecated;
     const pointRadius = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return 0;
-      if (idx === lastIdx && endIsTransition(p)) return 3;
       if (idx === firstIdx || idx === lastIdx) return 5;
+      if (idx === lastIdx && endIsTransition(p)) return 4;
       if (hasFlags && p.match) return 4;
-      if (hasFlags && p.transition) return 3;
+      if (hasFlags && p.transition) return 4;
       return 0;
     });
     const pointBg = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return 'transparent';
-      if (idx === lastIdx && endIsTransition(p)) return (!p.above) ? color + '88' : color;
       if (idx === firstIdx || idx === lastIdx) return '#16181c'; // hollow
-      if (hasFlags && p.match) return (!p.above) ? color + '88' : color;
-      if (hasFlags && p.transition) return (!p.above) ? color + '88' : color;
+      if (idx === lastIdx && endIsTransition(p)) return color;
+      if (hasFlags && p.match) return color;
+      if (hasFlags && p.transition) return color;
       return 'transparent';
     });
     const pointBorder = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return color;
-      if (idx === lastIdx && endIsTransition(p)) return p.above ? '#ffffff' : color;
-      if (idx === firstIdx || idx === lastIdx) return color;
-      // Transition markers get a white outline (when above threshold) like
-      // the desktop app, so they read as distinct from regular match dots.
-      if (hasFlags && p.transition && !p.match) return p.above ? '#ffffff' : color;
       return color;
     });
 
@@ -1619,23 +1611,6 @@ function renderElite(d) {
       pointHoverRadius: 7,
       tension: 0,
       spanGaps: true,
-      // Per-segment styling: dashed line while a team is decaying from
-      // inactivity, dimmed line while below the elite threshold.
-      // ctx.p1DataIndex is the index of the segment's END point — the
-      // flags on that point describe the segment leading into it.
-      segment: hasFlags ? {
-        borderDash: ctx => {
-          const p = byDate[labels[ctx.p1DataIndex]];
-          return (p && p.deprecated) ? [5, 4] : [];
-        },
-        borderColor: ctx => {
-          const p = byDate[labels[ctx.p1DataIndex]];
-          if (!p) return color;
-          if (p.deprecated) return color + 'aa';
-          if (!p.above)     return color + '55';
-          return color;
-        },
-      } : undefined,
       // Store metadata for tooltip lookups
       _byDate:   byDate,
       _hasFlags: hasFlags,
@@ -1672,16 +1647,18 @@ function renderElite(d) {
           titleColor: '#e8eaf0',
           bodyColor: '#7a7f8e',
           filter: item => item.parsed.y !== null && item.parsed.y !== undefined,
+          // Sort rows by this date's actual value (highest first), not by
+          // each team's final/end-of-range rank.
+          itemSort: (a, b) => b.parsed.y - a.parsed.y,
           callbacks: {
             title: items => items[0].label,
+            labelColor: item => {
+              const dsColor = item.dataset.borderColor;
+              return { borderColor: dsColor, backgroundColor: dsColor };
+            },
             label: item => {
-              const team = series[item.datasetIndex];
-              const p = team?.points?.find(pt => pt.date === item.label);
               const elite = item.parsed.y >= d.elite_threshold ? '●' : '○';
-              const dep   = (p && p.deprecated)  ? ' ~decaying'   : '';
-              const mtch  = (p && p.match)       ? ' ◆match'      : '';
-              const trans = (p && p.transition)  ? ' ◦transition' : '';
-              return ` ${elite} ${item.dataset.label}: ${item.parsed.y.toFixed(1)}${dep}${mtch}${trans}`;
+              return ` ${elite} ${item.dataset.label}: ${item.parsed.y.toFixed(1)}`;
             }
           }
         },
