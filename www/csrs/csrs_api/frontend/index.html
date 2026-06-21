@@ -1571,10 +1571,15 @@ function renderElite(d) {
 
     // Dots on match days; hollow at start/end like CSRS.py; smaller white-outline
     // dots on "transition" days — the flat-to-diagonal bend the day before a
-    // match, ported from CSRS.py's circle markers (changelog #12).
+    // match, ported from CSRS.py's circle markers (changelog #12). The very
+    // last point also gets this transition treatment when the line trails
+    // off mid-decay (deprecated), so a dashed segment never just stops with
+    // nothing marking where it ends.
+    const endIsTransition = p => p && p.deprecated;
     const pointRadius = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return 0;
+      if (idx === lastIdx && endIsTransition(p)) return 3;
       if (idx === firstIdx || idx === lastIdx) return 5;
       if (hasFlags && p.match) return 4;
       if (hasFlags && p.transition) return 3;
@@ -1583,6 +1588,7 @@ function renderElite(d) {
     const pointBg = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return 'transparent';
+      if (idx === lastIdx && endIsTransition(p)) return (!p.above) ? color + '88' : color;
       if (idx === firstIdx || idx === lastIdx) return '#16181c'; // hollow
       if (hasFlags && p.match) return (!p.above) ? color + '88' : color;
       if (hasFlags && p.transition) return (!p.above) ? color + '88' : color;
@@ -1591,6 +1597,7 @@ function renderElite(d) {
     const pointBorder = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return color;
+      if (idx === lastIdx && endIsTransition(p)) return p.above ? '#ffffff' : color;
       if (idx === firstIdx || idx === lastIdx) return color;
       // Transition markers get a white outline (when above threshold) like
       // the desktop app, so they read as distinct from regular match dots.
@@ -1637,48 +1644,18 @@ function renderElite(d) {
     };
   });
 
-  // The y-axis used to hard-floor at the elite threshold, which *clipped*
-  // any below-threshold dip clean off the chart — leaving only the parts of
-  // a borderline team's line that stayed above 850 visible, looking like
-  // disconnected dots. Compute real bounds from the data instead, with
-  // headroom below the threshold so dips render (dimmed, via the existing
-  // segment styling) instead of vanishing.
-  let minVal = d.elite_threshold;
+  // Hard-floor the y-axis at the elite threshold — anything below 850 is out
+  // of scope for this chart, so we don't extend the axis down to show dips.
   let maxVal = d.elite_threshold;
   series.forEach(team => team.points.forEach(p => {
-    if (p.pts < minVal) minVal = p.pts;
     if (p.pts > maxVal) maxVal = p.pts;
   }));
-  const yMin = Math.floor(Math.min(minVal - 10, d.elite_threshold - 20) / 10) * 10;
+  const yMin = d.elite_threshold;
   const yMax = Math.ceil((maxVal + 10) / 10) * 10;
-
-  // Draws the elite-threshold line + label, since it's no longer pinned to
-  // the bottom axis edge.
-  const thresholdLinePlugin = {
-    id: 'thresholdLine',
-    afterDraw(chart) {
-      const { ctx, chartArea, scales: { y } } = chart;
-      const yPos = y.getPixelForValue(d.elite_threshold);
-      if (yPos < chartArea.top || yPos > chartArea.bottom) return;
-      ctx.save();
-      ctx.strokeStyle = '#e8eaf0';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(chartArea.left, yPos);
-      ctx.lineTo(chartArea.right, yPos);
-      ctx.stroke();
-      ctx.fillStyle = '#e8eaf0';
-      ctx.font = '10px Arial';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(`${d.elite_threshold} elite threshold`, chartArea.left + 4, yPos - 2);
-      ctx.restore();
-    }
-  };
 
   eliteChart = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets },
-    plugins: [thresholdLinePlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
