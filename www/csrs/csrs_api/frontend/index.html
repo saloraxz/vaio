@@ -1508,12 +1508,11 @@ function renderElite(d) {
   if (eliteChart) { eliteChart.destroy(); eliteChart = null; }
 
   // Every team that reached the elite threshold at any point in this range —
-  // including ones who didn't maintain it. Sorted by peak so the team that
-  // got highest, even briefly, ranks above one that's currently higher but
-  // never peaked as high.
+  // including ones who didn't maintain it. Sorted by current global rank so
+  // the legend order matches the # column shown next to each team.
   const series = (d.series || [])
     .slice()
-    .sort((a, b) => b.peak_in_range - a.peak_in_range);
+    .sort((a, b) => (a.rank ?? 9999) - (b.rank ?? 9999));
 
   if (series.length === 0) {
     setEl('elite-content', '<div class="empty-msg">No teams reached 850+ Elo in this date range.</div>');
@@ -1570,19 +1569,33 @@ function renderElite(d) {
     const firstIdx = realIdx[0];
     const lastIdx  = realIdx[realIdx.length - 1];
 
-    // Dots only on match days; hollow at start/end like CSRS.py
+    // Dots on match days; hollow at start/end like CSRS.py; smaller white-outline
+    // dots on "transition" days — the flat-to-diagonal bend the day before a
+    // match, ported from CSRS.py's circle markers (changelog #12).
     const pointRadius = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return 0;
       if (idx === firstIdx || idx === lastIdx) return 5;
-      return (hasFlags && !p.match) ? 0 : 4;
+      if (hasFlags && p.match) return 4;
+      if (hasFlags && p.transition) return 3;
+      return 0;
     });
     const pointBg = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return 'transparent';
       if (idx === firstIdx || idx === lastIdx) return '#16181c'; // hollow
-      if (hasFlags && !p.match) return 'transparent';
-      return (hasFlags && !p.above) ? color + '88' : color;
+      if (hasFlags && p.match) return (!p.above) ? color + '88' : color;
+      if (hasFlags && p.transition) return (!p.above) ? color + '88' : color;
+      return 'transparent';
+    });
+    const pointBorder = labels.map((l, idx) => {
+      const p = byDate[l];
+      if (!p) return color;
+      if (idx === firstIdx || idx === lastIdx) return color;
+      // Transition markers get a white outline (when above threshold) like
+      // the desktop app, so they read as distinct from regular match dots.
+      if (hasFlags && p.transition && !p.match) return p.above ? '#ffffff' : color;
+      return color;
     });
 
     return {
@@ -1594,21 +1607,78 @@ function renderElite(d) {
       pointRadius,
       pointStyle: 'circle',
       pointBackgroundColor: pointBg,
-      pointBorderColor: color,
+      pointBorderColor: pointBorder,
       pointBorderWidth: 2,
       pointHoverRadius: 7,
       tension: 0,
       spanGaps: true,
-      // Store metadata for the custom dashed-segment plugin below
+      // Per-segment styling: dashed line while a team is decaying from
+      // inactivity, dimmed line while below the elite threshold.
+      // ctx.p1DataIndex is the index of the segment's END point — the
+      // flags on that point describe the segment leading into it.
+      segment: hasFlags ? {
+        borderDash: ctx => {
+          const p = byDate[labels[ctx.p1DataIndex]];
+          return (p && p.deprecated) ? [5, 4] : [];
+        },
+        borderColor: ctx => {
+          const p = byDate[labels[ctx.p1DataIndex]];
+          if (!p) return color;
+          if (p.deprecated) return color + 'aa';
+          if (!p.above)     return color + '55';
+          return color;
+        },
+      } : undefined,
+      // Store metadata for tooltip lookups
       _byDate:   byDate,
       _hasFlags: hasFlags,
       _color:    color,
+      _team:     team,
     };
   });
+
+  // The y-axis used to hard-floor at the elite threshold, which *clipped*
+  // any below-threshold dip clean off the chart — leaving only the parts of
+  // a borderline team's line that stayed above 850 visible, looking like
+  // disconnected dots. Compute real bounds from the data instead, with
+  // headroom below the threshold so dips render (dimmed, via the existing
+  // segment styling) instead of vanishing.
+  let minVal = d.elite_threshold;
+  let maxVal = d.elite_threshold;
+  series.forEach(team => team.points.forEach(p => {
+    if (p.pts < minVal) minVal = p.pts;
+    if (p.pts > maxVal) maxVal = p.pts;
+  }));
+  const yMin = Math.floor(Math.min(minVal - 10, d.elite_threshold - 20) / 10) * 10;
+  const yMax = Math.ceil((maxVal + 10) / 10) * 10;
+
+  // Draws the elite-threshold line + label, since it's no longer pinned to
+  // the bottom axis edge.
+  const thresholdLinePlugin = {
+    id: 'thresholdLine',
+    afterDraw(chart) {
+      const { ctx, chartArea, scales: { y } } = chart;
+      const yPos = y.getPixelForValue(d.elite_threshold);
+      if (yPos < chartArea.top || yPos > chartArea.bottom) return;
+      ctx.save();
+      ctx.strokeStyle = '#e8eaf0';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(chartArea.left, yPos);
+      ctx.lineTo(chartArea.right, yPos);
+      ctx.stroke();
+      ctx.fillStyle = '#e8eaf0';
+      ctx.font = '10px Arial';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(`${d.elite_threshold} elite threshold`, chartArea.left + 4, yPos - 2);
+      ctx.restore();
+    }
+  };
 
   eliteChart = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets },
+    plugins: [thresholdLinePlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -1628,9 +1698,10 @@ function renderElite(d) {
               const team = series[item.datasetIndex];
               const p = team?.points?.find(pt => pt.date === item.label);
               const elite = item.parsed.y >= d.elite_threshold ? '●' : '○';
-              const dep   = (p && p.deprecated) ? ' ~decaying' : '';
-              const mtch  = (p && p.match)      ? ' ◆match'    : '';
-              return ` ${elite} ${item.dataset.label}: ${item.parsed.y.toFixed(1)}${dep}${mtch}`;
+              const dep   = (p && p.deprecated)  ? ' ~decaying'   : '';
+              const mtch  = (p && p.match)       ? ' ◆match'      : '';
+              const trans = (p && p.transition)  ? ' ◦transition' : '';
+              return ` ${elite} ${item.dataset.label}: ${item.parsed.y.toFixed(1)}${dep}${mtch}${trans}`;
             }
           }
         },
@@ -1643,6 +1714,8 @@ function renderElite(d) {
           grid: { color: '#2a2d35' },
         },
         y: {
+          min: yMin,
+          max: yMax,
           ticks: { color: '#7a7f8e' },
           grid: { color: '#2a2d35' },
           title: { display: true, text: 'CSRS Rating', color: '#7a7f8e', font: { size: 11 } },
@@ -1664,12 +1737,19 @@ function legendRow(team, idx) {
   const RANK_COLORS = { 1: '#FFD700', 2: '#C0C0C0', 3: '#CD7F32' };
   const nameColor = RANK_COLORS[team.rank] || 'var(--text)';
   const rankStr = team.rank ? `#${team.rank}` : '—';
+  // Teams that peaked above 850 but didn't hold it by the end of the range
+  // get dimmed + a small marker, so it's clear at a glance they dropped off
+  const droppedOff = !team.above_threshold;
+  const rowOpacity = droppedOff ? 0.55 : 1;
+  const dropMarker = droppedOff
+    ? `<span style="font-size:0.65rem;color:var(--red);margin-left:4px" title="Below 850 by end of range">▼</span>`
+    : '';
 
   return `
-    <div class="elite-legend-row" onclick="toggleEliteLine(${idx})" id="elite-leg-${idx}">
+    <div class="elite-legend-row" onclick="toggleEliteLine(${idx})" id="elite-leg-${idx}" style="opacity:${rowOpacity}">
       <span style="width:24px;flex-shrink:0"><span style="display:inline-block;width:24px;height:3px;background:${color};border-radius:2px"></span></span>
       <span style="width:28px;font-size:0.72rem;color:var(--muted)">${rankStr}</span>
-      <span style="flex:1;font-size:0.82rem;font-weight:600;color:${nameColor}">${team.name}</span>
+      <span style="flex:1;font-size:0.82rem;font-weight:600;color:${nameColor}">${team.name}${dropMarker}</span>
       <span style="width:110px;text-align:right;font-size:0.78rem;color:var(--muted);font-family:monospace">${Math.round(team.initial_rating)} → ${Math.round(team.final_rating)}</span>
       <span style="width:52px;text-align:right;font-size:0.78rem;font-weight:600;color:${diffColor}">${sign}${Math.round(team.diff)}</span>
       <span style="width:70px;text-align:right;font-size:0.72rem;color:var(--muted)">peak ${Math.round(team.peak_in_range)}</span>
@@ -1682,7 +1762,9 @@ function toggleEliteLine(index) {
   meta.hidden = !meta.hidden;
   eliteChart.update();
   const el = document.getElementById(`elite-leg-${index}`);
-  if (el) el.style.opacity = meta.hidden ? '0.35' : '1';
+  const team = eliteChart.data.datasets[index]?._team;
+  const baseOpacity = (team && !team.above_threshold) ? 0.55 : 1;
+  if (el) el.style.opacity = meta.hidden ? '0.2' : baseOpacity;
 }
 
 

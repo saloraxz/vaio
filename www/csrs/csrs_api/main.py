@@ -1188,7 +1188,16 @@ def elite_over_time(
         current_day = start_point
         while current_day <= end_dt:
             date_key = current_day.strftime("%Y-%m-%d")
-            if date_key in match_dates:
+            is_match_today = date_key in match_dates
+            if is_match_today:
+                # Port of CSRS.py's "flat-to-diagonal transition marker": a gap of
+                # more than 1 day between matches means there was a flat (or
+                # depreciating) run leading into this match. Mark the day
+                # immediately before it — the last point of that run — so the
+                # frontend can draw a circle at the bend, same as the desktop app.
+                gap_days = (current_day - last_match_day).days
+                if gap_days > 1 and day_points:
+                    day_points[-1]["transition"] = True
                 current_rating, last_match_index = match_dates[date_key]
                 last_match_day = current_day
 
@@ -1201,9 +1210,10 @@ def elite_over_time(
             day_points.append({
                 "date":       date_key,
                 "pts":        round(display_rating, 2),
-                "match":      date_key in match_dates,
+                "match":      is_match_today,
                 "above":      display_rating >= ELITE_THRESHOLD,
                 "deprecated": days_inactive > DEPRECIATION_THRESHOLD,
+                "transition": False,
             })
             current_day += timedelta(days=1)
 
@@ -1285,4 +1295,3 @@ def health():
 
 if FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
-    
