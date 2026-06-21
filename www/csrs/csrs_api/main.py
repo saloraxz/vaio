@@ -1312,6 +1312,16 @@ def list_teams(search: str = Query("")):
     return {"teams": sorted(teams)}
 
 
+@app.get("/api/events")
+def list_events(search: str = Query("")):
+    data = load_data()
+    history: list = data.get("history", [])
+    events = sorted({h["event"] for h in history if h.get("event")})
+    if search:
+        events = [e for e in events if search.lower() in e.lower()]
+    return {"events": events}
+
+
 # ---------------------------------------------------------------------------
 # Meta / health
 # ---------------------------------------------------------------------------

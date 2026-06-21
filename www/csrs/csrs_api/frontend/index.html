@@ -1775,6 +1775,7 @@ function attachAutocomplete(inputId, dropdownId, kind, onSelect) {
   let debounceTimer = null;
   let currentItems   = [];
   let highlightIdx    = -1;
+  let eventsFallbackCache = null; // lazily populated only for kind === 'event' if /api/events 404s
 
   function closeDropdown() {
     dd.classList.remove('open');
@@ -1829,10 +1830,29 @@ function attachAutocomplete(inputId, dropdownId, kind, onSelect) {
     debounceTimer = setTimeout(async () => {
       try {
         const res = await fetch(`${API}${endpoint}?search=${encodeURIComponent(q)}`);
+        if (!res.ok) throw new Error('endpoint unavailable');
         const data = await res.json();
         renderDropdown((data[resultKey] || []).slice(0, 8));
       } catch (e) {
-        closeDropdown();
+        // /api/events isn't deployed yet on some environments — fall back to
+        // event names already present in the analytics summary payload
+        // (top_events), filtered client-side. Only applies to kind 'event';
+        // 'team' always has a working /api/teams endpoint.
+        if (kind === 'event') {
+          try {
+            if (!eventsFallbackCache) {
+              const summary = await fetch(`${API}/api/analytics/summary`).then(r => r.json());
+              eventsFallbackCache = (summary.top_events || []).map(e => e.event);
+            }
+            const ql = q.toLowerCase();
+            const matches = eventsFallbackCache.filter(name => name.toLowerCase().includes(ql)).slice(0, 8);
+            renderDropdown(matches);
+          } catch (e2) {
+            closeDropdown();
+          }
+        } else {
+          closeDropdown();
+        }
       }
     }, 180);
   });
