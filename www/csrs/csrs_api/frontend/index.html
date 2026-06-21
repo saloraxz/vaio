@@ -557,7 +557,7 @@ tr:last-child td { border-bottom: none; }
   <div class="page" id="page-history">
     <div class="page-header"><h2>Match History</h2></div>
     <div class="controls">
-      <input type="text" id="hist-team"  placeholder="Team…" style="width:160px">
+      <input type="text" id="hist-team"  placeholder="Team…" style="width:160px" autocomplete="off">
       <select id="hist-tier">
         <option value="">All Tiers</option>
         <option value="S+">S+</option>
@@ -567,7 +567,7 @@ tr:last-child td { border-bottom: none; }
         <option value="C">C</option>
         <option value="D">D</option>
       </select>
-      <input type="text" id="hist-event" placeholder="Event…" style="width:200px">
+      <input type="text" id="hist-event" placeholder="Event…" style="width:200px" autocomplete="off">
       <button onclick="loadHistory(1)">Filter</button>
       <button class="secondary" onclick="clearHistoryFilters()">Clear</button>
     </div>
@@ -586,13 +586,13 @@ tr:last-child td { border-bottom: none; }
       <div class="sim-layout">
         <div class="sim-team-card">
           <div style="margin-bottom:8px;font-size:0.8rem;color:var(--muted)">TEAM 1</div>
-          <input type="text" id="sim-t1" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem">
+          <input type="text" id="sim-t1" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem" autocomplete="off">
           <div class="team-pts" id="sim-t1-pts" style="margin-top:8px"></div>
         </div>
         <div class="sim-vs">VS</div>
         <div class="sim-team-card">
           <div style="margin-bottom:8px;font-size:0.8rem;color:var(--muted)">TEAM 2</div>
-          <input type="text" id="sim-t2" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem">
+          <input type="text" id="sim-t2" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem" autocomplete="off">
           <div class="team-pts" id="sim-t2-pts" style="margin-top:8px"></div>
         </div>
       </div>
@@ -701,8 +701,8 @@ tr:last-child td { border-bottom: none; }
     <div class="page-header"><h2>Head to Head</h2></div>
     <div class="card">
       <div class="controls" style="margin-bottom:0">
-        <input type="text" id="h2h-t1" placeholder="Team 1…" style="width:200px">
-        <input type="text" id="h2h-t2" placeholder="Team 2…" style="width:200px">
+        <input type="text" id="h2h-t1" placeholder="Team 1…" style="width:200px" autocomplete="off">
+        <input type="text" id="h2h-t2" placeholder="Team 2…" style="width:200px" autocomplete="off">
         <button onclick="loadH2H()">Compare</button>
       </div>
     </div>
