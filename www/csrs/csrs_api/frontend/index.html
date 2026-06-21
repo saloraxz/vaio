@@ -1750,6 +1750,10 @@ function attachAutocomplete(inputId, dropdownId, kind, onSelect) {
   const dd    = document.getElementById(dropdownId);
   if (!input || !dd) return;
 
+  const endpoint  = kind === 'event' ? '/api/events' : '/api/teams';
+  const resultKey  = kind === 'event' ? 'events' : 'teams';
+  const emptyLabel = kind === 'event' ? 'No events found' : 'No teams found';
+
   let debounceTimer = null;
   let currentItems   = [];
   let highlightIdx    = -1;
@@ -1765,7 +1769,7 @@ function attachAutocomplete(inputId, dropdownId, kind, onSelect) {
     highlightIdx = -1;
     dd.innerHTML = '';
     if (!items.length) {
-      dd.innerHTML = '<div class="search-dropdown-empty">No teams found</div>';
+      dd.innerHTML = `<div class="search-dropdown-empty">${emptyLabel}</div>`;
       dd.classList.add('open');
       return;
     }
@@ -1806,9 +1810,9 @@ function attachAutocomplete(inputId, dropdownId, kind, onSelect) {
     if (!q) { closeDropdown(); return; }
     debounceTimer = setTimeout(async () => {
       try {
-        const res = await fetch(`${API}/api/teams?search=${encodeURIComponent(q)}`);
+        const res = await fetch(`${API}${endpoint}?search=${encodeURIComponent(q)}`);
         const data = await res.json();
-        renderDropdown((data.teams || []).slice(0, 8));
+        renderDropdown((data[resultKey] || []).slice(0, 8));
       } catch (e) {
         closeDropdown();
       }
