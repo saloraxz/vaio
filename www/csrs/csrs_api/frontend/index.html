@@ -1892,6 +1892,7 @@ async function loadTeamDetails(name) {
     var d = await api('/api/team/' + encodeURIComponent(name));
     renderTeamDetails(d);
   } catch(e) {
+    console.error('TEAM DETAILS DEBUG:', e); // TEMP — remove after debugging
     el.innerHTML = '<div class="error-msg">' + e.message + '</div>';
   }
 }
