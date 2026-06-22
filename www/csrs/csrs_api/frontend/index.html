@@ -491,10 +491,160 @@ tr:last-child td { border-bottom: none; }
   color: var(--muted);
 }
 
+/* ── Mobile bottom nav (hidden on desktop by default) ──
+   #bottom-nav is itself a nav element, so it would otherwise inherit the
+   sidebar's bare `nav { flex:1; padding:... }` and `nav > a { ... }`
+   rules above. #bottom-nav has higher specificity (ID vs element) so
+   it always wins on shared properties, but every property those rules
+   set must be explicitly re-declared here, not just the ones that
+   visibly differ, or some will silently leak through. */
+#bottom-nav {
+  display: none;
+  flex: none;
+  padding: 0;
+  overflow-y: visible;
+}
+.bottom-nav-item {
+  flex-direction: column;
+  font-weight: 500;
+  transition: none;
+  border-left: none;
+}
+.bottom-nav-item.active {
+  background: none;
+  border-left: none;
+}
+
+/* ── Home: shortcuts row ── */
+.home-shortcuts {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.home-shortcut-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  flex: 1;
+  min-width: 100px;
+  cursor: pointer;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.78rem;
+  text-align: center;
+}
+.home-shortcut-tile:hover { background: var(--surface2); border-color: var(--accent); }
+.home-shortcut-icon {
+  font-size: 1.4rem;
+  height: 1.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 /* ── Responsive ── */
 @media (max-width: 700px) {
   #sidebar { display: none; }
-  #main { margin-left: 0; padding: 16px; }
+  #main { margin-left: 0; padding: 16px; padding-bottom: 84px; }
+
+  .sim-layout {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 8px;
+  }
+  .sim-vs { padding-top: 0; }
+  .sim-team-card .search-wrap { max-width: 100%; }
+
+  #bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    z-index: 200;
+    padding: 8px 4px calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+  .bottom-nav-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 6px 0;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.68rem;
+    cursor: pointer;
+    border-radius: var(--radius);
+  }
+  .bottom-nav-item.active { color: var(--accent); }
+  .bottom-nav-icon {
+    font-size: 1.3rem;
+    height: 1.3rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+
+  #more-sheet-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 300;
+  }
+  #more-sheet-overlay.open { display: block; }
+
+  #more-sheet {
+    display: none;
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    border-radius: 16px 16px 0 0;
+    z-index: 301;
+    padding: 12px 20px calc(20px + env(safe-area-inset-bottom, 0px));
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+  #more-sheet.open { display: block; }
+  .more-sheet-handle {
+    width: 40px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    margin: 4px auto 16px;
+  }
+  .more-sheet-item {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 4px;
+    color: var(--text);
+    text-decoration: none;
+    cursor: pointer;
+    font-size: 0.95rem;
+  }
+  .more-sheet-item-wip { color: var(--muted); cursor: default; }
+  .more-sheet-icon {
+    font-size: 1.2rem;
+    width: 24px;
+    height: 1.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+
+  .home-shortcuts { display: none; } /* bottom bar + More sheet cover this on mobile */
 }
 </style>
 </head>
@@ -507,7 +657,8 @@ tr:last-child td { border-bottom: none; }
     <p>Counter Strike Rating System</p>
   </div>
   <nav>
-    <a class="active" data-page="rankings">Rankings</a>
+    <a class="active" data-page="home">Home</a>
+    <a data-page="rankings">Rankings</a>
     <a data-page="history">Match History</a>
     <a data-page="simulate">Simulate</a>
 
@@ -535,11 +686,140 @@ tr:last-child td { border-bottom: none; }
   
 </aside>
 
+<!-- Mobile bottom nav -->
+<nav id="bottom-nav">
+  <a data-page="home" class="bottom-nav-item active">
+    <span class="bottom-nav-icon">&#8962;</span>
+    <span>Home</span>
+  </a>
+  <a data-page="rankings" class="bottom-nav-item">
+    <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4zM7 6H4a2 2 0 0 0 0 4h1M17 6h3a2 2 0 0 1 0 4h-1"/></svg></span>
+    <span>Rankings</span>
+  </a>
+  <a data-page="history" class="bottom-nav-item">
+    <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span>
+    <span>History</span>
+  </a>
+  <a data-page="simulate" class="bottom-nav-item">
+    <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg></span>
+    <span>Simulate</span>
+  </a>
+  <a id="bottom-nav-more" class="bottom-nav-item">
+    <span class="bottom-nav-icon">&#8943;</span>
+    <span>More</span>
+  </a>
+</nav>
+
+<!-- Mobile "More" sheet -->
+<div id="more-sheet-overlay"></div>
+<div id="more-sheet">
+  <div class="more-sheet-handle"></div>
+  <a data-page="team-details" class="more-sheet-item">
+    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-4 3.1-7 7-7s7 3 7 7"/></svg></span>
+    <span>Team Details</span>
+  </a>
+  <a data-page="h2h" class="more-sheet-item">
+    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 5L9 17L7 15Z" fill="currentColor" stroke="none"/><path d="M10 18L6 14"/><circle cx="5" cy="19" r="1.1" fill="currentColor" stroke="none"/><path d="M5 5L15 17L17 15Z" fill="currentColor" stroke="none"/><path d="M14 18L18 14"/><circle cx="19" cy="19" r="1.1" fill="currentColor" stroke="none"/></svg></span>
+    <span>Head to Head</span>
+  </a>
+  <a data-page="elite" class="more-sheet-item">
+    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11M10 20V5M16 20v-6M3 20h18"/></svg></span>
+    <span>Elite Teams Over Time</span>
+  </a>
+  <div class="more-sheet-item more-sheet-item-wip">
+    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16l5-5 4 4 7-7"/><path d="M16 8h4v4"/></svg></span>
+    <span>Rating Graph <span class="wip-tag">WIP</span></span>
+  </div>
+  <div class="more-sheet-item more-sheet-item-wip">
+    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16l5-5 4 4 7-7"/><path d="M16 8h4v4"/></svg></span>
+    <span>Form Graph <span class="wip-tag">WIP</span></span>
+  </div>
+  <div class="more-sheet-item more-sheet-item-wip">
+    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11M10 20V5M16 20v-6M3 20h18"/></svg></span>
+    <span>Map Score Distribution <span class="wip-tag">WIP</span></span>
+  </div>
+  <div class="more-sheet-item more-sheet-item-wip">
+    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8l5 5 4-4 7 7"/><path d="M16 16h4v-4"/></svg></span>
+    <span>Analyse Team Form <span class="wip-tag">WIP</span></span>
+  </div>
+  <div class="more-sheet-item more-sheet-item-wip">
+    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16M6 8l-3 6a3 3 0 0 0 6 0l-3-6zM18 8l-3 6a3 3 0 0 0 6 0l-3-6zM6 8h12M9 20h6"/></svg></span>
+    <span>Compare Teams <span class="wip-tag">WIP</span></span>
+  </div>
+</div>
+
 <!-- Main content -->
 <main id="main">
 
   <!-- Rankings -->
-  <div class="page active" id="page-rankings">
+  <!-- Home -->
+  <div class="page active" id="page-home">
+    <div class="page-header"><h2>Home</h2></div>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="label">Total Matches</div>
+        <div class="value" id="home-total-matches">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Total Teams</div>
+        <div class="value" id="home-total-teams">—</div>
+      </div>
+    </div>
+
+    <div class="card" id="home-top-team">
+      <div class="loading"><div class="spinner"></div> Loading…</div>
+    </div>
+
+    <div class="card">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Featured Results</h2>
+      </div>
+      <div id="home-featured-results">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Hot Teams <span style="color:var(--muted);font-weight:400;font-size:0.78rem">— top 30, last 30 days</span></h2>
+      </div>
+      <div id="home-hot-teams">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+
+    <div class="page-header" style="margin-bottom:12px">
+      <h2 style="font-size:1rem">Standouts <span style="color:var(--muted);font-weight:400;font-size:0.78rem">— last 30 days</span></h2>
+    </div>
+    <div class="stat-grid" id="home-tiles">
+      <div class="loading"><div class="spinner"></div> Loading…</div>
+    </div>
+
+    <div class="card" id="home-active-events" style="display:none">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Active Events</h2>
+      </div>
+      <div id="home-active-events-list"></div>
+    </div>
+
+    <div class="home-shortcuts" id="home-shortcuts">
+      <a data-page="simulate" class="home-shortcut-tile">
+        <span class="home-shortcut-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg></span>
+        <span>Simulate</span>
+      </a>
+      <a data-page="h2h" class="home-shortcut-tile">
+        <span class="home-shortcut-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="12" r="4"/><circle cx="17" cy="12" r="4"/></svg></span>
+        <span>Head to Head</span>
+      </a>
+      <a data-page="elite" class="home-shortcut-tile">
+        <span class="home-shortcut-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11M10 20V5M16 20v-6M3 20h18"/></svg></span>
+        <span>Elite Teams</span>
+      </a>
+    </div>
+  </div>
+
+  <div class="page" id="page-rankings">
     <div class="page-header">
       <h2>Rankings</h2>
       <div class="controls" style="margin:0">
@@ -592,7 +872,7 @@ tr:last-child td { border-bottom: none; }
       <div class="sim-layout">
         <div class="sim-team-card">
           <div style="margin-bottom:8px;font-size:0.8rem;color:var(--muted)">TEAM 1</div>
-            <div class="search-wrap" style="display:inline-block;width:300px">
+            <div class="search-wrap" style="display:inline-block;width:100%;max-width:300px">
               <input type="text" id="sim-t1" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem" autocomplete="off">
               <div class="search-dropdown" id="sim-t1-dd"></div>
             </div>
@@ -601,7 +881,7 @@ tr:last-child td { border-bottom: none; }
         <div class="sim-vs">VS</div>
         <div class="sim-team-card">
           <div style="margin-bottom:8px;font-size:0.8rem;color:var(--muted)">TEAM 2</div>
-            <div class="search-wrap" style="display:inline-block;width:300px">
+            <div class="search-wrap" style="display:inline-block;width:100%;max-width:300px">
               <input type="text" id="sim-t2" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem" autocomplete="off">
               <div class="search-dropdown" id="sim-t2-dd"></div>
             </div>
@@ -764,7 +1044,7 @@ const API = window.location.origin;  // same origin as frontend
 // Navigation
 // ---------------------------------------------------------------------------
 let prevPage = 'rankings';
-let currentPage = 'rankings';
+let currentPage = 'home';
 
 function showPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -780,7 +1060,18 @@ document.querySelectorAll('nav a[data-page]').forEach(a => {
   a.addEventListener('click', () => {
     const page = a.dataset.page;
     showPage(page);
+    if (page === 'home')      loadHome();
     if (page === 'rankings')  loadRankings();
+    if (page === 'history')   loadHistory(1);
+    if (page === 'analytics') loadAnalytics();
+    if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
+  });
+});
+
+document.querySelectorAll('#home-shortcuts a[data-page]').forEach(a => {
+  a.addEventListener('click', () => {
+    const page = a.dataset.page;
+    showPage(page);
     if (page === 'history')   loadHistory(1);
     if (page === 'analytics') loadAnalytics();
     if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
@@ -793,6 +1084,30 @@ function toggleNavGroup(name) {
   const group = document.getElementById('nav-group-' + name);
   if (group) group.classList.toggle('open');
 }
+
+// ---------------------------------------------------------------------------
+// Mobile bottom nav + "More" sheet
+// ---------------------------------------------------------------------------
+function openMoreSheet() {
+  document.getElementById('more-sheet').classList.add('open');
+  document.getElementById('more-sheet-overlay').classList.add('open');
+}
+function closeMoreSheet() {
+  document.getElementById('more-sheet').classList.remove('open');
+  document.getElementById('more-sheet-overlay').classList.remove('open');
+}
+
+document.getElementById('bottom-nav-more').addEventListener('click', openMoreSheet);
+document.getElementById('more-sheet-overlay').addEventListener('click', closeMoreSheet);
+
+document.querySelectorAll('.more-sheet-item[data-page]').forEach(a => {
+  a.addEventListener('click', () => {
+    const page = a.dataset.page;
+    closeMoreSheet();
+    showPage(page);
+    if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -894,6 +1209,143 @@ async function loadMeta() {
       <span style="color:var(--muted)">Version: ${version}</span>
     `;
   } catch(e) {}
+}
+
+// ---------------------------------------------------------------------------
+// Home
+// ---------------------------------------------------------------------------
+async function loadHome() {
+  setEl('home-total-matches', '—');
+  setEl('home-total-teams', '—');
+  setLoading('home-top-team');
+  setLoading('home-featured-results');
+  setLoading('home-hot-teams');
+  setEl('home-tiles', '<div class="loading"><div class="spinner"></div> Loading…</div>');
+
+  try {
+    const d = await api('/api/home');
+
+    setEl('home-total-matches', d.total_matches);
+    setEl('home-total-teams', d.total_teams);
+
+    renderHomeTopTeam(d.top_team);
+    renderHomeFeaturedResults(d.featured_results);
+    renderHomeHotTeams(d.hot_teams);
+    renderHomeTiles(d.tiles);
+    renderHomeActiveEvents(d.active_events);
+  } catch(e) {
+    setError('home-top-team', e.message);
+    setError('home-featured-results', e.message);
+    setError('home-hot-teams', e.message);
+    setError('home-tiles', e.message);
+  }
+}
+
+function renderHomeTopTeam(team) {
+  if (!team) { setEl('home-top-team', '<div class="empty-msg">No ranked teams yet.</div>'); return; }
+  setEl('home-top-team', `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
+      <div>
+        <div class="label" style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">#1 Ranked Team</div>
+        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${team.name.replace(/'/g,"\\'")}')">${team.name}</span>
+        <div style="margin-top:4px">
+          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${team.points.toFixed(2)} pts</span>
+          ${team.form_grade ? `<span style="margin-left:10px;color:var(--muted);font-size:0.82rem">Form: ${team.form_grade} (${team.form_score})</span>` : ''}
+        </div>
+      </div>
+      <div>
+        <div class="label" style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">30d Trend</div>
+        ${sparklineSVG(team.sparkline_30d, 120, 36)}
+      </div>
+    </div>
+  `);
+}
+
+function renderHomeFeaturedResults(results) {
+  if (!results || !results.length) { setEl('home-featured-results', '<div class="empty-msg">No featured results in range.</div>'); return; }
+  setEl('home-featured-results', results.map(r => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0">
+        ${tierBadge(r.tier)}
+        <span style="${r.winner === r.t1.name ? 'font-weight:700;color:var(--text)' : 'color:var(--muted)'}">${r.t1.name}</span>
+        <span style="color:var(--muted);font-size:0.82rem">${r.t1.score}–${r.t2.score}</span>
+        <span style="${r.winner === r.t2.name ? 'font-weight:700;color:var(--text)' : 'color:var(--muted)'}">${r.t2.name}</span>
+      </div>
+      <div style="text-align:right;flex-shrink:0;margin-left:12px">
+        <div style="font-size:0.78rem;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.event}">${r.event}</div>
+        <div style="font-size:0.72rem;color:var(--muted)">${r.date.split(' ')[0]}</div>
+      </div>
+    </div>
+  `).join('') + `<div style="margin-top:12px"><a class="team-link" data-page="history" onclick="showPage('history');loadHistory(1)">See all results →</a></div>`);
+}
+
+function renderHomeHotTeams(teams) {
+  if (!teams || !teams.length) { setEl('home-hot-teams', '<div class="empty-msg">Not enough recent matches yet.</div>'); return; }
+  setEl('home-hot-teams', teams.map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}</span>
+      </div>
+      <div style="text-align:right">
+        <span style="font-weight:700;color:var(--green)">${t.winrate}%</span>
+        <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">${t.wins}-${t.losses}</span>
+      </div>
+    </div>
+  `).join(''));
+}
+
+function renderHomeTiles(tiles) {
+  if (!tiles) { setEl('home-tiles', '<div class="empty-msg">No data available.</div>'); return; }
+  const cards = [];
+
+  if (tiles.highest_rating_change) {
+    const t = tiles.highest_rating_change;
+    const sign = t.delta > 0 ? '+' : '';
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Highest Rating Change</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${sign}${t.delta} pts</div>
+      </div>
+    `);
+  }
+  if (tiles.biggest_upset) {
+    const t = tiles.biggest_upset;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Biggest Upset</div>
+        <div class="value" style="font-size:1.2rem">${t.winner}</div>
+        <div class="sub">beat ${t.loser} (Δ${t.gap} pts)</div>
+      </div>
+    `);
+  }
+  if (tiles.most_positions_gained) {
+    const t = tiles.most_positions_gained;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Most Positions Gained</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub">+${t.positions_gained} (#${t.rank_30d_ago} → #${t.rank_now})</div>
+      </div>
+    `);
+  }
+
+  setEl('home-tiles', cards.length ? cards.join('') : '<div class="empty-msg">No standout data in the last 30 days.</div>');
+}
+
+function renderHomeActiveEvents(events) {
+  const card = document.getElementById('home-active-events');
+  if (!events || !events.length) { if (card) card.style.display = 'none'; return; }
+  if (card) card.style.display = '';
+  setEl('home-active-events-list', `
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      ${events.map(e => `
+        <a class="team-link" style="font-size:0.82rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 10px;display:inline-block"
+           onclick="document.getElementById('hist-event').value='${e.replace(/'/g,"\\'")}';showPage('history');loadHistory(1)">${e}</a>
+      `).join('')}
+    </div>
+  `);
 }
 
 // ---------------------------------------------------------------------------
@@ -1757,7 +2209,7 @@ function toggleEliteLine(index) {
 // Init
 // ---------------------------------------------------------------------------
 loadMeta();
-loadRankings();
+loadHome();
 setInterval(loadMeta, 60000); // refresh meta every minute
 // ---------------------------------------------------------------------------
 // Generic autocomplete dropdown — wires a text input + dropdown div to the
