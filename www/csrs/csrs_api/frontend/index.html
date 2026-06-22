@@ -243,6 +243,20 @@ button.secondary {
 button.secondary:hover { background: var(--border); }
 
 /* ── Table ── */
+/* Mobile: hide verbose columns to prevent horizontal overflow */
+@media (max-width: 700px) {
+  .col-hide-mobile { display: none !important; }
+  .col-trunc-mobile {
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  table { font-size: 0.78rem; }
+  th, td { padding: 8px 6px; }
+}
+
+/* ── Table ── */
 .table-wrap { overflow-x: auto; }
 table {
   width: 100%;
@@ -522,8 +536,10 @@ tr:last-child td { border-bottom: none; }
   line-height: 1;
 }
 
-/* ── Mobile bottom nav — hidden on desktop, all styles inside media query ── */
-#bottom-nav { display: none; }
+/* ── Mobile-only elements — hidden on desktop, all styles inside media query ── */
+#bottom-nav,
+#more-sheet,
+#more-sheet-overlay { display: none; }
 
 /* ── Responsive ── */
 @media (max-width: 700px) {
@@ -731,7 +747,7 @@ tr:last-child td { border-bottom: none; }
 <main id="main">
 
   <!-- Rankings -->
-  <div class="page active" id="page-rankings">
+  <div class="page" id="page-rankings">
     <div class="page-header">
       <h2>Rankings</h2>
       <div class="controls" style="margin:0">
@@ -946,6 +962,10 @@ function showPage(name) {
   document.getElementById('page-' + name).classList.add('active');
   const navLink = document.querySelector(`nav a[data-page="${name}"]`);
   if (navLink) navLink.classList.add('active');
+  // Also sync the mobile bottom nav
+  document.querySelectorAll('#bottom-nav .bottom-nav-item').forEach(a => a.classList.remove('active'));
+  const bnLink = document.querySelector(`#bottom-nav .bottom-nav-item[data-page="${name}"]`);
+  if (bnLink) bnLink.classList.add('active');
   prevPage = currentPage;
   currentPage = name;
 }
@@ -1167,12 +1187,12 @@ function renderHistory(rows) {
     <table>
       <thead><tr>
         <th>Date</th>
-        <th>Event</th>
+        <th class="col-hide-mobile">Event</th>
         <th>Tier</th>
         <th>Team 1</th>
         <th></th>
         <th>Team 2</th>
-        <th>Result</th>
+        <th class="col-hide-mobile">Result</th>
       </tr></thead>
       <tbody>
         ${rows.map(h => {
@@ -1180,7 +1200,7 @@ function renderHistory(rows) {
           return `
             <tr>
               <td style="color:var(--muted);white-space:nowrap;font-size:0.8rem">${h.date.split(' ')[0]}</td>
-              <td style="font-size:0.8rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${h.event}">${h.event}</td>
+              <td class="col-hide-mobile" style="font-size:0.8rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${h.event}">${h.event}</td>
               <td>${tierBadge(h.tier)}</td>
               <td>
                 <span class="team-link ${t1won ? 'win-badge' : ''}" onclick="openTeam('${h.t1.name.replace(/'/g,"\\'")}')">
