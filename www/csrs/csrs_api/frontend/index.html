@@ -592,55 +592,72 @@ tr:last-child td { border-bottom: none; }
     line-height: 1;
   }
 
+  /* ── More sheet overlay ── */
   #more-sheet-overlay {
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.5);
+    background: rgba(0,0,0,0.6);
     z-index: 300;
+    backdrop-filter: blur(2px);
   }
   #more-sheet-overlay.open { display: block; }
 
+  /* Sheet slides up from bottom, FACEIT-style */
   #more-sheet {
     display: none;
     position: fixed;
     left: 0; right: 0; bottom: 0;
     background: var(--surface);
-    border-top: 1px solid var(--border);
-    border-radius: 16px 16px 0 0;
+    border-radius: 20px 20px 0 0;
     z-index: 301;
-    padding: 12px 20px calc(20px + env(safe-area-inset-bottom, 0px));
-    max-height: 70vh;
+    padding: 0 0 calc(env(safe-area-inset-bottom, 0px));
+    max-height: 80vh;
     overflow-y: auto;
+    transform: translateY(100%);
+    transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
   }
-  #more-sheet.open { display: block; }
+  #more-sheet.open {
+    display: block;
+    transform: translateY(0);
+  }
   .more-sheet-handle {
-    width: 40px;
+    width: 36px;
     height: 4px;
     background: var(--border);
     border-radius: 2px;
-    margin: 4px auto 16px;
+    margin: 12px auto 8px;
   }
+  /* FACEIT-style: large icon + label rows */
   .more-sheet-item {
     display: flex;
     align-items: center;
-    gap: 14px;
-    padding: 14px 4px;
+    gap: 20px;
+    padding: 18px 24px;
     color: var(--text);
     text-decoration: none;
     cursor: pointer;
-    font-size: 0.95rem;
+    font-size: 1.05rem;
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.12s;
   }
-  .more-sheet-item-wip { color: var(--muted); cursor: default; }
+  .more-sheet-item:last-child { border-bottom: none; }
+  .more-sheet-item:active { background: var(--surface2); }
+  .more-sheet-item.wip { cursor: default; opacity: 0.6; }
+  .more-sheet-item.wip:active { background: none; }
   .more-sheet-icon {
-    font-size: 1.2rem;
-    width: 24px;
-    height: 1.2rem;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: var(--surface2);
     display: flex;
     align-items: center;
     justify-content: center;
-    line-height: 1;
+    flex-shrink: 0;
+    font-size: 1.3rem;
   }
+  .more-sheet-icon svg { width: 22px; height: 22px; }
 }
 </style>
 </head>
@@ -653,7 +670,7 @@ tr:last-child td { border-bottom: none; }
     <p>Counter Strike Rating System</p>
   </div>
   <nav>
-    <a class="active" data-page="home">Home</a>
+    <a class="active" data-page="rankings">Home</a>
     <a data-page="rankings">Rankings</a>
     <a data-page="history">Match History</a>
     <a data-page="simulate">Simulate</a>
@@ -683,7 +700,7 @@ tr:last-child td { border-bottom: none; }
 
 <!-- Mobile bottom nav (hidden on desktop via CSS) -->
 <nav id="bottom-nav">
-  <a data-page="home" class="bottom-nav-item active">
+  <a data-page="rankings" class="bottom-nav-item active">
     <span class="bottom-nav-icon">&#8962;</span>
     <span>Home</span>
   </a>
@@ -695,9 +712,9 @@ tr:last-child td { border-bottom: none; }
     <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span>
     <span>History</span>
   </a>
-  <a data-page="simulate" class="bottom-nav-item">
-    <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg></span>
-    <span>Simulate</span>
+  <a data-page="team-details" class="bottom-nav-item">
+    <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg></span>
+    <span>Team Details</span>
   </a>
   <a id="bottom-nav-more" class="bottom-nav-item">
     <span class="bottom-nav-icon">&#8943;</span>
@@ -709,45 +726,59 @@ tr:last-child td { border-bottom: none; }
 <div id="more-sheet-overlay"></div>
 <div id="more-sheet">
   <div class="more-sheet-handle"></div>
-  <a data-page="team-details" class="more-sheet-item">
-    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-4 3.1-7 7-7s7 3 7 7"/></svg></span>
-    <span>Team Details</span>
+  <a data-page="simulate" class="more-sheet-item">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
+    </span>
+    <span>Simulate</span>
   </a>
   <a data-page="h2h" class="more-sheet-item">
-    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 5L9 17L7 15Z" fill="currentColor" stroke="none"/><path d="M10 18L6 14"/><circle cx="5" cy="19" r="1.1" fill="currentColor" stroke="none"/><path d="M5 5L15 17L17 15Z" fill="currentColor" stroke="none"/><path d="M14 18L18 14"/><circle cx="19" cy="19" r="1.1" fill="currentColor" stroke="none"/></svg></span>
+    <span class="more-sheet-icon" style="font-size:0.95rem;font-weight:700;letter-spacing:0.5px;">VS</span>
     <span>Head to Head</span>
   </a>
   <a data-page="elite" class="more-sheet-item">
-    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11M10 20V5M16 20v-6M3 20h18"/></svg></span>
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
+    </span>
     <span>Elite Teams Over Time</span>
   </a>
-  <div class="more-sheet-item more-sheet-item-wip">
-    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16l5-5 4 4 7-7"/><path d="M16 8h4v4"/></svg></span>
+  <a data-page="" class="more-sheet-item wip">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
+    </span>
     <span>Rating Graph <span class="wip-tag">WIP</span></span>
-  </div>
-  <div class="more-sheet-item more-sheet-item-wip">
-    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16l5-5 4 4 7-7"/><path d="M16 8h4v4"/></svg></span>
+  </a>
+  <a data-page="" class="more-sheet-item wip">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
+    </span>
     <span>Form Graph <span class="wip-tag">WIP</span></span>
-  </div>
-  <div class="more-sheet-item more-sheet-item-wip">
-    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11M10 20V5M16 20v-6M3 20h18"/></svg></span>
+  </a>
+  <a data-page="" class="more-sheet-item wip">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V12M10 20V4M16 20v-8M3 20h18"/></svg>
+    </span>
     <span>Map Score Distribution <span class="wip-tag">WIP</span></span>
-  </div>
-  <div class="more-sheet-item more-sheet-item-wip">
-    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8l5 5 4-4 7 7"/><path d="M16 16h4v-4"/></svg></span>
+  </a>
+  <a data-page="" class="more-sheet-item wip">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+    </span>
     <span>Analyse Team Form <span class="wip-tag">WIP</span></span>
-  </div>
-  <div class="more-sheet-item more-sheet-item-wip">
-    <span class="more-sheet-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16M6 8l-3 6a3 3 0 0 0 6 0l-3-6zM18 8l-3 6a3 3 0 0 0 6 0l-3-6zM6 8h12M9 20h6"/></svg></span>
+  </a>
+  <a data-page="" class="more-sheet-item wip">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.2l1.3 2.8h-2.6z" fill="currentColor"/><path d="M4 7h16M7 7l-3 9M7 7l3 9M17 7l-3 9M17 7l3 9"/><path d="M4 16a3.5 1.6 0 0 0 6 0"/><path d="M14 16a3.5 1.6 0 0 0 6 0"/><path d="M12 7v13M9 20h6"/></svg>
+    </span>
     <span>Compare Teams <span class="wip-tag">WIP</span></span>
-  </div>
+  </a>
 </div>
 
 <!-- Main content -->
 <main id="main">
 
   <!-- Rankings -->
-  <div class="page" id="page-rankings">
+  <div class="page active" id="page-rankings">
     <div class="page-header">
       <h2>Rankings</h2>
       <div class="controls" style="margin:0">
@@ -1768,7 +1799,7 @@ function renderElite(d) {
     ? d.all_dates
     : [...new Set(series.flatMap(team => (team.points || []).map(p => p.date)))].sort();
 
-  // Build per-team byDate lookup (stored on dataset for the custom dash plugin)
+  // Build per-team byDate lookup (used for marker styling and tooltips)
   const datasets = series.map((team, i) => {
     const color = ELITE_COLORS[i % ELITE_COLORS.length];
     const hasFlags = team.points.length > 0 && 'match' in team.points[0];
@@ -1781,32 +1812,31 @@ function renderElite(d) {
     const firstIdx = realIdx[0];
     const lastIdx  = realIdx[realIdx.length - 1];
 
-    // Dots on match days; hollow at start/end like CSRS.py; smaller white-outline
-    // dots on "transition" days — the flat-to-diagonal bend the day before a
-    // match, ported from CSRS.py's circle markers (changelog #12).
+    // Dots on match days; hollow at start/end like CSRS.py. The last point
+    // also gets a regular solid dot when the line trails off mid-decay, so a
+    // segment never just stops with nothing marking where it ends.
+    const endIsTransition = p => p && p.deprecated;
     const pointRadius = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return 0;
       if (idx === firstIdx || idx === lastIdx) return 5;
+      if (idx === lastIdx && endIsTransition(p)) return 4;
       if (hasFlags && p.match) return 4;
-      if (hasFlags && p.transition) return 3;
+      if (hasFlags && p.transition) return 4;
       return 0;
     });
     const pointBg = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return 'transparent';
       if (idx === firstIdx || idx === lastIdx) return '#16181c'; // hollow
-      if (hasFlags && p.match) return (!p.above) ? color + '88' : color;
-      if (hasFlags && p.transition) return (!p.above) ? color + '88' : color;
+      if (idx === lastIdx && endIsTransition(p)) return color;
+      if (hasFlags && p.match) return color;
+      if (hasFlags && p.transition) return color;
       return 'transparent';
     });
     const pointBorder = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return color;
-      if (idx === firstIdx || idx === lastIdx) return color;
-      // Transition markers get a white outline (when above threshold) like
-      // the desktop app, so they read as distinct from regular match dots.
-      if (hasFlags && p.transition && !p.match) return p.above ? '#ffffff' : color;
       return color;
     });
 
@@ -1824,23 +1854,6 @@ function renderElite(d) {
       pointHoverRadius: 7,
       tension: 0,
       spanGaps: true,
-      // Per-segment styling: dashed line while a team is decaying from
-      // inactivity, dimmed line while below the elite threshold.
-      // ctx.p1DataIndex is the index of the segment's END point — the
-      // flags on that point describe the segment leading into it.
-      segment: hasFlags ? {
-        borderDash: ctx => {
-          const p = byDate[labels[ctx.p1DataIndex]];
-          return (p && p.deprecated) ? [5, 4] : [];
-        },
-        borderColor: ctx => {
-          const p = byDate[labels[ctx.p1DataIndex]];
-          if (!p) return color;
-          if (p.deprecated) return color + 'aa';
-          if (!p.above)     return color + '55';
-          return color;
-        },
-      } : undefined,
       // Store metadata for tooltip lookups
       _byDate:   byDate,
       _hasFlags: hasFlags,
@@ -1849,48 +1862,21 @@ function renderElite(d) {
     };
   });
 
-  // The y-axis used to hard-floor at the elite threshold, which *clipped*
-  // any below-threshold dip clean off the chart — leaving only the parts of
-  // a borderline team's line that stayed above 850 visible, looking like
-  // disconnected dots. Compute real bounds from the data instead, with
-  // headroom below the threshold so dips render (dimmed, via the existing
-  // segment styling) instead of vanishing.
-  let minVal = d.elite_threshold;
+  // Hard-floor the y-axis at the elite threshold — anything below 850 is out
+  // of scope for this chart, so we don't extend the axis down to show dips.
+  // The transition marker at a decayed line's end still plots at its true
+  // (possibly sub-850) value; if that's below the floor it sits at/below
+  // the visible bottom edge rather than the axis expanding to fit it.
   let maxVal = d.elite_threshold;
   series.forEach(team => team.points.forEach(p => {
-    if (p.pts < minVal) minVal = p.pts;
     if (p.pts > maxVal) maxVal = p.pts;
   }));
-  const yMin = Math.floor(Math.min(minVal - 10, d.elite_threshold - 20) / 10) * 10;
+  const yMin = d.elite_threshold;
   const yMax = Math.ceil((maxVal + 10) / 10) * 10;
-
-  // Draws the elite-threshold line + label, since it's no longer pinned to
-  // the bottom axis edge.
-  const thresholdLinePlugin = {
-    id: 'thresholdLine',
-    afterDraw(chart) {
-      const { ctx, chartArea, scales: { y } } = chart;
-      const yPos = y.getPixelForValue(d.elite_threshold);
-      if (yPos < chartArea.top || yPos > chartArea.bottom) return;
-      ctx.save();
-      ctx.strokeStyle = '#e8eaf0';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(chartArea.left, yPos);
-      ctx.lineTo(chartArea.right, yPos);
-      ctx.stroke();
-      ctx.fillStyle = '#e8eaf0';
-      ctx.font = '10px Arial';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(`${d.elite_threshold} elite threshold`, chartArea.left + 4, yPos - 2);
-      ctx.restore();
-    }
-  };
 
   eliteChart = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets },
-    plugins: [thresholdLinePlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -1904,16 +1890,18 @@ function renderElite(d) {
           titleColor: '#e8eaf0',
           bodyColor: '#7a7f8e',
           filter: item => item.parsed.y !== null && item.parsed.y !== undefined,
+          // Sort rows by this date's actual value (highest first), not by
+          // each team's final/end-of-range rank.
+          itemSort: (a, b) => b.parsed.y - a.parsed.y,
           callbacks: {
             title: items => items[0].label,
+            labelColor: item => {
+              const dsColor = item.dataset.borderColor;
+              return { borderColor: dsColor, backgroundColor: dsColor };
+            },
             label: item => {
-              const team = series[item.datasetIndex];
-              const p = team?.points?.find(pt => pt.date === item.label);
               const elite = item.parsed.y >= d.elite_threshold ? '●' : '○';
-              const dep   = (p && p.deprecated)  ? ' ~decaying'   : '';
-              const mtch  = (p && p.match)       ? ' ◆match'      : '';
-              const trans = (p && p.transition)  ? ' ◦transition' : '';
-              return ` ${elite} ${item.dataset.label}: ${item.parsed.y.toFixed(1)}${dep}${mtch}${trans}`;
+              return ` ${elite} ${item.dataset.label}: ${item.parsed.y.toFixed(1)}`;
             }
           }
         },
@@ -1996,6 +1984,45 @@ function toggleEliteLine(index) {
 loadMeta();
 loadRankings();
 setInterval(loadMeta, 60000); // refresh meta every minute
+// ---------------------------------------------------------------------------
+// Mobile bottom nav + "More" sheet
+// ---------------------------------------------------------------------------
+function openMoreSheet() {
+  document.getElementById('more-sheet').classList.add('open');
+  document.getElementById('more-sheet-overlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeMoreSheet() {
+  document.getElementById('more-sheet').classList.remove('open');
+  document.getElementById('more-sheet-overlay').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+document.getElementById('bottom-nav-more').addEventListener('click', openMoreSheet);
+document.getElementById('more-sheet-overlay').addEventListener('click', closeMoreSheet);
+
+// Swipe down to close
+(function() {
+  let startY = 0;
+  const sheet = document.getElementById('more-sheet');
+  sheet.addEventListener('touchstart', e => { startY = e.touches[0].clientY; }, { passive: true });
+  sheet.addEventListener('touchend', e => {
+    if (e.changedTouches[0].clientY - startY > 60) closeMoreSheet();
+  }, { passive: true });
+})();
+
+document.querySelectorAll('.more-sheet-item[data-page]').forEach(a => {
+  a.addEventListener('click', () => {
+    const page = a.dataset.page;
+    if (!page) return; // WIP placeholder — no page to show yet
+    closeMoreSheet();
+    showPage(page);
+    if (page === 'rankings')   loadRankings();
+    if (page === 'history')    loadHistory(1);
+    if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Generic autocomplete dropdown — wires a text input + dropdown div to the
 // /api/teams endpoint, debounced, with keyboard nav and click-to-select.
