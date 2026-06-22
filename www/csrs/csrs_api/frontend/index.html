@@ -69,7 +69,6 @@ body {
 
 nav { flex: 1; padding: 12px 0; overflow-y: auto; }
 
-/* Top-level link (no children) */
 nav > a {
   display: flex;
   align-items: center;
@@ -85,7 +84,6 @@ nav > a {
 nav > a:hover { color: var(--text); background: var(--surface2); }
 nav > a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(245,166,35,0.08); }
 
-/* Dropdown category group */
 .nav-group { border-left: 3px solid transparent; }
 .nav-group-toggle {
   display: flex;
@@ -275,7 +273,6 @@ tr:last-child td { border-bottom: none; }
 .delta-neg { color: var(--red); }
 .delta-zero { color: var(--muted); }
 
-/* Tier badges */
 .tier {
   display: inline-block;
   padding: 2px 7px;
@@ -491,30 +488,6 @@ tr:last-child td { border-bottom: none; }
   color: var(--muted);
 }
 
-/* ── Mobile bottom nav (hidden on desktop by default) ──
-   #bottom-nav is itself a nav element, so it would otherwise inherit the
-   sidebar's bare `nav { flex:1; padding:... }` and `nav > a { ... }`
-   rules above. #bottom-nav has higher specificity (ID vs element) so
-   it always wins on shared properties, but every property those rules
-   set must be explicitly re-declared here, not just the ones that
-   visibly differ, or some will silently leak through. */
-#bottom-nav {
-  display: none;
-  flex: none;
-  padding: 0;
-  overflow-y: visible;
-}
-.bottom-nav-item {
-  flex-direction: column;
-  font-weight: 500;
-  transition: none;
-  border-left: none;
-}
-.bottom-nav-item.active {
-  background: none;
-  border-left: none;
-}
-
 /* ── Home: shortcuts row ── */
 .home-shortcuts {
   display: flex;
@@ -549,6 +522,9 @@ tr:last-child td { border-bottom: none; }
   line-height: 1;
 }
 
+/* ── Mobile bottom nav — hidden on desktop, all styles inside media query ── */
+#bottom-nav { display: none; }
+
 /* ── Responsive ── */
 @media (max-width: 700px) {
   #sidebar { display: none; }
@@ -562,6 +538,8 @@ tr:last-child td { border-bottom: none; }
   .sim-vs { padding-top: 0; }
   .sim-team-card .search-wrap { max-width: 100%; }
 
+  .home-shortcuts { display: none; }
+
   #bottom-nav {
     display: flex;
     position: fixed;
@@ -570,6 +548,8 @@ tr:last-child td { border-bottom: none; }
     border-top: 1px solid var(--border);
     z-index: 200;
     padding: 8px 4px calc(8px + env(safe-area-inset-bottom, 0px));
+    flex: none;
+    overflow-y: visible;
   }
   .bottom-nav-item {
     flex: 1;
@@ -581,10 +561,12 @@ tr:last-child td { border-bottom: none; }
     color: var(--muted);
     text-decoration: none;
     font-size: 0.68rem;
+    font-weight: 500;
     cursor: pointer;
     border-radius: var(--radius);
+    border-left: none;
   }
-  .bottom-nav-item.active { color: var(--accent); }
+  .bottom-nav-item.active { color: var(--accent); background: none; border-left: none; }
   .bottom-nav-icon {
     font-size: 1.3rem;
     height: 1.3rem;
@@ -643,8 +625,6 @@ tr:last-child td { border-bottom: none; }
     justify-content: center;
     line-height: 1;
   }
-
-  .home-shortcuts { display: none; } /* bottom bar + More sheet cover this on mobile */
 }
 </style>
 </head>
@@ -683,10 +663,9 @@ tr:last-child td { border-bottom: none; }
   <div class="sidebar-meta" id="sidebar-meta">
     <span>Loading...</span>
   </div>
-  
 </aside>
 
-<!-- Mobile bottom nav -->
+<!-- Mobile bottom nav (hidden on desktop via CSS) -->
 <nav id="bottom-nav">
   <a data-page="home" class="bottom-nav-item active">
     <span class="bottom-nav-icon">&#8962;</span>
@@ -710,7 +689,7 @@ tr:last-child td { border-bottom: none; }
   </a>
 </nav>
 
-<!-- Mobile "More" sheet -->
+<!-- Mobile "More" sheet (hidden on desktop via CSS) -->
 <div id="more-sheet-overlay"></div>
 <div id="more-sheet">
   <div class="more-sheet-handle"></div>
@@ -752,74 +731,7 @@ tr:last-child td { border-bottom: none; }
 <main id="main">
 
   <!-- Rankings -->
-  <!-- Home -->
-  <div class="page active" id="page-home">
-    <div class="page-header"><h2>Home</h2></div>
-
-    <div class="stat-grid">
-      <div class="stat-card">
-        <div class="label">Total Matches</div>
-        <div class="value" id="home-total-matches">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Total Teams</div>
-        <div class="value" id="home-total-teams">—</div>
-      </div>
-    </div>
-
-    <div class="card" id="home-top-team">
-      <div class="loading"><div class="spinner"></div> Loading…</div>
-    </div>
-
-    <div class="card">
-      <div class="page-header" style="margin-bottom:12px">
-        <h2 style="font-size:1rem">Featured Results</h2>
-      </div>
-      <div id="home-featured-results">
-        <div class="loading"><div class="spinner"></div> Loading…</div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="page-header" style="margin-bottom:12px">
-        <h2 style="font-size:1rem">Hot Teams <span style="color:var(--muted);font-weight:400;font-size:0.78rem">— top 30, last 30 days</span></h2>
-      </div>
-      <div id="home-hot-teams">
-        <div class="loading"><div class="spinner"></div> Loading…</div>
-      </div>
-    </div>
-
-    <div class="page-header" style="margin-bottom:12px">
-      <h2 style="font-size:1rem">Standouts <span style="color:var(--muted);font-weight:400;font-size:0.78rem">— last 30 days</span></h2>
-    </div>
-    <div class="stat-grid" id="home-tiles">
-      <div class="loading"><div class="spinner"></div> Loading…</div>
-    </div>
-
-    <div class="card" id="home-active-events" style="display:none">
-      <div class="page-header" style="margin-bottom:12px">
-        <h2 style="font-size:1rem">Active Events</h2>
-      </div>
-      <div id="home-active-events-list"></div>
-    </div>
-
-    <div class="home-shortcuts" id="home-shortcuts">
-      <a data-page="simulate" class="home-shortcut-tile">
-        <span class="home-shortcut-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg></span>
-        <span>Simulate</span>
-      </a>
-      <a data-page="h2h" class="home-shortcut-tile">
-        <span class="home-shortcut-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="12" r="4"/><circle cx="17" cy="12" r="4"/></svg></span>
-        <span>Head to Head</span>
-      </a>
-      <a data-page="elite" class="home-shortcut-tile">
-        <span class="home-shortcut-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11M10 20V5M16 20v-6M3 20h18"/></svg></span>
-        <span>Elite Teams</span>
-      </a>
-    </div>
-  </div>
-
-  <div class="page" id="page-rankings">
+  <div class="page active" id="page-rankings">
     <div class="page-header">
       <h2>Rankings</h2>
       <div class="controls" style="margin:0">
@@ -837,10 +749,7 @@ tr:last-child td { border-bottom: none; }
   <div class="page" id="page-history">
     <div class="page-header"><h2>Match History</h2></div>
     <div class="controls">
-      <div class="search-wrap" style="display:inline-block;width: 160px">
-        <input type="text" id="hist-team"  placeholder="Team…" style="width:100%" autocomplete="off">
-        <div class="search-dropdown" id="hist-team-dd"></div>
-      </div>
+      <input type="text" id="hist-team"  placeholder="Team…" style="width:160px">
       <select id="hist-tier">
         <option value="">All Tiers</option>
         <option value="S+">S+</option>
@@ -850,10 +759,7 @@ tr:last-child td { border-bottom: none; }
         <option value="C">C</option>
         <option value="D">D</option>
       </select>
-      <div class="search-wrap" style="display:inline-block;width: 200px">
-      <input type="text" id="hist-event" placeholder="Event…" style="width:200px" autocomplete="off">
-        <div class="search-dropdown" id="hist-event-dd"></div>
-      </div>
+      <input type="text" id="hist-event" placeholder="Event…" style="width:200px">
       <button onclick="loadHistory(1)">Filter</button>
       <button class="secondary" onclick="clearHistoryFilters()">Clear</button>
     </div>
@@ -872,19 +778,13 @@ tr:last-child td { border-bottom: none; }
       <div class="sim-layout">
         <div class="sim-team-card">
           <div style="margin-bottom:8px;font-size:0.8rem;color:var(--muted)">TEAM 1</div>
-            <div class="search-wrap" style="display:inline-block;width:100%;max-width:300px">
-              <input type="text" id="sim-t1" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem" autocomplete="off">
-              <div class="search-dropdown" id="sim-t1-dd"></div>
-            </div>
+          <input type="text" id="sim-t1" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem">
           <div class="team-pts" id="sim-t1-pts" style="margin-top:8px"></div>
         </div>
         <div class="sim-vs">VS</div>
         <div class="sim-team-card">
           <div style="margin-bottom:8px;font-size:0.8rem;color:var(--muted)">TEAM 2</div>
-            <div class="search-wrap" style="display:inline-block;width:100%;max-width:300px">
-              <input type="text" id="sim-t2" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem" autocomplete="off">
-              <div class="search-dropdown" id="sim-t2-dd"></div>
-            </div>
+          <input type="text" id="sim-t2" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem">
           <div class="team-pts" id="sim-t2-pts" style="margin-top:8px"></div>
         </div>
       </div>
@@ -993,14 +893,8 @@ tr:last-child td { border-bottom: none; }
     <div class="page-header"><h2>Head to Head</h2></div>
     <div class="card">
       <div class="controls" style="margin-bottom:0">
-        <div class="search-wrap" style="display:inline-block;width:300px">
-          <input type="text" id="h2h-t1" placeholder="Team 1…" style="width:100%" autocomplete="off">
-          <div class="search-dropdown" id="h2h-t1-dd"></div>
-        </div>
-        <div class="search-wrap" style="display:inline-block;width:300px">
-          <input type="text" id="h2h-t2" placeholder="Team 2…" style="width:100%" autocomplete="off">
-          <div class="search-dropdown" id="h2h-t2-dd"></div>
-        </div>
+        <input type="text" id="h2h-t1" placeholder="Team 1…" style="width:200px">
+        <input type="text" id="h2h-t2" placeholder="Team 2…" style="width:200px">
         <button onclick="loadH2H()">Compare</button>
       </div>
     </div>
@@ -1044,7 +938,7 @@ const API = window.location.origin;  // same origin as frontend
 // Navigation
 // ---------------------------------------------------------------------------
 let prevPage = 'rankings';
-let currentPage = 'home';
+let currentPage = 'rankings';
 
 function showPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -1060,18 +954,7 @@ document.querySelectorAll('nav a[data-page]').forEach(a => {
   a.addEventListener('click', () => {
     const page = a.dataset.page;
     showPage(page);
-    if (page === 'home')      loadHome();
     if (page === 'rankings')  loadRankings();
-    if (page === 'history')   loadHistory(1);
-    if (page === 'analytics') loadAnalytics();
-    if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
-  });
-});
-
-document.querySelectorAll('#home-shortcuts a[data-page]').forEach(a => {
-  a.addEventListener('click', () => {
-    const page = a.dataset.page;
-    showPage(page);
     if (page === 'history')   loadHistory(1);
     if (page === 'analytics') loadAnalytics();
     if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
@@ -1084,30 +967,6 @@ function toggleNavGroup(name) {
   const group = document.getElementById('nav-group-' + name);
   if (group) group.classList.toggle('open');
 }
-
-// ---------------------------------------------------------------------------
-// Mobile bottom nav + "More" sheet
-// ---------------------------------------------------------------------------
-function openMoreSheet() {
-  document.getElementById('more-sheet').classList.add('open');
-  document.getElementById('more-sheet-overlay').classList.add('open');
-}
-function closeMoreSheet() {
-  document.getElementById('more-sheet').classList.remove('open');
-  document.getElementById('more-sheet-overlay').classList.remove('open');
-}
-
-document.getElementById('bottom-nav-more').addEventListener('click', openMoreSheet);
-document.getElementById('more-sheet-overlay').addEventListener('click', closeMoreSheet);
-
-document.querySelectorAll('.more-sheet-item[data-page]').forEach(a => {
-  a.addEventListener('click', () => {
-    const page = a.dataset.page;
-    closeMoreSheet();
-    showPage(page);
-    if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1209,143 +1068,6 @@ async function loadMeta() {
       <span style="color:var(--muted)">Version: ${version}</span>
     `;
   } catch(e) {}
-}
-
-// ---------------------------------------------------------------------------
-// Home
-// ---------------------------------------------------------------------------
-async function loadHome() {
-  setEl('home-total-matches', '—');
-  setEl('home-total-teams', '—');
-  setLoading('home-top-team');
-  setLoading('home-featured-results');
-  setLoading('home-hot-teams');
-  setEl('home-tiles', '<div class="loading"><div class="spinner"></div> Loading…</div>');
-
-  try {
-    const d = await api('/api/home');
-
-    setEl('home-total-matches', d.total_matches);
-    setEl('home-total-teams', d.total_teams);
-
-    renderHomeTopTeam(d.top_team);
-    renderHomeFeaturedResults(d.featured_results);
-    renderHomeHotTeams(d.hot_teams);
-    renderHomeTiles(d.tiles);
-    renderHomeActiveEvents(d.active_events);
-  } catch(e) {
-    setError('home-top-team', e.message);
-    setError('home-featured-results', e.message);
-    setError('home-hot-teams', e.message);
-    setError('home-tiles', e.message);
-  }
-}
-
-function renderHomeTopTeam(team) {
-  if (!team) { setEl('home-top-team', '<div class="empty-msg">No ranked teams yet.</div>'); return; }
-  setEl('home-top-team', `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
-      <div>
-        <div class="label" style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">#1 Ranked Team</div>
-        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${team.name.replace(/'/g,"\\'")}')">${team.name}</span>
-        <div style="margin-top:4px">
-          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${team.points.toFixed(2)} pts</span>
-          ${team.form_grade ? `<span style="margin-left:10px;color:var(--muted);font-size:0.82rem">Form: ${team.form_grade} (${team.form_score})</span>` : ''}
-        </div>
-      </div>
-      <div>
-        <div class="label" style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">30d Trend</div>
-        ${sparklineSVG(team.sparkline_30d, 120, 36)}
-      </div>
-    </div>
-  `);
-}
-
-function renderHomeFeaturedResults(results) {
-  if (!results || !results.length) { setEl('home-featured-results', '<div class="empty-msg">No featured results in range.</div>'); return; }
-  setEl('home-featured-results', results.map(r => `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)">
-      <div style="display:flex;align-items:center;gap:10px;min-width:0">
-        ${tierBadge(r.tier)}
-        <span style="${r.winner === r.t1.name ? 'font-weight:700;color:var(--text)' : 'color:var(--muted)'}">${r.t1.name}</span>
-        <span style="color:var(--muted);font-size:0.82rem">${r.t1.score}–${r.t2.score}</span>
-        <span style="${r.winner === r.t2.name ? 'font-weight:700;color:var(--text)' : 'color:var(--muted)'}">${r.t2.name}</span>
-      </div>
-      <div style="text-align:right;flex-shrink:0;margin-left:12px">
-        <div style="font-size:0.78rem;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.event}">${r.event}</div>
-        <div style="font-size:0.72rem;color:var(--muted)">${r.date.split(' ')[0]}</div>
-      </div>
-    </div>
-  `).join('') + `<div style="margin-top:12px"><a class="team-link" data-page="history" onclick="showPage('history');loadHistory(1)">See all results →</a></div>`);
-}
-
-function renderHomeHotTeams(teams) {
-  if (!teams || !teams.length) { setEl('home-hot-teams', '<div class="empty-msg">Not enough recent matches yet.</div>'); return; }
-  setEl('home-hot-teams', teams.map((t, i) => `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
-      <div style="display:flex;align-items:center;gap:10px">
-        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
-        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}</span>
-      </div>
-      <div style="text-align:right">
-        <span style="font-weight:700;color:var(--green)">${t.winrate}%</span>
-        <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">${t.wins}-${t.losses}</span>
-      </div>
-    </div>
-  `).join(''));
-}
-
-function renderHomeTiles(tiles) {
-  if (!tiles) { setEl('home-tiles', '<div class="empty-msg">No data available.</div>'); return; }
-  const cards = [];
-
-  if (tiles.highest_rating_change) {
-    const t = tiles.highest_rating_change;
-    const sign = t.delta > 0 ? '+' : '';
-    cards.push(`
-      <div class="stat-card">
-        <div class="label">Highest Rating Change</div>
-        <div class="value" style="font-size:1.2rem">${t.name}</div>
-        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${sign}${t.delta} pts</div>
-      </div>
-    `);
-  }
-  if (tiles.biggest_upset) {
-    const t = tiles.biggest_upset;
-    cards.push(`
-      <div class="stat-card">
-        <div class="label">Biggest Upset</div>
-        <div class="value" style="font-size:1.2rem">${t.winner}</div>
-        <div class="sub">beat ${t.loser} (Δ${t.gap} pts)</div>
-      </div>
-    `);
-  }
-  if (tiles.most_positions_gained) {
-    const t = tiles.most_positions_gained;
-    cards.push(`
-      <div class="stat-card">
-        <div class="label">Most Positions Gained</div>
-        <div class="value" style="font-size:1.2rem">${t.name}</div>
-        <div class="sub">+${t.positions_gained} (#${t.rank_30d_ago} → #${t.rank_now})</div>
-      </div>
-    `);
-  }
-
-  setEl('home-tiles', cards.length ? cards.join('') : '<div class="empty-msg">No standout data in the last 30 days.</div>');
-}
-
-function renderHomeActiveEvents(events) {
-  const card = document.getElementById('home-active-events');
-  if (!events || !events.length) { if (card) card.style.display = 'none'; return; }
-  if (card) card.style.display = '';
-  setEl('home-active-events-list', `
-    <div style="display:flex;flex-wrap:wrap;gap:8px">
-      ${events.map(e => `
-        <a class="team-link" style="font-size:0.82rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 10px;display:inline-block"
-           onclick="document.getElementById('hist-event').value='${e.replace(/'/g,"\\'")}';showPage('history');loadHistory(1)">${e}</a>
-      `).join('')}
-    </div>
-  `);
 }
 
 // ---------------------------------------------------------------------------
@@ -2026,7 +1748,7 @@ function renderElite(d) {
     ? d.all_dates
     : [...new Set(series.flatMap(team => (team.points || []).map(p => p.date)))].sort();
 
-  // Build per-team byDate lookup (used for marker styling and tooltips)
+  // Build per-team byDate lookup (stored on dataset for the custom dash plugin)
   const datasets = series.map((team, i) => {
     const color = ELITE_COLORS[i % ELITE_COLORS.length];
     const hasFlags = team.points.length > 0 && 'match' in team.points[0];
@@ -2039,31 +1761,32 @@ function renderElite(d) {
     const firstIdx = realIdx[0];
     const lastIdx  = realIdx[realIdx.length - 1];
 
-    // Dots on match days; hollow at start/end like CSRS.py. The last point
-    // also gets a regular solid dot when the line trails off mid-decay, so a
-    // segment never just stops with nothing marking where it ends.
-    const endIsTransition = p => p && p.deprecated;
+    // Dots on match days; hollow at start/end like CSRS.py; smaller white-outline
+    // dots on "transition" days — the flat-to-diagonal bend the day before a
+    // match, ported from CSRS.py's circle markers (changelog #12).
     const pointRadius = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return 0;
       if (idx === firstIdx || idx === lastIdx) return 5;
-      if (idx === lastIdx && endIsTransition(p)) return 4;
       if (hasFlags && p.match) return 4;
-      if (hasFlags && p.transition) return 4;
+      if (hasFlags && p.transition) return 3;
       return 0;
     });
     const pointBg = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return 'transparent';
       if (idx === firstIdx || idx === lastIdx) return '#16181c'; // hollow
-      if (idx === lastIdx && endIsTransition(p)) return color;
-      if (hasFlags && p.match) return color;
-      if (hasFlags && p.transition) return color;
+      if (hasFlags && p.match) return (!p.above) ? color + '88' : color;
+      if (hasFlags && p.transition) return (!p.above) ? color + '88' : color;
       return 'transparent';
     });
     const pointBorder = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return color;
+      if (idx === firstIdx || idx === lastIdx) return color;
+      // Transition markers get a white outline (when above threshold) like
+      // the desktop app, so they read as distinct from regular match dots.
+      if (hasFlags && p.transition && !p.match) return p.above ? '#ffffff' : color;
       return color;
     });
 
@@ -2081,6 +1804,23 @@ function renderElite(d) {
       pointHoverRadius: 7,
       tension: 0,
       spanGaps: true,
+      // Per-segment styling: dashed line while a team is decaying from
+      // inactivity, dimmed line while below the elite threshold.
+      // ctx.p1DataIndex is the index of the segment's END point — the
+      // flags on that point describe the segment leading into it.
+      segment: hasFlags ? {
+        borderDash: ctx => {
+          const p = byDate[labels[ctx.p1DataIndex]];
+          return (p && p.deprecated) ? [5, 4] : [];
+        },
+        borderColor: ctx => {
+          const p = byDate[labels[ctx.p1DataIndex]];
+          if (!p) return color;
+          if (p.deprecated) return color + 'aa';
+          if (!p.above)     return color + '55';
+          return color;
+        },
+      } : undefined,
       // Store metadata for tooltip lookups
       _byDate:   byDate,
       _hasFlags: hasFlags,
@@ -2089,21 +1829,48 @@ function renderElite(d) {
     };
   });
 
-  // Hard-floor the y-axis at the elite threshold — anything below 850 is out
-  // of scope for this chart, so we don't extend the axis down to show dips.
-  // The transition marker at a decayed line's end still plots at its true
-  // (possibly sub-850) value; if that's below the floor it sits at/below
-  // the visible bottom edge rather than the axis expanding to fit it.
+  // The y-axis used to hard-floor at the elite threshold, which *clipped*
+  // any below-threshold dip clean off the chart — leaving only the parts of
+  // a borderline team's line that stayed above 850 visible, looking like
+  // disconnected dots. Compute real bounds from the data instead, with
+  // headroom below the threshold so dips render (dimmed, via the existing
+  // segment styling) instead of vanishing.
+  let minVal = d.elite_threshold;
   let maxVal = d.elite_threshold;
   series.forEach(team => team.points.forEach(p => {
+    if (p.pts < minVal) minVal = p.pts;
     if (p.pts > maxVal) maxVal = p.pts;
   }));
-  const yMin = d.elite_threshold;
+  const yMin = Math.floor(Math.min(minVal - 10, d.elite_threshold - 20) / 10) * 10;
   const yMax = Math.ceil((maxVal + 10) / 10) * 10;
+
+  // Draws the elite-threshold line + label, since it's no longer pinned to
+  // the bottom axis edge.
+  const thresholdLinePlugin = {
+    id: 'thresholdLine',
+    afterDraw(chart) {
+      const { ctx, chartArea, scales: { y } } = chart;
+      const yPos = y.getPixelForValue(d.elite_threshold);
+      if (yPos < chartArea.top || yPos > chartArea.bottom) return;
+      ctx.save();
+      ctx.strokeStyle = '#e8eaf0';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(chartArea.left, yPos);
+      ctx.lineTo(chartArea.right, yPos);
+      ctx.stroke();
+      ctx.fillStyle = '#e8eaf0';
+      ctx.font = '10px Arial';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(`${d.elite_threshold} elite threshold`, chartArea.left + 4, yPos - 2);
+      ctx.restore();
+    }
+  };
 
   eliteChart = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets },
+    plugins: [thresholdLinePlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -2117,18 +1884,16 @@ function renderElite(d) {
           titleColor: '#e8eaf0',
           bodyColor: '#7a7f8e',
           filter: item => item.parsed.y !== null && item.parsed.y !== undefined,
-          // Sort rows by this date's actual value (highest first), not by
-          // each team's final/end-of-range rank.
-          itemSort: (a, b) => b.parsed.y - a.parsed.y,
           callbacks: {
             title: items => items[0].label,
-            labelColor: item => {
-              const dsColor = item.dataset.borderColor;
-              return { borderColor: dsColor, backgroundColor: dsColor };
-            },
             label: item => {
+              const team = series[item.datasetIndex];
+              const p = team?.points?.find(pt => pt.date === item.label);
               const elite = item.parsed.y >= d.elite_threshold ? '●' : '○';
-              return ` ${elite} ${item.dataset.label}: ${item.parsed.y.toFixed(1)}`;
+              const dep   = (p && p.deprecated)  ? ' ~decaying'   : '';
+              const mtch  = (p && p.match)       ? ' ◆match'      : '';
+              const trans = (p && p.transition)  ? ' ◦transition' : '';
+              return ` ${elite} ${item.dataset.label}: ${item.parsed.y.toFixed(1)}${dep}${mtch}${trans}`;
             }
           }
         },
@@ -2209,7 +1974,7 @@ function toggleEliteLine(index) {
 // Init
 // ---------------------------------------------------------------------------
 loadMeta();
-loadHome();
+loadRankings();
 setInterval(loadMeta, 60000); // refresh meta every minute
 // ---------------------------------------------------------------------------
 // Generic autocomplete dropdown — wires a text input + dropdown div to the
@@ -2220,14 +1985,9 @@ function attachAutocomplete(inputId, dropdownId, kind, onSelect) {
   const dd    = document.getElementById(dropdownId);
   if (!input || !dd) return;
 
-  const endpoint  = kind === 'event' ? '/api/events' : '/api/teams';
-  const resultKey  = kind === 'event' ? 'events' : 'teams';
-  const emptyLabel = kind === 'event' ? 'No events found' : 'No teams found';
-
   let debounceTimer = null;
   let currentItems   = [];
   let highlightIdx    = -1;
-  let eventsFallbackCache = null; // lazily populated only for kind === 'event' if /api/events 404s
 
   function closeDropdown() {
     dd.classList.remove('open');
@@ -2238,30 +1998,21 @@ function attachAutocomplete(inputId, dropdownId, kind, onSelect) {
   function renderDropdown(items) {
     currentItems = items;
     highlightIdx = -1;
-    dd.innerHTML = '';
     if (!items.length) {
-      dd.innerHTML = `<div class="search-dropdown-empty">${emptyLabel}</div>`;
+      dd.innerHTML = '<div class="search-dropdown-empty">No teams found</div>';
       dd.classList.add('open');
       return;
     }
-    items.forEach((name, i) => {
-      const item = document.createElement('div');
-      item.className = 'search-dropdown-item';
-      item.dataset.idx = String(i);
-      const span = document.createElement('span');
-      span.textContent = name;
-      item.appendChild(span);
-      // Real listener with `name` captured by closure — avoids serializing
-      // onSelect.toString() into an HTML attribute, which broke for any name
-      // containing a quote character (the embedded JSON.stringify() output
-      // terminated the onclick="..." attribute early).
-      item.addEventListener('click', () => {
-        input.value = name;
-        closeDropdown();
-        onSelect(name);
-      });
-      dd.appendChild(item);
-    });
+    dd.innerHTML = items.map((name, i) => `
+      <div class="search-dropdown-item" data-idx="${i}" onclick="(function(){
+        document.getElementById('${inputId}').value = ${JSON.stringify(name)};
+        document.getElementById('${dropdownId}').classList.remove('open');
+        document.getElementById('${dropdownId}').innerHTML = '';
+        (${onSelect.toString()})(${JSON.stringify(name)});
+      })()">
+        <span>${name}</span>
+      </div>
+    `).join('');
     dd.classList.add('open');
   }
 
@@ -2281,30 +2032,11 @@ function attachAutocomplete(inputId, dropdownId, kind, onSelect) {
     if (!q) { closeDropdown(); return; }
     debounceTimer = setTimeout(async () => {
       try {
-        const res = await fetch(`${API}${endpoint}?search=${encodeURIComponent(q)}`);
-        if (!res.ok) throw new Error('endpoint unavailable');
+        const res = await fetch(`${API}/api/teams?search=${encodeURIComponent(q)}`);
         const data = await res.json();
-        renderDropdown((data[resultKey] || []).slice(0, 8));
+        renderDropdown((data.teams || []).slice(0, 8));
       } catch (e) {
-        // /api/events isn't deployed yet on some environments — fall back to
-        // event names already present in the analytics summary payload
-        // (top_events), filtered client-side. Only applies to kind 'event';
-        // 'team' always has a working /api/teams endpoint.
-        if (kind === 'event') {
-          try {
-            if (!eventsFallbackCache) {
-              const summary = await fetch(`${API}/api/analytics/summary`).then(r => r.json());
-              eventsFallbackCache = (summary.top_events || []).map(e => e.event);
-            }
-            const ql = q.toLowerCase();
-            const matches = eventsFallbackCache.filter(name => name.toLowerCase().includes(ql)).slice(0, 8);
-            renderDropdown(matches);
-          } catch (e2) {
-            closeDropdown();
-          }
-        } else {
-          closeDropdown();
-        }
+        closeDropdown();
       }
     }, 180);
   });
@@ -2353,24 +2085,6 @@ document.addEventListener('DOMContentLoaded', function() {
   if (inp) inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadTeamDetails(); });
 });
 
-// ---------------------------------------------------------------------------
-// Match History filters
-// ---------------------------------------------------------------------------
-attachAutocomplete('hist-team', 'hist-team-dd', 'team', function() {});
-attachAutocomplete('hist-event', 'hist-event-dd', 'event', function() {});
-
-// ---------------------------------------------------------------------------
-// Match Simulator team pickers
-// ---------------------------------------------------------------------------
-attachAutocomplete('sim-t1', 'sim-t1-dd', 'team', function() {});
-attachAutocomplete('sim-t2', 'sim-t2-dd', 'team', function() {});
-
-// ---------------------------------------------------------------------------
-// Head to Head team pickers
-// ---------------------------------------------------------------------------
-attachAutocomplete('h2h-t1', 'h2h-t1-dd', 'team', function() {});
-attachAutocomplete('h2h-t2', 'h2h-t2-dd', 'team', function() {});
-
 async function loadTeamDetails(name) {
   name = name || document.getElementById('td-input').value.trim();
   if (!name) return;
@@ -2381,7 +2095,6 @@ async function loadTeamDetails(name) {
     var d = await api('/api/team/' + encodeURIComponent(name));
     renderTeamDetails(d);
   } catch(e) {
-    console.error('TEAM DETAILS DEBUG:', e); // TEMP — remove after debugging
     el.innerHTML = '<div class="error-msg">' + e.message + '</div>';
   }
 }
