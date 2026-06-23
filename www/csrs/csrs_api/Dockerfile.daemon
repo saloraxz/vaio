@@ -37,11 +37,14 @@ RUN pip install --no-cache-dir -r requirements.daemon.txt
 # Install Playwright and download Chromium (no --with-deps, deps installed above)
 RUN playwright install chromium
 
-# Copy CSRS application
+# Copy CSRS application + backfill script + entrypoint
 COPY CSRS.py .
+COPY backfill.py .
+COPY csrs_api/entrypoint.sh .
+RUN chmod +x entrypoint.sh
 
 # data.save lives on a shared volume mounted at /data
-# batch_import.log also written there
+# batch_import.log and backfill_progress.json also written there
 ENV CSRS_DATA_DIR=/data
 
 # Git config for auto-commits (name/email can be anything)
@@ -51,5 +54,5 @@ RUN git config --global user.email "csrs-daemon@auto" && \
 
 VOLUME ["/data"]
 
-# Entrypoint: run daemon mode
-CMD ["python", "CSRS.py", "--daemon", "--lookback", "2"]
+# Entrypoint: runs backfill first (skips completed windows), then daemon
+CMD ["./entrypoint.sh"]
