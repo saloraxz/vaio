@@ -1235,7 +1235,7 @@ function renderHomeHotTeams(winrateTeams, ratingTeams) {
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:10px">
         <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
-        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}${t.rank ? ` <span style="color:var(--muted);font-weight:400">(#${t.rank})</span>` : ''}</span>
       </div>
       <div style="text-align:right">
         <span style="font-weight:700;color:var(--green)">${t.winrate}%</span>
@@ -1248,7 +1248,7 @@ function renderHomeHotTeams(winrateTeams, ratingTeams) {
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:10px">
         <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
-        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}${t.rank ? ` <span style="color:var(--muted);font-weight:400">(#${t.rank})</span>` : ''}</span>
       </div>
       <div style="text-align:right">
         <span style="font-weight:700;color:var(--green)">${t.delta > 0 ? '+' : ''}${t.delta.toFixed ? t.delta.toFixed(1) : t.delta}</span>
