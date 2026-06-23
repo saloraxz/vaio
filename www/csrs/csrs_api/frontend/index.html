@@ -502,40 +502,6 @@ tr:last-child td { border-bottom: none; }
   color: var(--muted);
 }
 
-/* ── Home: shortcuts row ── */
-.home-shortcuts {
-  display: flex;
-  gap: 12px;
-  margin-top: 4px;
-  flex-wrap: wrap;
-}
-.home-shortcut-tile {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px 18px;
-  flex: 1;
-  min-width: 100px;
-  cursor: pointer;
-  color: var(--text);
-  text-decoration: none;
-  font-size: 0.78rem;
-  text-align: center;
-}
-.home-shortcut-tile:hover { background: var(--surface2); border-color: var(--accent); }
-.home-shortcut-icon {
-  font-size: 1.4rem;
-  height: 1.4rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-}
-
 /* ── Mobile-only elements — hidden on desktop, all styles inside media query ── */
 #bottom-nav,
 #more-sheet,
@@ -553,8 +519,6 @@ tr:last-child td { border-bottom: none; }
   }
   .sim-vs { padding-top: 0; }
   .sim-team-card .search-wrap { max-width: 100%; }
-
-  .home-shortcuts { display: none; }
 
   #bottom-nav {
     display: flex;
@@ -756,16 +720,6 @@ tr:last-child td { border-bottom: none; }
   <!-- Home -->
   <div class="page active" id="page-home">
     <div class="page-header"><h2>Home</h2></div>
-    <div class="stat-grid">
-      <div class="stat-card">
-        <div class="label">Total Matches</div>
-        <div class="value" id="home-total-matches">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Total Teams</div>
-        <div class="value" id="home-total-teams">—</div>
-      </div>
-    </div>
     <div class="card" id="home-top-team">
       <div class="loading"><div class="spinner"></div> Loading…</div>
     </div>
@@ -777,39 +731,19 @@ tr:last-child td { border-bottom: none; }
         <div class="loading"><div class="spinner"></div> Loading…</div>
       </div>
     </div>
-    <div class="card">
-      <div class="page-header" style="margin-bottom:12px">
-        <h2 style="font-size:1rem">Hot Teams <span style="color:var(--muted);font-weight:400;font-size:0.78rem">— top 30, last 30 days</span></h2>
-      </div>
-      <div id="home-hot-teams">
-        <div class="loading"><div class="spinner"></div> Loading…</div>
-      </div>
-    </div>
     <div class="page-header" style="margin-bottom:12px">
       <h2 style="font-size:1rem">Standouts <span style="color:var(--muted);font-weight:400;font-size:0.78rem">— last 30 days</span></h2>
     </div>
     <div class="stat-grid" id="home-tiles">
       <div class="loading"><div class="spinner"></div> Loading…</div>
     </div>
-    <div class="card" id="home-active-events" style="display:none">
+    <div class="card">
       <div class="page-header" style="margin-bottom:12px">
-        <h2 style="font-size:1rem">Active Events</h2>
+        <h2 style="font-size:1rem">Hot Teams <span style="color:var(--muted);font-weight:400;font-size:0.78rem">— top 30, last 30 days</span></h2>
       </div>
-      <div id="home-active-events-list"></div>
-    </div>
-    <div class="home-shortcuts">
-      <a class="home-shortcut-tile" onclick="showPage('simulate')">
-        <span class="home-shortcut-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg></span>
-        <span>Simulate</span>
-      </a>
-      <a class="home-shortcut-tile" onclick="showPage('h2h')">
-        <span class="home-shortcut-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="12" r="4"/><circle cx="17" cy="12" r="4"/></svg></span>
-        <span>Head to Head</span>
-      </a>
-      <a class="home-shortcut-tile" onclick="showPage('elite')">
-        <span class="home-shortcut-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11M10 20V5M16 20v-6M3 20h18"/></svg></span>
-        <span>Elite Teams</span>
-      </a>
+      <div class="analytics-grid" id="home-hot-teams">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
     </div>
   </div>
 
@@ -2019,6 +1953,7 @@ function toggleEliteLine(index) {
 // Init
 // ---------------------------------------------------------------------------
 loadMeta();
+loadHome();
 loadRankings();
 setInterval(loadMeta, 60000); // refresh meta every minute
 // ---------------------------------------------------------------------------
@@ -2063,21 +1998,16 @@ document.querySelectorAll('.more-sheet-item[data-page]').forEach(a => {
 // Home
 // ---------------------------------------------------------------------------
 async function loadHome() {
-  setEl('home-total-matches', '—');
-  setEl('home-total-teams', '—');
   setLoading('home-top-team');
   setLoading('home-featured-results');
   setLoading('home-hot-teams');
   setEl('home-tiles', '<div class="loading"><div class="spinner"></div> Loading…</div>');
   try {
     const d = await api('/api/home');
-    setEl('home-total-matches', d.total_matches);
-    setEl('home-total-teams', d.total_teams);
-    renderHomeTopTeam(d.top_team);
+    renderHomeTopTeam(d.top_team, d.top_form_team);
     renderHomeFeaturedResults(d.featured_results);
-    renderHomeHotTeams(d.hot_teams);
+    renderHomeHotTeams(d.hot_teams, d.top_rating_increase);
     renderHomeTiles(d.tiles);
-    renderHomeActiveEvents(d.active_events);
   } catch(e) {
     setError('home-top-team', e.message);
     setError('home-featured-results', e.message);
@@ -2086,19 +2016,32 @@ async function loadHome() {
   }
 }
 
-function renderHomeTopTeam(team) {
+function renderHomeTopTeam(team, formTeam) {
   if (!team) { setEl('home-top-team', '<div class="empty-msg">No ranked teams yet.</div>'); return; }
-  setEl('home-top-team', `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
-      <div>
-        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Ranked Team</div>
-        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${team.name.replace(/'/g,"\\'")}')">
-          ${team.name}
+  const formBlock = formTeam ? `
+      <div style="border-left:1px solid var(--border);padding-left:24px">
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Form Team</div>
+        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${formTeam.name.replace(/'/g,"\\'")}')">
+          ${formTeam.name}
         </span>
         <div style="margin-top:4px">
-          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${team.points.toFixed(2)} pts</span>
-          ${team.form_grade ? `<span style="margin-left:10px;color:var(--muted);font-size:0.82rem">Form: ${team.form_grade} (${team.form_score})</span>` : ''}
+          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${formTeam.form_grade || ''}${formTeam.form_score !== undefined ? ` (${formTeam.form_score})` : ''}</span>
         </div>
+      </div>` : '';
+  setEl('home-top-team', `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Ranked Team</div>
+          <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${team.name.replace(/'/g,"\\'")}')">
+            ${team.name}
+          </span>
+          <div style="margin-top:4px">
+            <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${team.points.toFixed(2)} pts</span>
+            ${team.form_grade ? `<span style="margin-left:10px;color:var(--muted);font-size:0.82rem">Form: ${team.form_grade} (${team.form_score})</span>` : ''}
+          </div>
+        </div>
+        ${formBlock}
       </div>
       <div>
         <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">30d Trend</div>
@@ -2113,39 +2056,95 @@ function renderHomeFeaturedResults(results) {
     setEl('home-featured-results', '<div class="empty-msg">No featured results yet.</div>');
     return;
   }
-  setEl('home-featured-results', results.map(r => `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)">
-      <div style="display:flex;align-items:center;gap:10px;min-width:0">
-        ${tierBadge(r.tier)}
-        <span style="${r.winner === r.t1.name ? 'font-weight:700' : 'color:var(--muted)'}">${r.t1.name}</span>
-        <span style="color:var(--muted);font-size:0.82rem">${r.t1.score}–${r.t2.score}</span>
-        <span style="${r.winner === r.t2.name ? 'font-weight:700' : 'color:var(--muted)'}">${r.t2.name}</span>
-      </div>
-      <div style="text-align:right;flex-shrink:0;margin-left:12px">
-        <div style="font-size:0.78rem;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.event}">${r.event}</div>
-        <div style="font-size:0.72rem;color:var(--muted)">${r.date ? r.date.split(' ')[0] : ''}</div>
-      </div>
-    </div>
-  `).join('') + `<div style="margin-top:12px"><a class="team-link" onclick="showPage('history');loadHistory(1)">See all results →</a></div>`);
+  const TIER_STYLE = {
+    'S+': 'background:rgba(255,68,68,0.15);color:#ff4444',
+    'S':  'background:rgba(255,215,0,0.15);color:#FFD700',
+    'A':  'background:rgba(192,192,192,0.15);color:#C0C0C0',
+    'B':  'background:rgba(205,127,50,0.15);color:#CD7F32',
+    'C':  'background:rgba(60,180,75,0.15);color:#3cb44b',
+    'D':  'background:rgba(230,25,75,0.15);color:#e6194B',
+  };
+  const rows = results.map(r => {
+    const t1won = r.t1.score > r.t2.score;
+    const tierStyle = TIER_STYLE[r.tier] || 'background:var(--surface2);color:var(--muted)';
+
+    const t1NameStyle = t1won
+      ? 'font-weight:600;color:var(--text)'
+      : 'font-weight:400;color:var(--muted)';
+    const t2NameStyle = !t1won
+      ? 'font-weight:600;color:var(--text)'
+      : 'font-weight:400;color:var(--muted)';
+    const t1ScoreStyle = t1won
+      ? 'color:var(--green);font-weight:700'
+      : 'color:var(--red);font-weight:700;opacity:0.75';
+    const t2ScoreStyle = !t1won
+      ? 'color:var(--green);font-weight:700'
+      : 'color:var(--red);font-weight:700;opacity:0.75';
+
+    return `
+      <div style="display:flex;align-items:center;padding:14px 4px;gap:14px;border-bottom:1px solid var(--border);cursor:pointer" onclick="showPage('history');loadHistory(1)">
+        <div style="width:30px;height:30px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:800;${tierStyle}">${r.tier}</div>
+        <div style="flex:1;min-width:0;text-align:left">
+          <span style="font-size:0.95rem;${t1NameStyle};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.t1.name}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;min-width:64px;justify-content:center">
+          <span style="font-size:1.1rem;${t1ScoreStyle}">${r.t1.score}</span>
+          <span style="color:var(--muted);font-size:0.9rem">-</span>
+          <span style="font-size:1.1rem;${t2ScoreStyle}">${r.t2.score}</span>
+        </div>
+        <div style="flex:1;min-width:0;text-align:right">
+          <span style="font-size:0.95rem;${t2NameStyle};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.t2.name}</span>
+        </div>
+        <div style="flex-shrink:0;width:36px;text-align:right">
+          <span style="font-size:0.75rem;color:var(--muted)">${r.format || 'bo3'}</span>
+        </div>
+      </div>`;
+  }).join('');
+  setEl('home-featured-results', rows + `<div style="padding-top:12px"><a class="team-link" style="font-size:0.82rem;color:var(--muted)" onclick="showPage('history');loadHistory(1)">See all results →</a></div>`);
 }
 
-function renderHomeHotTeams(teams) {
-  if (!teams || !teams.length) {
+function renderHomeHotTeams(winrateTeams, ratingTeams) {
+  if ((!winrateTeams || !winrateTeams.length) && (!ratingTeams || !ratingTeams.length)) {
     setEl('home-hot-teams', '<div class="empty-msg">Not enough recent data yet.</div>');
     return;
   }
-  setEl('home-hot-teams', teams.map((t, i) => `
+
+  const winrateList = (winrateTeams || []).slice(0, 5).map((t, i) => `
     <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:10px">
         <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
-        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}'">${t.name}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}</span>
       </div>
       <div style="text-align:right">
         <span style="font-weight:700;color:var(--green)">${t.winrate}%</span>
         <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">${t.wins}W ${t.losses}L</span>
       </div>
     </div>
-  `).join(''));
+  `).join('') || '<div class="empty-msg" style="padding:20px">No data available.</div>';
+
+  const ratingList = (ratingTeams || []).slice(0, 5).map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}</span>
+      </div>
+      <div style="text-align:right">
+        <span style="font-weight:700;color:var(--green)">${t.delta > 0 ? '+' : ''}${t.delta.toFixed ? t.delta.toFixed(1) : t.delta}</span>
+        <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">pts</span>
+      </div>
+    </div>
+  `).join('') || '<div class="empty-msg" style="padding:20px">No data available.</div>';
+
+  setEl('home-hot-teams', `
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top Win Rate</div>
+      ${winrateList}
+    </div>
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Rating Increase</div>
+      ${ratingList}
+    </div>
+  `);
 }
 
 function renderHomeTiles(tiles) {
@@ -2158,6 +2157,15 @@ function renderHomeTiles(tiles) {
         <div class="label">Highest Rating Change</div>
         <div class="value" style="font-size:1.2rem">${t.name}</div>
         <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} pts</div>
+      </div>`);
+  }
+  if (tiles.highest_form_change) {
+    const t = tiles.highest_form_change;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Highest Form Change</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} form pts</div>
       </div>`);
   }
   if (tiles.biggest_upset) {
@@ -2179,20 +2187,6 @@ function renderHomeTiles(tiles) {
       </div>`);
   }
   setEl('home-tiles', cards.length ? cards.join('') : '<div class="empty-msg">No standout data in the last 30 days.</div>');
-}
-
-function renderHomeActiveEvents(events) {
-  const card = document.getElementById('home-active-events');
-  if (!events || !events.length) { if (card) card.style.display = 'none'; return; }
-  if (card) card.style.display = '';
-  setEl('home-active-events-list', `
-    <div style="display:flex;flex-wrap:wrap;gap:8px">
-      ${events.map(e => `
-        <a class="team-link" style="font-size:0.82rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 10px;display:inline-block"
-           onclick="document.getElementById('hist-event').value='${e.replace(/'/g,"\\'")}';showPage('history');loadHistory(1)">${e}</a>
-      `).join('')}
-    </div>
-  `);
 }
 
 // ---------------------------------------------------------------------------
