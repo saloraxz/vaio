@@ -744,8 +744,13 @@ tr:last-child td { border-bottom: none; }
   <!-- Home -->
   <div class="page active" id="page-home">
     <div class="page-header"><h2>Home</h2></div>
-    <div class="card" id="home-top-team">
-      <div class="loading"><div class="spinner"></div> Loading…</div>
+    <div class="analytics-grid" style="margin-bottom:16px">
+      <div class="card" id="home-top-team">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+      <div class="card" id="home-top-form-team">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
     </div>
     <div class="card">
       <div class="page-header" style="margin-bottom:12px">
@@ -766,6 +771,14 @@ tr:last-child td { border-bottom: none; }
         <h2 style="font-size:1rem">Hot Teams <span style="color:var(--muted);font-weight:400;font-size:0.78rem">— top 30, last 30 days</span></h2>
       </div>
       <div class="analytics-grid" id="home-hot-teams">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Cold Teams <span style="color:var(--muted);font-weight:400;font-size:0.78rem">— top 30, last 30 days</span></h2>
+      </div>
+      <div id="home-cold-teams">
         <div class="loading"><div class="spinner"></div> Loading…</div>
       </div>
     </div>
@@ -1121,53 +1134,61 @@ async function loadMeta() {
 // ---------------------------------------------------------------------------
 async function loadHome() {
   setLoading('home-top-team');
+  setLoading('home-top-form-team');
   setLoading('home-featured-results');
   setLoading('home-hot-teams');
+  setLoading('home-cold-teams');
   setEl('home-tiles', '<div class="loading"><div class="spinner"></div> Loading…</div>');
   try {
     const d = await api('/api/home');
-    renderHomeTopTeam(d.top_team, d.top_form_team);
+    renderHomeTopTeam(d.top_team);
+    renderHomeTopFormTeam(d.top_form_team);
     renderHomeFeaturedResults(d.featured_results);
     renderHomeHotTeams(d.hot_teams, d.top_rating_increase);
+    renderHomeColdTeams(d.cold_teams);
     renderHomeTiles(d.tiles);
   } catch(e) {
     setError('home-top-team', e.message);
+    setError('home-top-form-team', e.message);
     setError('home-featured-results', e.message);
     setError('home-hot-teams', e.message);
+    setError('home-cold-teams', e.message);
     setError('home-tiles', e.message);
   }
 }
 
-function renderHomeTopTeam(team, formTeam) {
+function renderHomeTopTeam(team) {
   if (!team) { setEl('home-top-team', '<div class="empty-msg">No ranked teams yet.</div>'); return; }
-  const formBlock = formTeam ? `
-      <div style="border-left:1px solid var(--border);padding-left:24px">
-        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Form Team</div>
-        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${formTeam.name.replace(/'/g,"\\'")}')">
-          ${formTeam.name}
-        </span>
-        <div style="margin-top:4px">
-          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${formTeam.form_grade || ''}${formTeam.form_score !== undefined ? ` (${formTeam.form_score})` : ''}</span>
-        </div>
-      </div>` : '';
   setEl('home-top-team', `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
-      <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap">
-        <div>
-          <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Ranked Team</div>
-          <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${team.name.replace(/'/g,"\\'")}')">
-            ${team.name}
-          </span>
-          <div style="margin-top:4px">
-            <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${team.points.toFixed(2)} pts</span>
-            ${team.form_grade ? `<span style="margin-left:10px;color:var(--muted);font-size:0.82rem">Form: ${team.form_grade} (${team.form_score})</span>` : ''}
-          </div>
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Ranked Team</div>
+        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${team.name.replace(/'/g,"\\'")}')">
+          ${team.name}
+        </span>
+        <div style="margin-top:4px">
+          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${team.points.toFixed(2)} pts</span>
+          ${team.form_grade ? `<span style="margin-left:10px;color:var(--muted);font-size:0.82rem">Form: ${team.form_grade} (${team.form_score})</span>` : ''}
         </div>
-        ${formBlock}
       </div>
       <div>
         <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">30d Trend</div>
         ${sparklineSVG(team.sparkline_30d, 120, 36)}
+      </div>
+    </div>
+  `);
+}
+
+function renderHomeTopFormTeam(formTeam) {
+  if (!formTeam) { setEl('home-top-form-team', '<div class="empty-msg">No form data yet.</div>'); return; }
+  setEl('home-top-form-team', `
+    <div>
+      <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Form Team</div>
+      <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${formTeam.name.replace(/'/g,"\\'")}')">
+        ${formTeam.name}
+      </span>
+      <div style="margin-top:4px">
+        <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${formTeam.form_grade || ''}${formTeam.form_score !== undefined ? ` (${formTeam.form_score})` : ''}</span>
       </div>
     </div>
   `);
@@ -1269,6 +1290,25 @@ function renderHomeHotTeams(winrateTeams, ratingTeams) {
   `);
 }
 
+function renderHomeColdTeams(teams) {
+  if (!teams || !teams.length) {
+    setEl('home-cold-teams', '<div class="empty-msg">Not enough recent data yet.</div>');
+    return;
+  }
+  setEl('home-cold-teams', teams.slice(0, 5).map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}${t.rank ? ` <span style="color:var(--muted);font-weight:400">(#${t.rank})</span>` : ''}</span>
+      </div>
+      <div style="text-align:right">
+        <span style="font-weight:700;color:var(--red)">${t.winrate}%</span>
+        <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">${t.wins}W ${t.losses}L</span>
+      </div>
+    </div>
+  `).join(''));
+}
+
 function renderHomeTiles(tiles) {
   if (!tiles) { setEl('home-tiles', '<div class="empty-msg">No data available.</div>'); return; }
   const cards = [];
@@ -1281,11 +1321,29 @@ function renderHomeTiles(tiles) {
         <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} pts</div>
       </div>`);
   }
+  if (tiles.lowest_rating_change) {
+    const t = tiles.lowest_rating_change;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Lowest Rating Change</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} pts</div>
+      </div>`);
+  }
   if (tiles.highest_form_change) {
     const t = tiles.highest_form_change;
     cards.push(`
       <div class="stat-card">
         <div class="label">Highest Form Change</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} form pts</div>
+      </div>`);
+  }
+  if (tiles.lowest_form_change) {
+    const t = tiles.lowest_form_change;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Lowest Form Change</div>
         <div class="value" style="font-size:1.2rem">${t.name}</div>
         <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} form pts</div>
       </div>`);
@@ -1306,6 +1364,33 @@ function renderHomeTiles(tiles) {
         <div class="label">Most Positions Gained</div>
         <div class="value" style="font-size:1.2rem">${t.name}</div>
         <div class="sub">+${t.positions_gained} (#${t.rank_30d_ago} → #${t.rank_now})</div>
+      </div>`);
+  }
+  if (tiles.most_positions_lost) {
+    const t = tiles.most_positions_lost;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Most Positions Lost</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub">-${t.positions_lost} (#${t.rank_30d_ago} → #${t.rank_now})</div>
+      </div>`);
+  }
+  if (tiles.longest_win_streak) {
+    const t = tiles.longest_win_streak;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Longest Win Streak</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:var(--green)">${t.streak} in a row</div>
+      </div>`);
+  }
+  if (tiles.longest_loss_streak) {
+    const t = tiles.longest_loss_streak;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Longest Loss Streak</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:var(--red)">${t.streak} in a row</div>
       </div>`);
   }
   setEl('home-tiles', cards.length ? cards.join('') : '<div class="empty-msg">No standout data in the last 30 days.</div>');

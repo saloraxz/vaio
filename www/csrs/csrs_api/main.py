@@ -1588,7 +1588,7 @@ def home():
         delta = round(after - before, 1)
         rating_change_all.append({"name": name, "delta": delta, "_after": after})
         if delta > 0:
-            rating_increase.append({"name": name, "delta": delta})
+            rating_increase.append({"name": name, "delta": delta, "rank": current_rank[name]})
     rating_increase.sort(key=lambda x: x["delta"], reverse=True)
     top_rating_increase = rating_increase[:5]
     wins_30d: dict = {}
@@ -1612,30 +1612,67 @@ def home():
                 "name": name, "wins": w, "losses": l,
                 "winrate": round(w / total * 100, 1),
                 "matches_played": total,
+                "rank": current_rank[name],
             })
     # Tie-break: same win rate -> most matches played in the last 30 days wins.
     hot_teams.sort(key=lambda x: (x["winrate"], x["matches_played"]), reverse=True)
     hot_teams = hot_teams[:5]
 
+    # --- Cold Teams: inverse of Hot Teams — lowest win rate, same min-5-matches floor ---
+    cold_teams = []
+    for name in top_30_names:
+        w = wins_30d.get(name, 0)
+        l = losses_30d.get(name, 0)
+        total = w + l
+        if total >= 5:
+            cold_teams.append({
+                "name": name, "wins": w, "losses": l,
+                "winrate": round(w / total * 100, 1),
+                "matches_played": total,
+                "rank": current_rank[name],
+            })
+    # Tie-break: same win rate -> most matches played in the last 30 days wins
+    # (more matches at a low win rate is a "colder" run than just one or two).
+    cold_teams.sort(key=lambda x: (x["winrate"], -x["matches_played"]))
+    cold_teams = cold_teams[:5]
+
     # --- Tile: Highest rating change (30d) ---
     # Same start-of-30d-to-now delta used for "Top 5 Rating Increase" in Hot
-    # Teams, just picking the single biggest swing (either direction) instead
-    # of the top 5 positive ones. Tie-break: same |delta| -> the team with the
-    # higher current rating wins.
+    # Teams — picks the team with the single biggest true increase. Tie-break:
+    # same delta -> the team with the higher current rating wins.
     tile_rating_change = None
     for rc in rating_change_all:
         delta = rc["delta"]
         is_better = False
         if tile_rating_change is None:
             is_better = True
-        elif abs(delta) > abs(tile_rating_change["delta"]):
+        elif delta > tile_rating_change["delta"]:
             is_better = True
-        elif abs(delta) == abs(tile_rating_change["delta"]) and rc["_after"] > tile_rating_change["_after"]:
+        elif delta == tile_rating_change["delta"] and rc["_after"] > tile_rating_change["_after"]:
             is_better = True
         if is_better:
             tile_rating_change = {"name": rc["name"], "delta": delta, "_after": rc["_after"]}
     if tile_rating_change:
         tile_rating_change.pop("_after", None)
+
+    # --- Tile: Lowest rating change (30d) — the inverse of the tile above.
+    # Picks the single biggest *decrease* specifically (not just biggest
+    # absolute swing), so a team that fell off a cliff always wins this slot
+    # even if some other team's gain was numerically larger.
+    tile_rating_change_low = None
+    for rc in rating_change_all:
+        delta = rc["delta"]
+        is_better = False
+        if tile_rating_change_low is None:
+            is_better = True
+        elif delta < tile_rating_change_low["delta"]:
+            is_better = True
+        elif delta == tile_rating_change_low["delta"] and rc["_after"] > tile_rating_change_low["_after"]:
+            is_better = True
+        if is_better:
+            tile_rating_change_low = {"name": rc["name"], "delta": delta, "_after": rc["_after"]}
+    if tile_rating_change_low:
+        tile_rating_change_low.pop("_after", None)
 
     # --- Tile: Biggest rating-difference upset (30d) — lower pts_before side wins ---
     # Tie-break: same gap -> the upset where the losing (higher-rated) team
@@ -1672,6 +1709,7 @@ def home():
             team_match_indices.setdefault(m[side]["name"], []).append(gi)
 
     tile_form_change = None
+    tile_form_change_low = None
     for name in top_30_names:
         indices = team_match_indices.get(name, [])
         idx_before_cutoff = None
@@ -1697,9 +1735,9 @@ def home():
         is_better = False
         if tile_form_change is None:
             is_better = True
-        elif abs(delta) > abs(tile_form_change["delta"]):
+        elif delta > tile_form_change["delta"]:
             is_better = True
-        elif abs(delta) == abs(tile_form_change["delta"]) and form_now[1] > tile_form_change["_form_now"]:
+        elif delta == tile_form_change["delta"] and form_now[1] > tile_form_change["_form_now"]:
             is_better = True
         if is_better:
             tile_form_change = {
@@ -1707,8 +1745,79 @@ def home():
                 "form_grade": form_now[0],
                 "_form_now": form_now[1],
             }
+
+        is_better_low = False
+        if tile_form_change_low is None:
+            is_better_low = True
+        elif delta < tile_form_change_low["delta"]:
+            is_better_low = True
+        elif delta == tile_form_change_low["delta"] and form_now[1] > tile_form_change_low["_form_now"]:
+            is_better_low = True
+        if is_better_low:
+            tile_form_change_low = {
+                "name": name, "delta": delta,
+                "form_grade": form_now[0],
+                "_form_now": form_now[1],
+            }
     if tile_form_change:
         tile_form_change.pop("_form_now", None)
+    if tile_form_change_low:
+        tile_form_change_low.pop("_form_now", None)
+
+    # --- Tiles: Longest current win streak / loss streak ---
+    # Walks each team's full match history backwards from their most recent
+    # match (not bounded to the 30d window — a streak can run longer than
+    # that), counting consecutive identical results until it breaks.
+    # Tie-break: same streak length -> the team with the higher current
+    # (depreciated) rating wins.
+    tile_win_streak = None
+    tile_loss_streak = None
+    for name in top_30_names:
+        indices = team_match_indices.get(name, [])
+        if not indices:
+            continue
+        streak_len = 0
+        streak_result = None
+        for gi in reversed(indices):
+            m = history[gi]
+            won = m["t1"]["score"] > m["t2"]["score"] if m["t1"]["name"] == name \
+                else m["t2"]["score"] > m["t1"]["score"]
+            result = "W" if won else "L"
+            if streak_result is None:
+                streak_result = result
+                streak_len = 1
+            elif result == streak_result:
+                streak_len += 1
+            else:
+                break
+        if streak_result is None:
+            continue
+        rating = team_display[name]
+
+        if streak_result == "W":
+            is_better = False
+            if tile_win_streak is None:
+                is_better = True
+            elif streak_len > tile_win_streak["streak"]:
+                is_better = True
+            elif streak_len == tile_win_streak["streak"] and rating > tile_win_streak["_rating"]:
+                is_better = True
+            if is_better:
+                tile_win_streak = {"name": name, "streak": streak_len, "_rating": rating}
+        else:
+            is_better = False
+            if tile_loss_streak is None:
+                is_better = True
+            elif streak_len > tile_loss_streak["streak"]:
+                is_better = True
+            elif streak_len == tile_loss_streak["streak"] and rating > tile_loss_streak["_rating"]:
+                is_better = True
+            if is_better:
+                tile_loss_streak = {"name": name, "streak": streak_len, "_rating": rating}
+    if tile_win_streak:
+        tile_win_streak.pop("_rating", None)
+    if tile_loss_streak:
+        tile_loss_streak.pop("_rating", None)
 
     # --- Tile: Most positions gained (rank 30 days ago vs rank now) ---
     # Teams with no recorded points 30 days ago (too new) are excluded —
@@ -1739,6 +1848,11 @@ def home():
     tile_positions_gained = None
     best_gain = None
     best_gain_rating = None
+    # Tie-break: same positions lost -> the team with the higher current
+    # (depreciated) rating wins (i.e. the bigger name slipping counts more).
+    tile_positions_lost = None
+    worst_drop = None
+    worst_drop_rating = None
     for name in teams:
         if name not in rank_30d_ago:
             continue
@@ -1756,6 +1870,21 @@ def home():
             best_gain_rating = rating
             tile_positions_gained = {
                 "name": name, "positions_gained": gained,
+                "rank_30d_ago": rank_30d_ago[name], "rank_now": current_rank[name],
+            }
+
+        is_worse = False
+        if worst_drop is None:
+            is_worse = True
+        elif gained < worst_drop:
+            is_worse = True
+        elif gained == worst_drop and rating > worst_drop_rating:
+            is_worse = True
+        if is_worse:
+            worst_drop = gained
+            worst_drop_rating = rating
+            tile_positions_lost = {
+                "name": name, "positions_lost": -gained,
                 "rank_30d_ago": rank_30d_ago[name], "rank_now": current_rank[name],
             }
 
@@ -1778,12 +1907,18 @@ def home():
         "top_form_team": top_form_team,
         "featured_results": featured_results,
         "hot_teams": hot_teams,
+        "cold_teams": cold_teams,
         "top_rating_increase": top_rating_increase,
         "tiles": {
             "highest_rating_change": tile_rating_change,
+            "lowest_rating_change": tile_rating_change_low,
             "highest_form_change": tile_form_change,
+            "lowest_form_change": tile_form_change_low,
             "biggest_upset": tile_upset,
             "most_positions_gained": tile_positions_gained,
+            "most_positions_lost": tile_positions_lost,
+            "longest_win_streak": tile_win_streak,
+            "longest_loss_streak": tile_loss_streak,
         },
         "active_events": active_events[:5],
     }
