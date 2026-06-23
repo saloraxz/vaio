@@ -608,6 +608,8 @@ tr:last-child td { border-bottom: none; }
   }
   .more-sheet-item:last-child { border-bottom: none; }
   .more-sheet-item:active { background: var(--surface2); }
+  .more-sheet-item.wip { cursor: default; opacity: 0.6; }
+  .more-sheet-item.wip:active { background: none; }
   .more-sheet-icon {
     width: 44px;
     height: 44px;
@@ -674,9 +676,9 @@ tr:last-child td { border-bottom: none; }
     <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span>
     <span>History</span>
   </a>
-  <a data-page="simulate" class="bottom-nav-item">
-    <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg></span>
-    <span>Simulate</span>
+  <a data-page="team-details" class="bottom-nav-item">
+    <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg></span>
+    <span>Team Details</span>
   </a>
   <a id="bottom-nav-more" class="bottom-nav-item">
     <span class="bottom-nav-icon">&#8943;</span>
@@ -688,29 +690,51 @@ tr:last-child td { border-bottom: none; }
 <div id="more-sheet-overlay"></div>
 <div id="more-sheet">
   <div class="more-sheet-handle"></div>
-  <a data-page="team-details" class="more-sheet-item">
-    <span class="more-sheet-icon">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
-    </span>
-    <span>Team Details</span>
-  </a>
-  <a data-page="h2h" class="more-sheet-item">
-    <span class="more-sheet-icon">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="12" r="4"/><circle cx="17" cy="12" r="4"/><path d="M11 12h2"/></svg>
-    </span>
-    <span>Head to Head</span>
-  </a>
-  <a data-page="elite" class="more-sheet-item">
-    <span class="more-sheet-icon">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11M10 20V5M16 20v-6M3 20h18"/></svg>
-    </span>
-    <span>Elite Teams Over Time</span>
-  </a>
   <a data-page="simulate" class="more-sheet-item">
     <span class="more-sheet-icon">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
     </span>
     <span>Simulate</span>
+  </a>
+  <a data-page="h2h" class="more-sheet-item">
+    <span class="more-sheet-icon" style="font-size:0.95rem;font-weight:700;letter-spacing:0.5px;">VS</span>
+    <span>Head to Head</span>
+  </a>
+  <a data-page="elite" class="more-sheet-item">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
+    </span>
+    <span>Elite Teams Over Time</span>
+  </a>
+  <a data-page="" class="more-sheet-item wip">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
+    </span>
+    <span>Rating Graph <span class="wip-tag">WIP</span></span>
+  </a>
+  <a data-page="" class="more-sheet-item wip">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
+    </span>
+    <span>Form Graph <span class="wip-tag">WIP</span></span>
+  </a>
+  <a data-page="" class="more-sheet-item wip">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V12M10 20V4M16 20v-8M3 20h18"/></svg>
+    </span>
+    <span>Map Score Distribution <span class="wip-tag">WIP</span></span>
+  </a>
+  <a data-page="" class="more-sheet-item wip">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+    </span>
+    <span>Analyse Team Form <span class="wip-tag">WIP</span></span>
+  </a>
+  <a data-page="" class="more-sheet-item wip">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.2l1.3 2.8h-2.6z" fill="currentColor"/><path d="M4 7h16M7 7l-3 9M7 7l3 9M17 7l-3 9M17 7l3 9"/><path d="M4 16a3.5 1.6 0 0 0 6 0"/><path d="M14 16a3.5 1.6 0 0 0 6 0"/><path d="M12 7v13M9 20h6"/></svg>
+    </span>
+    <span>Compare Teams <span class="wip-tag">WIP</span></span>
   </a>
 </div>
 
@@ -1090,6 +1114,201 @@ async function loadMeta() {
       <span style="color:var(--muted)">Version: ${version}</span>
     `;
   } catch(e) {}
+}
+
+// ---------------------------------------------------------------------------
+// Home
+// ---------------------------------------------------------------------------
+async function loadHome() {
+  setLoading('home-top-team');
+  setLoading('home-featured-results');
+  setLoading('home-hot-teams');
+  setEl('home-tiles', '<div class="loading"><div class="spinner"></div> Loading…</div>');
+  try {
+    const d = await api('/api/home');
+    renderHomeTopTeam(d.top_team, d.top_form_team);
+    renderHomeFeaturedResults(d.featured_results);
+    renderHomeHotTeams(d.hot_teams, d.top_rating_increase);
+    renderHomeTiles(d.tiles);
+  } catch(e) {
+    setError('home-top-team', e.message);
+    setError('home-featured-results', e.message);
+    setError('home-hot-teams', e.message);
+    setError('home-tiles', e.message);
+  }
+}
+
+function renderHomeTopTeam(team, formTeam) {
+  if (!team) { setEl('home-top-team', '<div class="empty-msg">No ranked teams yet.</div>'); return; }
+  const formBlock = formTeam ? `
+      <div style="border-left:1px solid var(--border);padding-left:24px">
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Form Team</div>
+        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${formTeam.name.replace(/'/g,"\\'")}')">
+          ${formTeam.name}
+        </span>
+        <div style="margin-top:4px">
+          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${formTeam.form_grade || ''}${formTeam.form_score !== undefined ? ` (${formTeam.form_score})` : ''}</span>
+        </div>
+      </div>` : '';
+  setEl('home-top-team', `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Ranked Team</div>
+          <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${team.name.replace(/'/g,"\\'")}')">
+            ${team.name}
+          </span>
+          <div style="margin-top:4px">
+            <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${team.points.toFixed(2)} pts</span>
+            ${team.form_grade ? `<span style="margin-left:10px;color:var(--muted);font-size:0.82rem">Form: ${team.form_grade} (${team.form_score})</span>` : ''}
+          </div>
+        </div>
+        ${formBlock}
+      </div>
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">30d Trend</div>
+        ${sparklineSVG(team.sparkline_30d, 120, 36)}
+      </div>
+    </div>
+  `);
+}
+
+function renderHomeFeaturedResults(results) {
+  if (!results || !results.length) {
+    setEl('home-featured-results', '<div class="empty-msg">No featured results yet.</div>');
+    return;
+  }
+  const TIER_STYLE = {
+    'S+': 'background:rgba(255,68,68,0.15);color:#ff4444',
+    'S':  'background:rgba(255,215,0,0.15);color:#FFD700',
+    'A':  'background:rgba(192,192,192,0.15);color:#C0C0C0',
+    'B':  'background:rgba(205,127,50,0.15);color:#CD7F32',
+    'C':  'background:rgba(60,180,75,0.15);color:#3cb44b',
+    'D':  'background:rgba(230,25,75,0.15);color:#e6194B',
+  };
+  const rows = results.map(r => {
+    const t1won = r.t1.score > r.t2.score;
+    const tierStyle = TIER_STYLE[r.tier] || 'background:var(--surface2);color:var(--muted)';
+
+    const t1NameStyle = t1won
+      ? 'font-weight:600;color:var(--text)'
+      : 'font-weight:400;color:var(--muted)';
+    const t2NameStyle = !t1won
+      ? 'font-weight:600;color:var(--text)'
+      : 'font-weight:400;color:var(--muted)';
+    const t1ScoreStyle = t1won
+      ? 'color:var(--green);font-weight:700'
+      : 'color:var(--red);font-weight:700;opacity:0.75';
+    const t2ScoreStyle = !t1won
+      ? 'color:var(--green);font-weight:700'
+      : 'color:var(--red);font-weight:700;opacity:0.75';
+
+    return `
+      <div style="display:flex;align-items:center;padding:14px 4px;gap:14px;border-bottom:1px solid var(--border);cursor:pointer" onclick="showPage('history');loadHistory(1)">
+        <div style="width:30px;height:30px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:800;${tierStyle}">${r.tier}</div>
+        <div style="flex:1;min-width:0;text-align:left">
+          <span style="font-size:0.95rem;${t1NameStyle};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.t1.name}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;min-width:64px;justify-content:center">
+          <span style="font-size:1.1rem;${t1ScoreStyle}">${r.t1.score}</span>
+          <span style="color:var(--muted);font-size:0.9rem">-</span>
+          <span style="font-size:1.1rem;${t2ScoreStyle}">${r.t2.score}</span>
+        </div>
+        <div style="flex:1;min-width:0;text-align:right">
+          <span style="font-size:0.95rem;${t2NameStyle};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.t2.name}</span>
+        </div>
+        <div style="flex-shrink:0;width:36px;text-align:right">
+          <span style="font-size:0.75rem;color:var(--muted)">${r.format || 'bo3'}</span>
+        </div>
+      </div>`;
+  }).join('');
+  setEl('home-featured-results', rows + `<div style="padding-top:12px"><a class="team-link" style="font-size:0.82rem;color:var(--muted)" onclick="showPage('history');loadHistory(1)">See all results →</a></div>`);
+}
+
+function renderHomeHotTeams(winrateTeams, ratingTeams) {
+  if ((!winrateTeams || !winrateTeams.length) && (!ratingTeams || !ratingTeams.length)) {
+    setEl('home-hot-teams', '<div class="empty-msg">Not enough recent data yet.</div>');
+    return;
+  }
+
+  const winrateList = (winrateTeams || []).slice(0, 5).map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}</span>
+      </div>
+      <div style="text-align:right">
+        <span style="font-weight:700;color:var(--green)">${t.winrate}%</span>
+        <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">${t.wins}W ${t.losses}L</span>
+      </div>
+    </div>
+  `).join('') || '<div class="empty-msg" style="padding:20px">No data available.</div>';
+
+  const ratingList = (ratingTeams || []).slice(0, 5).map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}</span>
+      </div>
+      <div style="text-align:right">
+        <span style="font-weight:700;color:var(--green)">${t.delta > 0 ? '+' : ''}${t.delta.toFixed ? t.delta.toFixed(1) : t.delta}</span>
+        <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">pts</span>
+      </div>
+    </div>
+  `).join('') || '<div class="empty-msg" style="padding:20px">No data available.</div>';
+
+  setEl('home-hot-teams', `
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top Win Rate</div>
+      ${winrateList}
+    </div>
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Rating Increase</div>
+      ${ratingList}
+    </div>
+  `);
+}
+
+function renderHomeTiles(tiles) {
+  if (!tiles) { setEl('home-tiles', '<div class="empty-msg">No data available.</div>'); return; }
+  const cards = [];
+  if (tiles.highest_rating_change) {
+    const t = tiles.highest_rating_change;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Highest Rating Change</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} pts</div>
+      </div>`);
+  }
+  if (tiles.highest_form_change) {
+    const t = tiles.highest_form_change;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Highest Form Change</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} form pts</div>
+      </div>`);
+  }
+  if (tiles.biggest_upset) {
+    const t = tiles.biggest_upset;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Biggest Upset</div>
+        <div class="value" style="font-size:1.2rem">${t.winner}</div>
+        <div class="sub">beat ${t.loser} (Δ${t.gap} pts)</div>
+      </div>`);
+  }
+  if (tiles.most_positions_gained) {
+    const t = tiles.most_positions_gained;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Most Positions Gained</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub">+${t.positions_gained} (#${t.rank_30d_ago} → #${t.rank_now})</div>
+      </div>`);
+  }
+  setEl('home-tiles', cards.length ? cards.join('') : '<div class="empty-msg">No standout data in the last 30 days.</div>');
 }
 
 // ---------------------------------------------------------------------------
@@ -1986,6 +2205,7 @@ document.getElementById('more-sheet-overlay').addEventListener('click', closeMor
 document.querySelectorAll('.more-sheet-item[data-page]').forEach(a => {
   a.addEventListener('click', () => {
     const page = a.dataset.page;
+    if (!page) return; // WIP placeholder — no page to show yet
     closeMoreSheet();
     showPage(page);
     if (page === 'rankings')   loadRankings();
@@ -1993,201 +2213,6 @@ document.querySelectorAll('.more-sheet-item[data-page]').forEach(a => {
     if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
   });
 });
-
-// ---------------------------------------------------------------------------
-// Home
-// ---------------------------------------------------------------------------
-async function loadHome() {
-  setLoading('home-top-team');
-  setLoading('home-featured-results');
-  setLoading('home-hot-teams');
-  setEl('home-tiles', '<div class="loading"><div class="spinner"></div> Loading…</div>');
-  try {
-    const d = await api('/api/home');
-    renderHomeTopTeam(d.top_team, d.top_form_team);
-    renderHomeFeaturedResults(d.featured_results);
-    renderHomeHotTeams(d.hot_teams, d.top_rating_increase);
-    renderHomeTiles(d.tiles);
-  } catch(e) {
-    setError('home-top-team', e.message);
-    setError('home-featured-results', e.message);
-    setError('home-hot-teams', e.message);
-    setError('home-tiles', e.message);
-  }
-}
-
-function renderHomeTopTeam(team, formTeam) {
-  if (!team) { setEl('home-top-team', '<div class="empty-msg">No ranked teams yet.</div>'); return; }
-  const formBlock = formTeam ? `
-      <div style="border-left:1px solid var(--border);padding-left:24px">
-        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Form Team</div>
-        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${formTeam.name.replace(/'/g,"\\'")}')">
-          ${formTeam.name}
-        </span>
-        <div style="margin-top:4px">
-          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${formTeam.form_grade || ''}${formTeam.form_score !== undefined ? ` (${formTeam.form_score})` : ''}</span>
-        </div>
-      </div>` : '';
-  setEl('home-top-team', `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
-      <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap">
-        <div>
-          <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Ranked Team</div>
-          <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${team.name.replace(/'/g,"\\'")}')">
-            ${team.name}
-          </span>
-          <div style="margin-top:4px">
-            <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${team.points.toFixed(2)} pts</span>
-            ${team.form_grade ? `<span style="margin-left:10px;color:var(--muted);font-size:0.82rem">Form: ${team.form_grade} (${team.form_score})</span>` : ''}
-          </div>
-        </div>
-        ${formBlock}
-      </div>
-      <div>
-        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">30d Trend</div>
-        ${sparklineSVG(team.sparkline_30d, 120, 36)}
-      </div>
-    </div>
-  `);
-}
-
-function renderHomeFeaturedResults(results) {
-  if (!results || !results.length) {
-    setEl('home-featured-results', '<div class="empty-msg">No featured results yet.</div>');
-    return;
-  }
-  const TIER_STYLE = {
-    'S+': 'background:rgba(255,68,68,0.15);color:#ff4444',
-    'S':  'background:rgba(255,215,0,0.15);color:#FFD700',
-    'A':  'background:rgba(192,192,192,0.15);color:#C0C0C0',
-    'B':  'background:rgba(205,127,50,0.15);color:#CD7F32',
-    'C':  'background:rgba(60,180,75,0.15);color:#3cb44b',
-    'D':  'background:rgba(230,25,75,0.15);color:#e6194B',
-  };
-  const rows = results.map(r => {
-    const t1won = r.t1.score > r.t2.score;
-    const tierStyle = TIER_STYLE[r.tier] || 'background:var(--surface2);color:var(--muted)';
-
-    const t1NameStyle = t1won
-      ? 'font-weight:600;color:var(--text)'
-      : 'font-weight:400;color:var(--muted)';
-    const t2NameStyle = !t1won
-      ? 'font-weight:600;color:var(--text)'
-      : 'font-weight:400;color:var(--muted)';
-    const t1ScoreStyle = t1won
-      ? 'color:var(--green);font-weight:700'
-      : 'color:var(--red);font-weight:700;opacity:0.75';
-    const t2ScoreStyle = !t1won
-      ? 'color:var(--green);font-weight:700'
-      : 'color:var(--red);font-weight:700;opacity:0.75';
-
-    return `
-      <div style="display:flex;align-items:center;padding:14px 4px;gap:14px;border-bottom:1px solid var(--border);cursor:pointer" onclick="showPage('history');loadHistory(1)">
-        <div style="width:30px;height:30px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:800;${tierStyle}">${r.tier}</div>
-        <div style="flex:1;min-width:0;text-align:left">
-          <span style="font-size:0.95rem;${t1NameStyle};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.t1.name}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;min-width:64px;justify-content:center">
-          <span style="font-size:1.1rem;${t1ScoreStyle}">${r.t1.score}</span>
-          <span style="color:var(--muted);font-size:0.9rem">-</span>
-          <span style="font-size:1.1rem;${t2ScoreStyle}">${r.t2.score}</span>
-        </div>
-        <div style="flex:1;min-width:0;text-align:right">
-          <span style="font-size:0.95rem;${t2NameStyle};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.t2.name}</span>
-        </div>
-        <div style="flex-shrink:0;width:36px;text-align:right">
-          <span style="font-size:0.75rem;color:var(--muted)">${r.format || 'bo3'}</span>
-        </div>
-      </div>`;
-  }).join('');
-  setEl('home-featured-results', rows + `<div style="padding-top:12px"><a class="team-link" style="font-size:0.82rem;color:var(--muted)" onclick="showPage('history');loadHistory(1)">See all results →</a></div>`);
-}
-
-function renderHomeHotTeams(winrateTeams, ratingTeams) {
-  if ((!winrateTeams || !winrateTeams.length) && (!ratingTeams || !ratingTeams.length)) {
-    setEl('home-hot-teams', '<div class="empty-msg">Not enough recent data yet.</div>');
-    return;
-  }
-
-  const winrateList = (winrateTeams || []).slice(0, 5).map((t, i) => `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
-      <div style="display:flex;align-items:center;gap:10px">
-        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
-        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}</span>
-      </div>
-      <div style="text-align:right">
-        <span style="font-weight:700;color:var(--green)">${t.winrate}%</span>
-        <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">${t.wins}W ${t.losses}L</span>
-      </div>
-    </div>
-  `).join('') || '<div class="empty-msg" style="padding:20px">No data available.</div>';
-
-  const ratingList = (ratingTeams || []).slice(0, 5).map((t, i) => `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
-      <div style="display:flex;align-items:center;gap:10px">
-        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
-        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}</span>
-      </div>
-      <div style="text-align:right">
-        <span style="font-weight:700;color:var(--green)">${t.delta > 0 ? '+' : ''}${t.delta.toFixed ? t.delta.toFixed(1) : t.delta}</span>
-        <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">pts</span>
-      </div>
-    </div>
-  `).join('') || '<div class="empty-msg" style="padding:20px">No data available.</div>';
-
-  setEl('home-hot-teams', `
-    <div>
-      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top Win Rate</div>
-      ${winrateList}
-    </div>
-    <div>
-      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Rating Increase</div>
-      ${ratingList}
-    </div>
-  `);
-}
-
-function renderHomeTiles(tiles) {
-  if (!tiles) { setEl('home-tiles', '<div class="empty-msg">No data available.</div>'); return; }
-  const cards = [];
-  if (tiles.highest_rating_change) {
-    const t = tiles.highest_rating_change;
-    cards.push(`
-      <div class="stat-card">
-        <div class="label">Highest Rating Change</div>
-        <div class="value" style="font-size:1.2rem">${t.name}</div>
-        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} pts</div>
-      </div>`);
-  }
-  if (tiles.highest_form_change) {
-    const t = tiles.highest_form_change;
-    cards.push(`
-      <div class="stat-card">
-        <div class="label">Highest Form Change</div>
-        <div class="value" style="font-size:1.2rem">${t.name}</div>
-        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} form pts</div>
-      </div>`);
-  }
-  if (tiles.biggest_upset) {
-    const t = tiles.biggest_upset;
-    cards.push(`
-      <div class="stat-card">
-        <div class="label">Biggest Upset</div>
-        <div class="value" style="font-size:1.2rem">${t.winner}</div>
-        <div class="sub">beat ${t.loser} (Δ${t.gap} pts)</div>
-      </div>`);
-  }
-  if (tiles.most_positions_gained) {
-    const t = tiles.most_positions_gained;
-    cards.push(`
-      <div class="stat-card">
-        <div class="label">Most Positions Gained</div>
-        <div class="value" style="font-size:1.2rem">${t.name}</div>
-        <div class="sub">+${t.positions_gained} (#${t.rank_30d_ago} → #${t.rank_now})</div>
-      </div>`);
-  }
-  setEl('home-tiles', cards.length ? cards.join('') : '<div class="empty-msg">No standout data in the last 30 days.</div>');
-}
 
 // ---------------------------------------------------------------------------
 // Generic autocomplete dropdown — wires a text input + dropdown div to the

@@ -1540,6 +1540,57 @@ def home():
 
     # --- Hot Teams: top win rate, last 30d, min 5 matches, restricted to current top-30 rank ---
     top_30_names = {name for name, _r in current_rank.items() if current_rank[name] <= 30}
+
+    # --- #1 Form Team: highest 3-month-style form score among current top-30 ---
+    top_form_team = None
+    best_form_score = None
+    for name in top_30_names:
+        form = _calculate_form_at_match_index(name, len(history), history)
+        if not form:
+            continue
+        grade, score, _streak = form
+        if best_form_score is None or score > best_form_score:
+            best_form_score = score
+            top_form_team = {
+                "name": name,
+                "form_grade": grade,
+                "form_score": round(score, 1),
+            }
+
+    # --- Top 5 Rating Increase: 30d depreciated-rating delta, restricted to top-30 ---
+    # Mirrors the same "rank 30 days ago" raw-points snapshot used by the
+    # "most positions gained" tile below, just computed earlier so both can
+    # reuse it without duplicating the walk over history.
+    running_raw_points_30d_ago_for_rating: dict = {}
+    for m in history:
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        try:
+            d = _parse_match_date(date_str)
+        except Exception:
+            continue
+        if d > cutoff_30d:
+            break
+        for side in ("t1", "t2"):
+            running_raw_points_30d_ago_for_rating[m[side]["name"]] = m[side]["pts_after"]
+
+    rating_increase = []
+    rating_change_all = []  # signed deltas, all top-30 teams — feeds the Standouts tile below
+    for name in top_30_names:
+        if name not in running_raw_points_30d_ago_for_rating:
+            continue  # too new / no snapshot 30 days ago
+        before = _apply_depreciation(
+            name, running_raw_points_30d_ago_for_rating[name],
+            match_date=cutoff_30d, index=date_index,
+        )
+        after = team_display[name]
+        delta = round(after - before, 1)
+        rating_change_all.append({"name": name, "delta": delta, "_after": after})
+        if delta > 0:
+            rating_increase.append({"name": name, "delta": delta})
+    rating_increase.sort(key=lambda x: x["delta"], reverse=True)
+    top_rating_increase = rating_increase[:5]
     wins_30d: dict = {}
     losses_30d: dict = {}
     for _d, m in recent:
@@ -1566,30 +1617,25 @@ def home():
     hot_teams.sort(key=lambda x: (x["winrate"], x["matches_played"]), reverse=True)
     hot_teams = hot_teams[:5]
 
-    # --- Tile: Highest single-match rating change (30d) ---
-    # Tie-break: same |delta| -> the team with the higher resulting rating
-    # (pts_after for that match) wins.
+    # --- Tile: Highest rating change (30d) ---
+    # Same start-of-30d-to-now delta used for "Top 5 Rating Increase" in Hot
+    # Teams, just picking the single biggest swing (either direction) instead
+    # of the top 5 positive ones. Tie-break: same |delta| -> the team with the
+    # higher current rating wins.
     tile_rating_change = None
-    for _d, m in recent:
-        for side in ("t1", "t2"):
-            delta = m[side]["pts_after"] - m[side]["pts_before"]
-            is_better = False
-            if tile_rating_change is None:
-                is_better = True
-            elif abs(delta) > abs(tile_rating_change["delta"]):
-                is_better = True
-            elif abs(delta) == abs(tile_rating_change["delta"]) and m[side]["pts_after"] > tile_rating_change["_pts_after"]:
-                is_better = True
-            if is_better:
-                tile_rating_change = {
-                    "name": m[side]["name"],
-                    "delta": round(delta, 2),
-                    "date": m["date"],
-                    "event": m["event"],
-                    "_pts_after": m[side]["pts_after"],
-                }
+    for rc in rating_change_all:
+        delta = rc["delta"]
+        is_better = False
+        if tile_rating_change is None:
+            is_better = True
+        elif abs(delta) > abs(tile_rating_change["delta"]):
+            is_better = True
+        elif abs(delta) == abs(tile_rating_change["delta"]) and rc["_after"] > tile_rating_change["_after"]:
+            is_better = True
+        if is_better:
+            tile_rating_change = {"name": rc["name"], "delta": delta, "_after": rc["_after"]}
     if tile_rating_change:
-        tile_rating_change.pop("_pts_after", None)
+        tile_rating_change.pop("_after", None)
 
     # --- Tile: Biggest rating-difference upset (30d) — lower pts_before side wins ---
     # Tie-break: same gap -> the upset where the losing (higher-rated) team
@@ -1615,6 +1661,54 @@ def home():
                 }
     if tile_upset:
         tile_upset.pop("_loser_pts_before", None)
+
+    # --- Tile: Highest form-score change (30d) ---
+    # Compares each team's current form score against their form score as of
+    # their last match before the 30-day cutoff. Teams need enough match
+    # history on both sides of the cutoff for the comparison to be meaningful.
+    team_match_indices: dict = {}
+    for gi, m in enumerate(history):
+        for side in ("t1", "t2"):
+            team_match_indices.setdefault(m[side]["name"], []).append(gi)
+
+    tile_form_change = None
+    for name in top_30_names:
+        indices = team_match_indices.get(name, [])
+        idx_before_cutoff = None
+        for gi in indices:
+            d_str = history[gi].get("date", "")
+            if not d_str or d_str == "N/A":
+                continue
+            try:
+                d = _parse_match_date(d_str)
+            except Exception:
+                continue
+            if d <= cutoff_30d:
+                idx_before_cutoff = gi + 1  # form calc is exclusive of this index
+        if idx_before_cutoff is None:
+            continue  # team has no match history before the cutoff
+
+        form_before = _calculate_form_at_match_index(name, idx_before_cutoff, history)
+        form_now = _calculate_form_at_match_index(name, len(history), history)
+        if not form_before or not form_now:
+            continue
+
+        delta = round(form_now[1] - form_before[1], 1)
+        is_better = False
+        if tile_form_change is None:
+            is_better = True
+        elif abs(delta) > abs(tile_form_change["delta"]):
+            is_better = True
+        elif abs(delta) == abs(tile_form_change["delta"]) and form_now[1] > tile_form_change["_form_now"]:
+            is_better = True
+        if is_better:
+            tile_form_change = {
+                "name": name, "delta": delta,
+                "form_grade": form_now[0],
+                "_form_now": form_now[1],
+            }
+    if tile_form_change:
+        tile_form_change.pop("_form_now", None)
 
     # --- Tile: Most positions gained (rank 30 days ago vs rank now) ---
     # Teams with no recorded points 30 days ago (too new) are excluded —
@@ -1681,10 +1775,13 @@ def home():
         "total_matches": total_matches,
         "total_teams": total_teams,
         "top_team": top_team,
+        "top_form_team": top_form_team,
         "featured_results": featured_results,
         "hot_teams": hot_teams,
+        "top_rating_increase": top_rating_increase,
         "tiles": {
             "highest_rating_change": tile_rating_change,
+            "highest_form_change": tile_form_change,
             "biggest_upset": tile_upset,
             "most_positions_gained": tile_positions_gained,
         },
