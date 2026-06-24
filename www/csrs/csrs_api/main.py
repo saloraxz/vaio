@@ -1340,10 +1340,11 @@ def elite_over_time(
             last_match_day    = carried_date[name]
             last_match_index  = carried_index[name]
         else:
-            # No match before start_dt for this team — fall back to the old
-            # behavior: start one day before their first in-range match.
+            # No match before start_dt for this team — start at the selected
+            # start date, not one day before it (which was bleeding the x-axis
+            # back by a day). The hollow open-circle on day 0 acts as the anchor.
             start_rating      = starting_ratings.get(name, teams.get(name, 1000))
-            start_point        = max(start_dt, first_match_date - timedelta(days=1))
+            start_point        = start_dt
             last_match_day     = first_match_date
             last_match_index   = matches[0][2]
 

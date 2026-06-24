@@ -643,7 +643,7 @@ tr:last-child td { border-bottom: none; }
   <nav>
     <a class="active" data-page="home">Home</a>
     <a data-page="rankings">Rankings</a>
-    <a data-page="history">Match History</a>
+    <a data-page="history">Results</a>
     <a data-page="simulate">Simulate</a>
 
     <div class="nav-group" id="nav-group-team-analytics">
@@ -681,7 +681,7 @@ tr:last-child td { border-bottom: none; }
   </a>
   <a data-page="history" class="bottom-nav-item">
     <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span>
-    <span>History</span>
+    <span>Results</span>
   </a>
   <a data-page="team-details" class="bottom-nav-item">
     <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg></span>
@@ -806,9 +806,9 @@ tr:last-child td { border-bottom: none; }
     </div>
   </div>
 
-  <!-- Match History -->
+  <!-- Results -->
   <div class="page" id="page-history">
-    <div class="page-header"><h2>Match History</h2></div>
+    <div class="page-header"><h2>Results</h2></div>
     <div class="controls">
       <div class="search-wrap" style="display:inline-block;width:160px">
         <input type="text" id="hist-team" placeholder="Team…" style="width:100%" autocomplete="off">
@@ -1512,7 +1512,7 @@ document.getElementById('rank-search').addEventListener('input', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Match History
+// Results
 // ---------------------------------------------------------------------------
 let histPage = 1;
 let histTotal = 0;
@@ -1652,7 +1652,7 @@ function renderTeamDetail(d) {
       <div class="chart-wrap"><canvas id="rating-chart"></canvas></div>
     </div>
     <div class="card" style="padding:0">
-      <div style="padding:16px 20px 0;font-size:1rem;font-weight:600">Match History</div>
+      <div style="padding:16px 20px 0;font-size:1rem;font-weight:600">Results</div>
       <div class="table-wrap">
         <table>
           <thead><tr>
@@ -2469,7 +2469,7 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // ---------------------------------------------------------------------------
-// Match History / Simulate / Head to Head — team name autocomplete
+// Results / Simulate / Head to Head — team name autocomplete
 // ---------------------------------------------------------------------------
 attachAutocomplete('hist-team', 'hist-team-dd', 'team', function(val) {
   loadHistory(1);
@@ -2580,7 +2580,7 @@ function renderTeamDetails(d) {
 
     // Match history (3-month)
     '<div class="card" style="padding:0">' +
-      '<div style="padding:14px 20px 0;font-size:1rem;font-weight:600">Match History — Last 3 Months</div>' +
+      '<div style="padding:14px 20px 0;font-size:1rem;font-weight:600">Results — Last 3 Months</div>' +
       '<div class="table-wrap"><table>' +
         '<thead><tr><th>Date</th><th>Event</th><th>Tier</th><th>Opponent</th><th>Score</th><th>Delta</th></tr></thead>' +
         '<tbody>' + rows3m + '</tbody>' +
