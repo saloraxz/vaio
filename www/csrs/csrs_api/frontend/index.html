@@ -1182,13 +1182,19 @@ function renderHomeTopTeam(team) {
 function renderHomeTopFormTeam(formTeam) {
   if (!formTeam) { setEl('home-top-form-team', '<div class="empty-msg">No form data yet.</div>'); return; }
   setEl('home-top-form-team', `
-    <div>
-      <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Form Team</div>
-      <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${formTeam.name.replace(/'/g,"\\'")}')">
-        ${formTeam.name}
-      </span>
-      <div style="margin-top:4px">
-        <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${formTeam.form_grade || ''}${formTeam.form_score !== undefined ? ` (${formTeam.form_score})` : ''}</span>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Form Team</div>
+        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${formTeam.name.replace(/'/g,"\\'")}')">
+          ${formTeam.name}
+        </span>
+        <div style="margin-top:4px">
+          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${formTeam.form_grade || ''}${formTeam.form_score !== undefined ? ` (${formTeam.form_score})` : ''}</span>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">30d Trend</div>
+        ${sparklineSVG(formTeam.sparkline_30d, 120, 36)}
       </div>
     </div>
   `);

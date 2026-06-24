@@ -1541,6 +1541,14 @@ def home():
     # --- Hot Teams: top win rate, last 30d, min 5 matches, restricted to current top-30 rank ---
     top_30_names = {name for name, _r in current_rank.items() if current_rank[name] <= 30}
 
+    # Global index of each team's match positions in `history` (chronological).
+    # Used below for the #1 Form Team's 30d form sparkline, and further down
+    # for the Highest/Lowest Form Change tiles and win/loss streak tiles.
+    team_match_indices: dict = {}
+    for gi, m in enumerate(history):
+        for side in ("t1", "t2"):
+            team_match_indices.setdefault(m[side]["name"], []).append(gi)
+
     # --- #1 Form Team: highest 3-month-style form score among current top-30 ---
     top_form_team = None
     best_form_score = None
@@ -1551,10 +1559,29 @@ def home():
         grade, score, _streak = form
         if best_form_score is None or score > best_form_score:
             best_form_score = score
+            # 30d form sparkline: form score as of each of this team's
+            # matches in the last 30 days (mirrors the rating sparkline,
+            # which uses pts_after at each match in the same window).
+            form_spark = []
+            for gi in team_match_indices.get(name, []):
+                m = history[gi]
+                d_str = m.get("date", "")
+                if not d_str or d_str == "N/A":
+                    continue
+                try:
+                    d = _parse_match_date(d_str)
+                except Exception:
+                    continue
+                if d < cutoff_30d:
+                    continue
+                f = _calculate_form_at_match_index(name, gi + 1, history)
+                if f:
+                    form_spark.append(round(f[1], 1))
             top_form_team = {
                 "name": name,
                 "form_grade": grade,
                 "form_score": round(score, 1),
+                "sparkline_30d": form_spark,
             }
 
     # --- Top 5 Rating Increase: 30d depreciated-rating delta, restricted to top-30 ---
@@ -1703,11 +1730,6 @@ def home():
     # Compares each team's current form score against their form score as of
     # their last match before the 30-day cutoff. Teams need enough match
     # history on both sides of the cutoff for the comparison to be meaningful.
-    team_match_indices: dict = {}
-    for gi, m in enumerate(history):
-        for side in ("t1", "t2"):
-            team_match_indices.setdefault(m[side]["name"], []).append(gi)
-
     tile_form_change = None
     tile_form_change_low = None
     for name in top_30_names:
