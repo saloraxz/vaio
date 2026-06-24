@@ -1541,6 +1541,27 @@ def home():
     # --- Hot Teams: top win rate, last 30d, min 5 matches, restricted to current top-30 rank ---
     top_30_names = {name for name, _r in current_rank.items() if current_rank[name] <= 30}
 
+    # Matches played in the last 30 days, per team — the shared "enough
+    # recent activity" gate for every 30d-window Home tile below (Hot/Cold
+    # Teams, Top Rating Increase, Highest/Lowest Rating Change, Highest/Lowest
+    # Form Change, Most Positions Gained/Lost). A team with only 1-2 matches
+    # in the window can swing wildly and isn't a meaningful "standout".
+    MIN_MATCHES_30D = 3
+    wins_30d: dict = {}
+    losses_30d: dict = {}
+    for _d, m in recent:
+        t1, t2 = m["t1"], m["t2"]
+        if t1["score"] > t2["score"]:
+            wins_30d[t1["name"]] = wins_30d.get(t1["name"], 0) + 1
+            losses_30d[t2["name"]] = losses_30d.get(t2["name"], 0) + 1
+        else:
+            wins_30d[t2["name"]] = wins_30d.get(t2["name"], 0) + 1
+            losses_30d[t1["name"]] = losses_30d.get(t1["name"], 0) + 1
+    matches_30d: dict = {
+        name: wins_30d.get(name, 0) + losses_30d.get(name, 0)
+        for name in set(wins_30d) | set(losses_30d)
+    }
+
     # Global index of each team's match positions in `history` (chronological).
     # Used below for the #1 Form Team's 30d form sparkline, and further down
     # for the Highest/Lowest Form Change tiles and win/loss streak tiles.
@@ -1603,10 +1624,12 @@ def home():
             running_raw_points_30d_ago_for_rating[m[side]["name"]] = m[side]["pts_after"]
 
     rating_increase = []
-    rating_change_all = []  # signed deltas, all top-30 teams — feeds the Standouts tile below
+    rating_change_all = []  # signed deltas, top-30 teams w/ >= MIN_MATCHES_30D matches — feeds Standouts tiles below
     for name in top_30_names:
         if name not in running_raw_points_30d_ago_for_rating:
             continue  # too new / no snapshot 30 days ago
+        if matches_30d.get(name, 0) < MIN_MATCHES_30D:
+            continue  # not enough recent activity for a 30d swing to be meaningful
         before = _apply_depreciation(
             name, running_raw_points_30d_ago_for_rating[name],
             match_date=cutoff_30d, index=date_index,
@@ -1618,23 +1641,22 @@ def home():
             rating_increase.append({"name": name, "delta": delta, "rank": current_rank[name]})
     rating_increase.sort(key=lambda x: x["delta"], reverse=True)
     top_rating_increase = rating_increase[:5]
-    wins_30d: dict = {}
-    losses_30d: dict = {}
-    for _d, m in recent:
-        t1, t2 = m["t1"], m["t2"]
-        if t1["score"] > t2["score"]:
-            wins_30d[t1["name"]] = wins_30d.get(t1["name"], 0) + 1
-            losses_30d[t2["name"]] = losses_30d.get(t2["name"], 0) + 1
-        else:
-            wins_30d[t2["name"]] = wins_30d.get(t2["name"], 0) + 1
-            losses_30d[t1["name"]] = losses_30d.get(t1["name"], 0) + 1
+
+    # --- Top 5 Rating Decrease: inverse of the above, feeds Cold Teams ---
+    rating_decrease = [
+        {"name": rc["name"], "delta": rc["delta"], "rank": current_rank[rc["name"]]}
+        for rc in rating_change_all
+        if rc["delta"] < 0
+    ]
+    rating_decrease.sort(key=lambda x: x["delta"])
+    top_rating_decrease = rating_decrease[:5]
 
     hot_teams = []
     for name in top_30_names:
         w = wins_30d.get(name, 0)
         l = losses_30d.get(name, 0)
         total = w + l
-        if total >= 5:
+        if total >= MIN_MATCHES_30D:
             hot_teams.append({
                 "name": name, "wins": w, "losses": l,
                 "winrate": round(w / total * 100, 1),
@@ -1645,13 +1667,13 @@ def home():
     hot_teams.sort(key=lambda x: (x["winrate"], x["matches_played"]), reverse=True)
     hot_teams = hot_teams[:5]
 
-    # --- Cold Teams: inverse of Hot Teams — lowest win rate, same min-5-matches floor ---
+    # --- Cold Teams: inverse of Hot Teams — lowest win rate, same activity floor ---
     cold_teams = []
     for name in top_30_names:
         w = wins_30d.get(name, 0)
         l = losses_30d.get(name, 0)
         total = w + l
-        if total >= 5:
+        if total >= MIN_MATCHES_30D:
             cold_teams.append({
                 "name": name, "wins": w, "losses": l,
                 "winrate": round(w / total * 100, 1),
@@ -1733,6 +1755,8 @@ def home():
     tile_form_change = None
     tile_form_change_low = None
     for name in top_30_names:
+        if matches_30d.get(name, 0) < MIN_MATCHES_30D:
+            continue  # not enough recent activity for a 30d form swing to be meaningful
         indices = team_match_indices.get(name, [])
         idx_before_cutoff = None
         for gi in indices:
@@ -1878,6 +1902,8 @@ def home():
     for name in teams:
         if name not in rank_30d_ago:
             continue
+        if matches_30d.get(name, 0) < MIN_MATCHES_30D:
+            continue  # rank moved purely from other teams' decay, not from playing
         gained = rank_30d_ago[name] - current_rank[name]  # positive = moved up
         rating = team_display[name]
         is_better = False
@@ -1931,6 +1957,7 @@ def home():
         "hot_teams": hot_teams,
         "cold_teams": cold_teams,
         "top_rating_increase": top_rating_increase,
+        "top_rating_decrease": top_rating_decrease,
         "tiles": {
             "highest_rating_change": tile_rating_change,
             "lowest_rating_change": tile_rating_change_low,
