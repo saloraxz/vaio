@@ -2381,21 +2381,29 @@ function attachAutocomplete(inputId, dropdownId, kind, onSelect) {
   function renderDropdown(items) {
     currentItems = items;
     highlightIdx = -1;
+    dd.innerHTML = '';
     if (!items.length) {
-      dd.innerHTML = `<div class="search-dropdown-empty">${emptyText}</div>`;
+      const empty = document.createElement('div');
+      empty.className = 'search-dropdown-empty';
+      empty.textContent = emptyText;
+      dd.appendChild(empty);
       dd.classList.add('open');
       return;
     }
-    dd.innerHTML = items.map((name, i) => `
-      <div class="search-dropdown-item" data-idx="${i}" onclick="(function(){
-        document.getElementById('${inputId}').value = ${JSON.stringify(name)};
-        document.getElementById('${dropdownId}').classList.remove('open');
-        document.getElementById('${dropdownId}').innerHTML = '';
-        (${onSelect.toString()})(${JSON.stringify(name)});
-      })()">
-        <span>${name}</span>
-      </div>
-    `).join('');
+    items.forEach((name, i) => {
+      const row = document.createElement('div');
+      row.className = 'search-dropdown-item';
+      row.dataset.idx = String(i);
+      const span = document.createElement('span');
+      span.textContent = name;  // textContent, not innerHTML — safe for any characters
+      row.appendChild(span);
+      row.addEventListener('click', () => {
+        input.value = name;
+        closeDropdown();
+        onSelect(name);
+      });
+      dd.appendChild(row);
+    });
     dd.classList.add('open');
   }
 
