@@ -685,6 +685,53 @@ def get_team(team_name: str):
         if (pd := parse_date(m["date"])) and pd >= cutoff_3m
     ]
 
+    # Compute rank_after for each 3m timeline entry by replaying running
+    # raw points across all teams up to each match's date, then ranking.
+    # We use a running snapshot of pts_after per team from full history,
+    # limited to matches on or before each timeline entry's date.
+    if timeline_3m:
+        # Build a running pts_after snapshot up to cutoff_3m start
+        running_pts: dict = {}
+        for entry in history:
+            date_str = entry.get("date", "")
+            if not date_str or date_str == "N/A":
+                continue
+            pd_ = parse_date(date_str)
+            if pd_ is None or pd_ >= cutoff_3m:
+                break
+            for side in ("t1", "t2"):
+                running_pts[entry[side]["name"]] = entry[side]["pts_after"]
+
+        # Now replay matches in the 3m window, updating running_pts after each
+        # match and computing rank for the team at that point.
+        # We iterate through full history again for the 3m window in order.
+        tl_3m_idx = 0
+        tl_dates = [parse_date(m["date"]) for m in timeline_3m]
+
+        for entry in history:
+            date_str = entry.get("date", "")
+            if not date_str or date_str == "N/A":
+                continue
+            pd_ = parse_date(date_str)
+            if pd_ is None or pd_ < cutoff_3m:
+                continue
+
+            # Update running pts for both participants
+            for side in ("t1", "t2"):
+                running_pts[entry[side]["name"]] = entry[side]["pts_after"]
+
+            # Check if this match is one of our team's 3m matches
+            is_our_match = (
+                entry["t1"]["name"] == matched or entry["t2"]["name"] == matched
+            )
+            if is_our_match and tl_3m_idx < len(timeline_3m):
+                # Compute rank at this point (raw points snapshot)
+                ranked_snap = sorted(running_pts.values(), reverse=True)
+                my_pts = running_pts.get(matched, 0)
+                rank_after = sum(1 for p in ranked_snap if p > my_pts) + 1
+                timeline_3m[tl_3m_idx]["rank_after"] = rank_after
+                tl_3m_idx += 1
+
     # All-time stats
     total_matches = len(timeline)
     wins_all      = sum(1 for t in timeline if t["won"])

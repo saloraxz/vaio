@@ -795,8 +795,12 @@ tr:last-child td { border-bottom: none; }
   <div class="page" id="page-rankings">
     <div class="page-header">
       <h2>Rankings</h2>
-      <div class="controls" style="margin:0">
+      <div class="controls" style="margin:0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <input type="text" id="rank-search" placeholder="Search team…" style="width:200px">
+        <div style="display:flex;align-items:center;gap:6px">
+          <label for="rank-date" style="font-size:0.85rem;color:var(--muted);white-space:nowrap">Date:</label>
+          <input type="date" id="rank-date" style="width:150px">
+        </div>
       </div>
     </div>
     <div class="card" style="padding:0">
@@ -1137,6 +1141,8 @@ function setError(id, msg) {
 // ---------------------------------------------------------------------------
 // Sidebar meta
 // ---------------------------------------------------------------------------
+let earliestDataDate = null; // set once meta loads; used to clamp graph start dates
+
 async function loadMeta() {
   try {
     const [d, versionRes] = await Promise.all([
@@ -1144,6 +1150,20 @@ async function loadMeta() {
       fetch('/version.txt'),
     ]);
     const version = versionRes.ok ? (await versionRes.text()).trim() : 'unknown';
+    if (d.earliest_match) {
+      earliestDataDate = d.earliest_match;
+      // Apply min attribute to all graph date pickers
+      const startInputs = ['elite-start'];
+      startInputs.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.min = earliestDataDate;
+      });
+      // If elite-start is blank (set by "All Time" before meta loaded), fill it in now
+      const eliteStart = document.getElementById('elite-start');
+      if (eliteStart && !eliteStart.value) {
+        eliteStart.value = earliestDataDate;
+      }
+    }
     const el = document.getElementById('sidebar-meta');
     el.innerHTML = `
       <span>${d.total_teams} teams</span>
@@ -1311,7 +1331,7 @@ function renderHomeHotTeams(winrateTeams, ratingTeams) {
 
   setEl('home-hot-teams', `
     <div>
-      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top Win Rate</div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Highest Win Rates</div>
       ${winrateList}
     </div>
     <div>
@@ -1355,7 +1375,7 @@ function renderHomeColdTeams(winrateTeams, ratingTeams) {
 
   setEl('home-cold-teams', `
     <div>
-      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Lowest Win Rate</div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Lowest Win Rates</div>
       ${winrateList}
     </div>
     <div>
@@ -1372,7 +1392,7 @@ function renderHomeTiles(tiles) {
     const t = tiles.highest_rating_change;
     cards.push(`
       <div class="stat-card">
-        <div class="label">Highest Rating Change</div>
+        <div class="label">Greatest Rating Increase</div>
         <div class="value" style="font-size:1.2rem">${t.name}</div>
         <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} pts</div>
       </div>`);
@@ -1381,7 +1401,7 @@ function renderHomeTiles(tiles) {
     const t = tiles.lowest_rating_change;
     cards.push(`
       <div class="stat-card">
-        <div class="label">Lowest Rating Change</div>
+        <div class="label">Greatest Rating Decrease</div>
         <div class="value" style="font-size:1.2rem">${t.name}</div>
         <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} pts</div>
       </div>`);
@@ -1390,7 +1410,7 @@ function renderHomeTiles(tiles) {
     const t = tiles.highest_form_change;
     cards.push(`
       <div class="stat-card">
-        <div class="label">Highest Form Change</div>
+        <div class="label">Greatest Form Increase</div>
         <div class="value" style="font-size:1.2rem">${t.name}</div>
         <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} form pts</div>
       </div>`);
@@ -1399,7 +1419,7 @@ function renderHomeTiles(tiles) {
     const t = tiles.lowest_form_change;
     cards.push(`
       <div class="stat-card">
-        <div class="label">Lowest Form Change</div>
+        <div class="label">Greatest Form Decrease</div>
         <div class="value" style="font-size:1.2rem">${t.name}</div>
         <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} form pts</div>
       </div>`);
@@ -1457,11 +1477,23 @@ function renderHomeTiles(tiles) {
 // ---------------------------------------------------------------------------
 let rankingsData = [];
 
+function getTodayStr() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+}
+
 async function loadRankings() {
+  // Default date input to today if not set
+  const dateEl = document.getElementById('rank-date');
+  if (dateEl && !dateEl.value) dateEl.value = getTodayStr();
+
   setLoading('rankings-table');
   try {
     const search = document.getElementById('rank-search').value;
-    const d = await api(`/api/rankings?limit=200&search=${encodeURIComponent(search)}`);
+    const date = dateEl ? dateEl.value : '';
+    const dateParam = date ? `&date=${encodeURIComponent(date)}` : '';
+    const d = await api(`/api/rankings?limit=200&search=${encodeURIComponent(search)}${dateParam}`);
     rankingsData = d.rankings;
     renderRankings(rankingsData);
   } catch(e) {
@@ -1509,6 +1541,10 @@ document.getElementById('rank-search').addEventListener('input', () => {
   const q = document.getElementById('rank-search').value.toLowerCase();
   const filtered = rankingsData.filter(r => r.name.toLowerCase().includes(q));
   renderRankings(filtered);
+});
+
+document.getElementById('rank-date').addEventListener('change', () => {
+  loadRankings();
 });
 
 // ---------------------------------------------------------------------------
@@ -1989,7 +2025,8 @@ function setElitePreset(preset) {
   document.getElementById('elite-end').value = today;
 
   if (preset === 'all') {
-    document.getElementById('elite-start').value = '2020-01-01';
+    // Use the actual earliest data date; if meta hasn't loaded yet, leave blank and loadElite will handle it
+    document.getElementById('elite-start').value = earliestDataDate || '';
   } else if (preset === '3m') {
     const d = new Date(now); d.setMonth(d.getMonth() - 3);
     document.getElementById('elite-start').value = fmt(d);
@@ -2126,9 +2163,21 @@ function renderElite(d) {
   // scrambled x-axis. The backend already returns all_dates pre-sorted;
   // every dataset is plotted against this exact same axis so Chart.js
   // doesn't have to guess label order from first-appearance.
-  const labels = d.all_dates && d.all_dates.length
+  let labels = d.all_dates && d.all_dates.length
     ? d.all_dates
     : [...new Set(series.flatMap(team => (team.points || []).map(p => p.date)))].sort();
+
+  // Pin the left edge of the x-axis to exactly the selected start date.
+  // Strip any labels that fall before the start date (shouldn't happen but
+  // guards against backend over-returning), then ensure the start date is
+  // always the first label so the origin is always (start_date, y-axis).
+  const startDateStr = document.getElementById('elite-start')?.value;
+  if (startDateStr) {
+    labels = labels.filter(l => l >= startDateStr);
+    if (labels.length === 0 || labels[0] !== startDateStr) {
+      labels = [startDateStr, ...labels];
+    }
+  }
 
   // Build per-team byDate lookup (used for marker styling and tooltips)
   const datasets = series.map((team, i) => {
@@ -2466,6 +2515,8 @@ function attachAutocomplete(inputId, dropdownId, kind, onSelect) {
 // Team Details page
 // ---------------------------------------------------------------------------
 let tdChart = null;
+let tdFormChart = null;
+let tdPosChart = null;
 
 attachAutocomplete('td-input', 'td-dd', 'team', function(val) {
   loadTeamDetails(val);
@@ -2513,6 +2564,8 @@ function tdFormColor(grade) {
 
 function renderTeamDetails(d) {
   if (tdChart) { tdChart.destroy(); tdChart = null; }
+  if (tdFormChart) { tdFormChart.destroy(); tdFormChart = null; }
+  if (tdPosChart) { tdPosChart.destroy(); tdPosChart = null; }
 
   // ── stat helpers ──
   var wl_all = d.total_matches > 0
@@ -2586,6 +2639,14 @@ function renderTeamDetails(d) {
     '<div class="card"><h3 style="margin-bottom:12px;font-size:1rem">Rating History (Last 3 Months)</h3>' +
       '<div class="chart-wrap"><canvas id="td-chart"></canvas></div></div>' +
 
+    // Form history (3-month)
+    '<div class="card"><h3 style="margin-bottom:12px;font-size:1rem">Form History (Last 3 Months)</h3>' +
+      '<div class="chart-wrap"><canvas id="td-form-chart"></canvas></div></div>' +
+
+    // Position history (3-month)
+    '<div class="card"><h3 style="margin-bottom:12px;font-size:1rem">Position History (Last 3 Months)</h3>' +
+      '<div class="chart-wrap"><canvas id="td-pos-chart"></canvas></div></div>' +
+
     // Match history (3-month)
     '<div class="card" style="padding:0">' +
       '<div style="padding:14px 20px 0;font-size:1rem;font-weight:600">Results — Last 3 Months</div>' +
@@ -2646,6 +2707,171 @@ function renderTeamDetails(d) {
       }
     }
   });
+
+  // ── Form History Chart ──
+  var formCtx = document.getElementById('td-form-chart');
+  if (formCtx) {
+    var formColors = tl.map(function(m) { return m.won ? 'rgba(76,175,130,0.85)' : 'rgba(224,90,90,0.85)'; });
+    var formBorders = tl.map(function(m) { return m.won ? '#4caf82' : '#e05a5a'; });
+    // Cumulative form score: running win rate over time
+    var cumWins = 0;
+    var cumFormData = tl.map(function(m, i) {
+      if (m.won) cumWins++;
+      return Math.round(cumWins / (i + 1) * 100);
+    });
+    tdFormChart = new Chart(formCtx.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'W/L',
+            data: tl.map(function(m) { return m.won ? 1 : -1; }),
+            backgroundColor: formColors,
+            borderColor: formBorders,
+            borderWidth: 1,
+            borderRadius: 3,
+            yAxisID: 'y',
+            order: 2,
+          },
+          {
+            label: 'Win Rate %',
+            data: cumFormData,
+            type: 'line',
+            borderColor: '#5b9cf6',
+            backgroundColor: 'rgba(91,156,246,0.0)',
+            borderWidth: 2,
+            pointRadius: 3,
+            pointBackgroundColor: '#5b9cf6',
+            pointBorderColor: '#16181c',
+            pointBorderWidth: 1,
+            tension: 0.3,
+            yAxisID: 'y2',
+            order: 1,
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            display: true,
+            labels: { color: '#7a7f8e', font: { size: 11 } }
+          },
+          tooltip: {
+            backgroundColor: '#1e2127',
+            borderColor: '#2a2d35',
+            borderWidth: 1,
+            callbacks: {
+              title: function(i) { return tl[i[0].dataIndex].date.split(' ')[0]; },
+              label: function(i) {
+                var m = tl[i.dataIndex];
+                if (i.datasetIndex === 0) {
+                  return ' ' + (m.won ? 'WIN' : 'LOSS') + ' vs ' + m.opponent + '  ' + m.score;
+                }
+                return ' Win Rate: ' + i.raw + '%';
+              }
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
+          y: {
+            ticks: {
+              color: '#7a7f8e',
+              callback: function(v) { return v === 1 ? 'W' : v === -1 ? 'L' : ''; }
+            },
+            grid: { color: '#2a2d35' },
+            min: -1.5, max: 1.5,
+            position: 'left',
+          },
+          y2: {
+            ticks: { color: '#5b9cf6', callback: function(v) { return v + '%'; } },
+            grid: { display: false },
+            min: 0, max: 100,
+            position: 'right',
+          }
+        }
+      }
+    });
+  }
+
+  // ── Position History Chart ──
+  var posCtx = document.getElementById('td-pos-chart');
+  if (posCtx) {
+    var posData = tl.map(function(m) { return m.rank_after != null ? m.rank_after : null; });
+    var hasPosData = posData.some(function(v) { return v != null; });
+    if (!hasPosData) {
+      // Fallback: estimate rank from current rank + rating delta from last match
+      var lastPts = tl.length ? tl[tl.length - 1].pts_after : 0;
+      var currentRank = d.rank;
+      posData = tl.map(function(m) {
+        var diff = m.pts_after - lastPts;
+        return Math.max(1, Math.round(currentRank - diff / 5));
+      });
+    }
+    // Color points: improved rank = green, worsened = red
+    var posColors = posData.map(function(v, i) {
+      if (i === 0 || v == null) return '#f5a623';
+      var prev = posData[i - 1];
+      if (prev == null) return '#f5a623';
+      return v < prev ? '#4caf82' : v > prev ? '#e05a5a' : '#7a7f8e';
+    });
+    tdPosChart = new Chart(posCtx.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Rank',
+          data: posData,
+          borderColor: '#f5a623',
+          backgroundColor: 'rgba(245,166,35,0.06)',
+          borderWidth: 2,
+          pointRadius: 5,
+          pointBackgroundColor: posColors,
+          pointBorderColor: '#16181c',
+          pointBorderWidth: 1.5,
+          tension: 0,
+          fill: true,
+          spanGaps: true,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#1e2127',
+            borderColor: '#2a2d35',
+            borderWidth: 1,
+            callbacks: {
+              title: function(i) { return tl[i[0].dataIndex].date.split(' ')[0]; },
+              label: function(i) {
+                var m = tl[i.dataIndex];
+                var rank = posData[i.dataIndex];
+                var sign = m.pts_delta >= 0 ? '+' : '';
+                return ' Rank #' + rank + '  vs ' + m.opponent + '  ' + m.score + '  (' + sign + m.pts_delta.toFixed(2) + ')';
+              }
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
+          y: {
+            reverse: true,
+            ticks: {
+              color: '#7a7f8e',
+              stepSize: 1,
+              callback: function(v) { return '#' + v; }
+            },
+            grid: { color: '#2a2d35' }
+          }
+        }
+      }
+    });
+  }
 }
 
 </script>
