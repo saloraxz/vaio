@@ -536,40 +536,73 @@ def simulate_elo(
 def get_rankings(
     limit: int = Query(50, ge=1, le=200),
     search: str = Query("", description="Filter by team name"),
+    date: Optional[str] = Query(None, description="Show rankings as-of this date (YYYY-MM-DD)"),
 ):
-    data = load_data()
-    teams: dict = data.get("teams", {})
-    peaks: dict = data.get("peaks", {})
-    provisional: dict = data.get("provisional_teams", {})
-    history: list = data.get("history", [])
-    best_ever_rank: dict = _compute_best_ever_ranks_cached(history, teams=teams)
-
-    # Build sparkline data from last 30 days of per-team ratings.
     from collections import defaultdict
     from datetime import timedelta
 
+    data = load_data()
+    peaks: dict = data.get("peaks", {})
+    provisional: dict = data.get("provisional_teams", {})
+    history: list = data.get("history", [])
+
+    # If a historical date is requested, replay history up to that date to
+    # reconstruct team points as they stood at close of that day.
+    if date:
+        try:
+            as_of = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+        # Replay: last recorded pts_after for each team up to and including as_of
+        snapshot: dict = {}
+        for m in history:
+            d_str = m.get("date", "")
+            if not d_str or d_str == "N/A":
+                continue
+            try:
+                md = datetime.strptime(d_str.replace(" UTC", "").strip()[:16], "%Y-%m-%d %H:%M")
+            except Exception:
+                try:
+                    md = datetime.strptime(d_str[:10], "%Y-%m-%d")
+                except Exception:
+                    continue
+            if md > as_of.replace(hour=23, minute=59):
+                break
+            for side in ("t1", "t2"):
+                snapshot[m[side]["name"]] = m[side]["pts_after"]
+        teams = snapshot
+        as_of_dt = as_of
+    else:
+        teams = data.get("teams", {})
+        as_of_dt = datetime.now()
+
+    best_ever_rank: dict = _compute_best_ever_ranks_cached(history, teams=data.get("teams", {}))
+
+    # Sparkline: 30 days before the as_of date
     team_spark: dict = defaultdict(list)
-    cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    spark_cutoff = (as_of_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+    spark_limit = as_of_dt.strftime("%Y-%m-%d")
     for entry in history:
         date_str = entry.get("date", "")
-        if date_str[:10] < cutoff:
+        if date_str[:10] < spark_cutoff:
             continue
+        if date_str[:10] > spark_limit:
+            break
         for side in ("t1", "t2"):
             team_name = entry[side]["name"]
             team_spark[team_name].append(round(entry[side]["pts_after"], 2))
 
     # Build date index for O(log n) last-match lookups
     date_index = _build_match_date_index(history)
-    today = datetime.now()
 
-    # Compute depreciated display ratings
+    # Compute depreciated display ratings as of as_of_dt
     team_display: dict = {}
     for name, pts in teams.items():
-        last = _get_last_match_date(name, index=date_index)
+        last = _get_last_match_date(name, index=date_index, before_date=as_of_dt)
         if last is None:
             team_display[name] = pts
             continue
-        days_inactive = (today - last).days
+        days_inactive = (as_of_dt - last).days
         team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
 
     # Sort by depreciated rating so rank reflects real standing
@@ -581,8 +614,8 @@ def get_rankings(
             continue
         dep_pts = team_display[name]
         dep_loss = round(pts - dep_pts, 2)
-        last_match = _get_last_match_date(name, index=date_index)
-        days_inactive = (today - last_match).days if last_match else 0
+        last_match = _get_last_match_date(name, index=date_index, before_date=as_of_dt)
+        days_inactive = (as_of_dt - last_match).days if last_match else 0
         peak_info = peaks.get(name, {})
         spark = team_spark.get(name, [])
         results.append({
@@ -2030,11 +2063,13 @@ def meta():
     data = load_data()
     history = data.get("history", [])
     last_match = history[-1]["date"] if history else None
+    earliest_match = history[0]["date"][:10] if history else None
     return {
         "version": data.get("version", 1),
         "total_teams": len(data.get("teams", {})),
         "total_matches": len(history),
         "last_match": last_match,
+        "earliest_match": earliest_match,
         "data_file": str(DATA_FILE),
     }
 

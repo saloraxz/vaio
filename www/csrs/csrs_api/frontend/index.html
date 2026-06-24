@@ -2016,7 +2016,7 @@ const ELITE_COLORS = [
   '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1',
 ];
 
-function setElitePreset(preset) {
+async function setElitePreset(preset) {
   const now = new Date();
   const pad = n => String(n).padStart(2, '0');
   const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
@@ -2025,7 +2025,12 @@ function setElitePreset(preset) {
   document.getElementById('elite-end').value = today;
 
   if (preset === 'all') {
-    // Use the actual earliest data date; if meta hasn't loaded yet, leave blank and loadElite will handle it
+    if (!earliestDataDate) {
+      try {
+        const meta = await api('/api/meta');
+        if (meta.earliest_match) earliestDataDate = meta.earliest_match;
+      } catch(e) {}
+    }
     document.getElementById('elite-start').value = earliestDataDate || '';
   } else if (preset === '3m') {
     const d = new Date(now); d.setMonth(d.getMonth() - 3);
@@ -2034,6 +2039,8 @@ function setElitePreset(preset) {
     const d = new Date(now); d.setMonth(d.getMonth() - 1);
     document.getElementById('elite-start').value = fmt(d);
   }
+
+  loadElite();
 }
 
 async function loadElite() {
@@ -2711,54 +2718,35 @@ function renderTeamDetails(d) {
   // ── Form History Chart ──
   var formCtx = document.getElementById('td-form-chart');
   if (formCtx) {
-    var formColors = tl.map(function(m) { return m.won ? 'rgba(76,175,130,0.85)' : 'rgba(224,90,90,0.85)'; });
-    var formBorders = tl.map(function(m) { return m.won ? '#4caf82' : '#e05a5a'; });
-    // Cumulative form score: running win rate over time
+    // Cumulative win rate over time (as a %)
     var cumWins = 0;
     var cumFormData = tl.map(function(m, i) {
       if (m.won) cumWins++;
-      return Math.round(cumWins / (i + 1) * 100);
+      return parseFloat((cumWins / (i + 1) * 100).toFixed(1));
     });
     tdFormChart = new Chart(formCtx.getContext('2d'), {
-      type: 'bar',
+      type: 'line',
       data: {
         labels: labels,
-        datasets: [
-          {
-            label: 'W/L',
-            data: tl.map(function(m) { return m.won ? 1 : -1; }),
-            backgroundColor: formColors,
-            borderColor: formBorders,
-            borderWidth: 1,
-            borderRadius: 3,
-            yAxisID: 'y',
-            order: 2,
-          },
-          {
-            label: 'Win Rate %',
-            data: cumFormData,
-            type: 'line',
-            borderColor: '#5b9cf6',
-            backgroundColor: 'rgba(91,156,246,0.0)',
-            borderWidth: 2,
-            pointRadius: 3,
-            pointBackgroundColor: '#5b9cf6',
-            pointBorderColor: '#16181c',
-            pointBorderWidth: 1,
-            tension: 0.3,
-            yAxisID: 'y2',
-            order: 1,
-          }
-        ]
+        datasets: [{
+          label: 'Win Rate %',
+          data: cumFormData,
+          borderColor: '#f5a623',
+          backgroundColor: 'rgba(245,166,35,0.08)',
+          borderWidth: 2,
+          pointRadius: 4,
+          pointBackgroundColor: '#f5a623',
+          pointBorderColor: '#16181c',
+          pointBorderWidth: 1.5,
+          tension: 0,
+          fill: true,
+        }]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
-          legend: {
-            display: true,
-            labels: { color: '#7a7f8e', font: { size: 11 } }
-          },
+          legend: { display: false },
           tooltip: {
             backgroundColor: '#1e2127',
             borderColor: '#2a2d35',
@@ -2767,10 +2755,7 @@ function renderTeamDetails(d) {
               title: function(i) { return tl[i[0].dataIndex].date.split(' ')[0]; },
               label: function(i) {
                 var m = tl[i.dataIndex];
-                if (i.datasetIndex === 0) {
-                  return ' ' + (m.won ? 'WIN' : 'LOSS') + ' vs ' + m.opponent + '  ' + m.score;
-                }
-                return ' Win Rate: ' + i.raw + '%';
+                return ' ' + cumFormData[i.dataIndex] + '%  ' + (m.won ? 'WIN' : 'LOSS') + ' vs ' + m.opponent + '  ' + m.score;
               }
             }
           }
@@ -2778,19 +2763,9 @@ function renderTeamDetails(d) {
         scales: {
           x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
           y: {
-            ticks: {
-              color: '#7a7f8e',
-              callback: function(v) { return v === 1 ? 'W' : v === -1 ? 'L' : ''; }
-            },
+            ticks: { color: '#7a7f8e', callback: function(v) { return v + '%'; } },
             grid: { color: '#2a2d35' },
-            min: -1.5, max: 1.5,
-            position: 'left',
-          },
-          y2: {
-            ticks: { color: '#5b9cf6', callback: function(v) { return v + '%'; } },
-            grid: { display: false },
             min: 0, max: 100,
-            position: 'right',
           }
         }
       }
