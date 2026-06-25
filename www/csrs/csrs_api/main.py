@@ -676,9 +676,11 @@ def get_team(team_name: str):
     ranked_dep = sorted(team_dep.items(), key=lambda x: x[1], reverse=True)
     rank = next((i + 1 for i, (n, _) in enumerate(ranked_dep) if n == matched), None)
 
-    # Build full timeline
+    # Build full timeline, computing form score at each match using the
+    # same _calculate_form_at_match_index logic the rest of the app uses.
     timeline = []
-    for entry in history:
+    global_match_indices = []  # parallel list of history indices for team matches
+    for gi, entry in enumerate(history):
         side = None
         if entry["t1"]["name"] == matched:
             side = "t1"
@@ -692,6 +694,11 @@ def get_team(team_name: str):
         opp = entry[opp_side]
         won = me["score"] > opp["score"]
 
+        # Form score AFTER this match (use gi+1 so this match is included)
+        form_at = _calculate_form_at_match_index(matched, gi + 1, history)
+        form_grade = form_at[0] if form_at else None
+        form_score = round(form_at[1], 1) if form_at else None
+
         timeline.append({
             "date": entry["date"],
             "event": entry["event"],
@@ -704,7 +711,10 @@ def get_team(team_name: str):
             "tier": entry["tier"],
             "env": entry.get("env", "LAN"),
             "url": entry.get("url"),
+            "form_score": form_score,
+            "form_grade": form_grade,
         })
+        global_match_indices.append(gi)
 
     # 3-month filtered subset
     def parse_date(s):
@@ -777,37 +787,18 @@ def get_team(team_name: str):
         timeline_3m[-1]["pts_after"] - timeline_3m[0]["pts_before"], 2
     ) if timeline_3m else 0.0
 
-    # Form — only from matches within the 3-month window (max 15)
-    # Build a history slice containing only 3m matches, preserving global indices
-    # so _calculate_form_at_match_index gets the right pts_before values.
-    # Easiest: find the global index of the first 3m match, then call with that slice.
-    first_3m_global_idx = None
-    for gi, entry in enumerate(history):
-        t1n = entry.get("t1", {}).get("name")
-        t2n = entry.get("t2", {}).get("name")
-        if t1n != matched and t2n != matched:
-            continue
-        pd = parse_date(entry.get("date", ""))
-        if pd and pd >= cutoff_3m:
-            first_3m_global_idx = gi
-            break
-
+    # Form — last 15 matches (n=15 default), matching CSRS.py exactly.
     form_data = None
-    if first_3m_global_idx is not None:
-        # Restrict streak/score to 3-month-window matches only
-        form_3m = _calculate_form_at_match_index(
-            matched, len(history), history,
-            n=len(timeline_3m) if timeline_3m else 15
-        )
-        if form_3m:
-            grade, score, streak = form_3m
-            recent_5 = streak[-5:] if len(streak) >= 5 else streak
-            form_data = {
-                "grade": grade,
-                "score": round(score, 1),
-                "streak": streak,
-                "recent": recent_5,
-            }
+    form_all = _calculate_form_at_match_index(matched, len(history), history)
+    if form_all:
+        grade, score, streak = form_all
+        recent_5 = streak[-5:] if len(streak) >= 5 else streak
+        form_data = {
+            "grade": grade,
+            "score": round(score, 1),
+            "streak": streak,
+            "recent": recent_5,
+        }
 
     peak_info = dict(peaks.get(matched, {}))
     peak_info["rank"] = _compute_best_ever_ranks_cached(history, teams=teams).get(matched, peak_info.get("rank"))

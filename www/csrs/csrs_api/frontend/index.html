@@ -2596,7 +2596,7 @@ function renderTeamDetails(d) {
     }).join('');
 
     formHtml = '<div class="stat-card" style="grid-column:span 2">' +
-      '<div class="label">Form (3 months)</div>' +
+      '<div class="label">Form (last 15 matches)</div>' +
       '<div style="display:flex;align-items:center;gap:16px;padding-top:6px">' +
         '<span style="font-size:2rem;font-weight:700;color:' + fc + '">' + f.grade + '</span>' +
         '<span style="font-size:1.1rem;color:var(--muted)">' + f.score.toFixed(1) + ' / 100</span>' +
@@ -2718,28 +2718,33 @@ function renderTeamDetails(d) {
   // ── Form History Chart ──
   var formCtx = document.getElementById('td-form-chart');
   if (formCtx) {
-    // Cumulative win rate over time (as a %)
-    var cumWins = 0;
-    var cumFormData = tl.map(function(m, i) {
-      if (m.won) cumWins++;
-      return parseFloat((cumWins / (i + 1) * 100).toFixed(1));
-    });
+    var formScores = tl.map(function(m) { return m.form_score != null ? m.form_score : null; });
+    // Point colours: green for W, red for L
+    var formPointColors = tl.map(function(m) { return m.won ? '#4caf82' : '#e05a5a'; });
+
+    // Grade thresholds (must match backend: S≥85%, A≥70%, B≥55%, C≥40% of total_form_points)
+    // total_form_points = FORM_WIN_WEIGHT + FORM_MAP_WEIGHT + FORM_COMP_WEIGHT
+    // We annotate the chart with horizontal grade bands as plugin annotations aren't
+    // available, so instead draw them as custom y-axis tick labels and light gridlines.
+    var gradeColors = { S: '#f5c518', A: '#4caf82', B: '#5b9cf6', C: '#f5a623', D: '#e05a5a' };
+
     tdFormChart = new Chart(formCtx.getContext('2d'), {
       type: 'line',
       data: {
         labels: labels,
         datasets: [{
-          label: 'Win Rate %',
-          data: cumFormData,
+          label: 'Form Score',
+          data: formScores,
           borderColor: '#f5a623',
-          backgroundColor: 'rgba(245,166,35,0.08)',
+          backgroundColor: 'rgba(245,166,35,0.07)',
           borderWidth: 2,
-          pointRadius: 4,
-          pointBackgroundColor: '#f5a623',
+          pointRadius: 5,
+          pointBackgroundColor: formPointColors,
           pointBorderColor: '#16181c',
           pointBorderWidth: 1.5,
           tension: 0,
           fill: true,
+          spanGaps: false,
         }]
       },
       options: {
@@ -2755,7 +2760,12 @@ function renderTeamDetails(d) {
               title: function(i) { return tl[i[0].dataIndex].date.split(' ')[0]; },
               label: function(i) {
                 var m = tl[i.dataIndex];
-                return ' ' + cumFormData[i.dataIndex] + '%  ' + (m.won ? 'WIN' : 'LOSS') + ' vs ' + m.opponent + '  ' + m.score;
+                var grade = m.form_grade || '—';
+                var score = m.form_score != null ? m.form_score : '—';
+                return [
+                  '  Form: ' + score + '  (Grade ' + grade + ')',
+                  '  ' + (m.won ? '✓ WIN' : '✗ LOSS') + ' vs ' + m.opponent + '  ' + m.score,
+                ];
               }
             }
           }
@@ -2763,9 +2773,19 @@ function renderTeamDetails(d) {
         scales: {
           x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
           y: {
-            ticks: { color: '#7a7f8e', callback: function(v) { return v + '%'; } },
+            min: 0,
+            max: 100,
             grid: { color: '#2a2d35' },
-            min: 0, max: 100,
+            ticks: {
+              color: '#7a7f8e',
+              callback: function(v) {
+                // Label grade thresholds; these rough values assume
+                // total_form_points ≈ 100 (as the backend caps score at 100)
+                var grades = { 85: 'S', 70: 'A', 55: 'B', 40: 'C', 0: 'D' };
+                return grades[v] != null ? grades[v] + ' (' + v + ')' : v;
+              },
+              values: [0, 40, 55, 70, 85, 100],
+            }
           }
         }
       }
