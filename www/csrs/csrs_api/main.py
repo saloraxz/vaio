@@ -1525,12 +1525,32 @@ def _parse_match_date(date_str: str):
         return datetime.strptime(clean[:10], "%Y-%m-%d")
 
 
+@app.get("/api/home/months")
+def home_months():
+    """Return sorted list of YYYY-MM months that have at least one match."""
+    data = load_data()
+    history: list = data.get("history", [])
+    months = set()
+    for m in history:
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        try:
+            d = _parse_match_date(date_str)
+            months.add(d.strftime("%Y-%m"))
+        except Exception:
+            continue
+    return {"months": sorted(months, reverse=True)}
+
+
 @app.get("/api/home")
-def home():
+def home(
+    start: Optional[str] = Query(None, description="Start date YYYY-MM-DD (default: 30 days ago)"),
+    end:   Optional[str] = Query(None, description="End date YYYY-MM-DD (default: today)"),
+):
     """
-    Aggregated data for the Home screen — all tiles below are scoped to the
-    last 30 days unless noted otherwise, computed fresh per-request except
-    where noted (peak/best-ever-rank reuses the existing cached replay).
+    Aggregated data for the Home / Month Summary screen.
+    When start+end are omitted, defaults to the last 30 days.
     """
     from datetime import timedelta
 
@@ -1539,7 +1559,19 @@ def home():
     teams: dict = data.get("teams", {})
 
     today = datetime.now()
-    cutoff_30d = today - timedelta(days=30)
+
+    if start and end:
+        try:
+            cutoff_start = datetime.strptime(start, "%Y-%m-%d")
+            cutoff_end   = datetime.strptime(end,   "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="start/end must be YYYY-MM-DD")
+    else:
+        cutoff_start = today - timedelta(days=30)
+        cutoff_end   = today
+
+    # Keep backward-compat alias used throughout function
+    cutoff_30d = cutoff_start
 
     recent: list = []
     for m in history:
@@ -1550,7 +1582,7 @@ def home():
             d = _parse_match_date(date_str)
         except Exception:
             continue
-        if d >= cutoff_30d:
+        if cutoff_start <= d <= cutoff_end:
             recent.append((d, m))
     recent.sort(key=lambda x: x[0])  # chronological, oldest first
 

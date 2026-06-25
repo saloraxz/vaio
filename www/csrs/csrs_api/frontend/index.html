@@ -655,7 +655,6 @@ tr:last-child td { border-bottom: none; }
         <a data-page="" class="wip">Rating Graph <span class="wip-tag">WIP</span></a>
         <a data-page="" class="wip">Form Graph <span class="wip-tag">WIP</span></a>
         <a data-page="elite">Elite Teams Over Time</a>
-        <a data-page="" class="wip">Map Score Distribution <span class="wip-tag">WIP</span></a>
         <a data-page="" class="wip">Analyse Team Form <span class="wip-tag">WIP</span></a>
         <a data-page="" class="wip">Compare Teams <span class="wip-tag">WIP</span></a>
       </div>
@@ -663,6 +662,8 @@ tr:last-child td { border-bottom: none; }
 
     <a data-page="team-details">Team Details</a>
     <a data-page="h2h">Head to Head</a>
+    <a data-page="month-summary" class="wip">Month Summary <span class="wip-tag">WIP</span></a>
+    <a data-page="" class="wip">Event Summary <span class="wip-tag">WIP</span></a>
   </nav>
   <div class="sidebar-meta" id="sidebar-meta">
     <span>Loading...</span>
@@ -727,12 +728,6 @@ tr:last-child td { border-bottom: none; }
   </a>
   <a data-page="" class="more-sheet-item wip">
     <span class="more-sheet-icon">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V12M10 20V4M16 20v-8M3 20h18"/></svg>
-    </span>
-    <span>Map Score Distribution <span class="wip-tag">WIP</span></span>
-  </a>
-  <a data-page="" class="more-sheet-item wip">
-    <span class="more-sheet-icon">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
     </span>
     <span>Analyse Team Form <span class="wip-tag">WIP</span></span>
@@ -742,6 +737,18 @@ tr:last-child td { border-bottom: none; }
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.2l1.3 2.8h-2.6z" fill="currentColor"/><path d="M4 7h16M7 7l-3 9M7 7l3 9M17 7l-3 9M17 7l3 9"/><path d="M4 16a3.5 1.6 0 0 0 6 0"/><path d="M14 16a3.5 1.6 0 0 0 6 0"/><path d="M12 7v13M9 20h6"/></svg>
     </span>
     <span>Compare Teams <span class="wip-tag">WIP</span></span>
+  </a>
+  <a data-page="month-summary" class="more-sheet-item wip">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+    </span>
+    <span>Month Summary <span class="wip-tag">WIP</span></span>
+  </a>
+  <a data-page="" class="more-sheet-item wip">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4zM7 6H4a2 2 0 0 0 0 4h1M17 6h3a2 2 0 0 1 0 4h-1"/></svg>
+    </span>
+    <span>Event Summary <span class="wip-tag">WIP</span></span>
   </a>
 </div>
 
@@ -984,6 +991,45 @@ tr:last-child td { border-bottom: none; }
     <div id="h2h-result"></div>
   </div>
 
+  <!-- Month Summary -->
+  <div class="page" id="page-month-summary">
+    <div class="page-header">
+      <h2>Month Summary</h2>
+      <div class="controls" style="margin-top:12px;margin-bottom:0">
+        <select id="month-select" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:0.9rem;cursor:pointer">
+          <option value="">Loading months…</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="analytics-grid" style="margin-bottom:16px">
+      <div class="card" id="ms-top-team"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+      <div class="card" id="ms-top-form-team"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+    </div>
+    <div class="card">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Featured Results</h2>
+      </div>
+      <div id="ms-featured-results"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+    </div>
+    <div class="page-header" style="margin-bottom:12px">
+      <h2 style="font-size:1rem">Standouts <span id="ms-standouts-label" style="color:var(--muted);font-weight:400;font-size:0.78rem"></span></h2>
+    </div>
+    <div class="stat-grid" id="ms-tiles"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+    <div class="card">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Hot Teams <span id="ms-hot-label" style="color:var(--muted);font-weight:400;font-size:0.78rem"></span></h2>
+      </div>
+      <div class="analytics-grid" id="ms-hot-teams"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+    </div>
+    <div class="card">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Cold Teams <span id="ms-cold-label" style="color:var(--muted);font-weight:400;font-size:0.78rem"></span></h2>
+      </div>
+      <div class="analytics-grid" id="ms-cold-teams"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+    </div>
+  </div>
+
   <!-- Team Details -->
   <div class="page" id="page-team-details">
     <div class="page-header"><h2>Team Details</h2></div>
@@ -1041,10 +1087,11 @@ document.querySelectorAll('nav a[data-page]').forEach(a => {
   a.addEventListener('click', () => {
     const page = a.dataset.page;
     showPage(page);
-    if (page === 'home')      loadHome();
-    if (page === 'rankings')  loadRankings();
-    if (page === 'history')   loadHistory(1);
-    if (page === 'analytics') loadAnalytics();
+    if (page === 'home')          loadHome();
+    if (page === 'rankings')      loadRankings();
+    if (page === 'history')       loadHistory(1);
+    if (page === 'analytics')     loadAnalytics();
+    if (page === 'month-summary') loadMonthSummary();
     if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
   });
 });
@@ -1200,6 +1247,217 @@ async function loadHome() {
     setError('home-cold-teams', e.message);
     setError('home-tiles', e.message);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Month Summary
+// ---------------------------------------------------------------------------
+let msMonthsLoaded = false;
+
+async function loadMonthSummary() {
+  // Populate month picker once
+  if (!msMonthsLoaded) {
+    try {
+      const { months } = await api('/api/home/months');
+      const sel = document.getElementById('month-select');
+      sel.innerHTML = months.map(m => {
+        const [y, mo] = m.split('-');
+        const label = new Date(y, mo - 1, 1).toLocaleString('default', { month: 'long', year: 'numeric' });
+        return `<option value="${m}">${label}</option>`;
+      }).join('');
+      sel.addEventListener('change', () => renderMonthSummaryForMonth(sel.value));
+      msMonthsLoaded = true;
+    } catch(e) {
+      document.getElementById('month-select').innerHTML = '<option>Error loading months</option>';
+      return;
+    }
+  }
+  const sel = document.getElementById('month-select');
+  if (sel.value) renderMonthSummaryForMonth(sel.value);
+}
+
+async function renderMonthSummaryForMonth(ym) {
+  const [year, month] = ym.split('-').map(Number);
+  const start = `${year}-${String(month).padStart(2,'0')}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const end = `${year}-${String(month).padStart(2,'0')}-${lastDay}`;
+  const label = new Date(year, month - 1, 1).toLocaleString('default', { month: 'long', year: 'numeric' });
+
+  // Update sub-labels
+  document.getElementById('ms-standouts-label').textContent = `— ${label}`;
+  document.getElementById('ms-hot-label').textContent = `— top 30, ${label}`;
+  document.getElementById('ms-cold-label').textContent = `— top 30, ${label}`;
+
+  const ids = ['ms-top-team','ms-top-form-team','ms-featured-results','ms-hot-teams','ms-cold-teams','ms-tiles'];
+  ids.forEach(id => setLoading(id));
+
+  try {
+    const d = await api(`/api/home?start=${start}&end=${end}`);
+    renderMSTopTeam(d.top_team);
+    renderMSTopFormTeam(d.top_form_team);
+    renderMSFeaturedResults(d.featured_results);
+    renderMSHotTeams(d.hot_teams, d.top_rating_increase);
+    renderMSColdTeams(d.cold_teams, d.top_rating_decrease);
+    renderMSTiles(d.tiles, label);
+  } catch(e) {
+    ids.forEach(id => setError(id, e.message));
+  }
+}
+
+function renderMSTopTeam(team) {
+  if (!team) { setEl('ms-top-team', '<div class="empty-msg">No ranked teams this month.</div>'); return; }
+  setEl('ms-top-team', `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Ranked Team</div>
+        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${team.name.replace(/'/g,"\\'")}')">
+          ${team.name}
+        </span>
+        <div style="margin-top:4px">
+          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${team.points.toFixed(2)} pts</span>
+          ${team.form_grade ? `<span style="margin-left:10px;color:var(--muted);font-size:0.82rem">Form: ${team.form_grade} (${team.form_score})</span>` : ''}
+        </div>
+      </div>
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">Month Trend</div>
+        ${sparklineSVG(team.sparkline_30d, 120, 36)}
+      </div>
+    </div>
+  `);
+}
+
+function renderMSTopFormTeam(formTeam) {
+  if (!formTeam) { setEl('ms-top-form-team', '<div class="empty-msg">No form data this month.</div>'); return; }
+  setEl('ms-top-form-team', `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Form Team</div>
+        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${formTeam.name.replace(/'/g,"\\'")}')">
+          ${formTeam.name}
+        </span>
+        <div style="margin-top:4px">
+          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${formTeam.form_grade || ''}${formTeam.form_score !== undefined ? ` (${formTeam.form_score})` : ''}</span>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">Month Trend</div>
+        ${sparklineSVG(formTeam.sparkline_30d, 120, 36)}
+      </div>
+    </div>
+  `);
+}
+
+function renderMSFeaturedResults(results) {
+  if (!results || !results.length) {
+    setEl('ms-featured-results', '<div class="empty-msg">No featured results this month.</div>');
+    return;
+  }
+  const TIER_STYLE = {
+    'S+': 'background:rgba(255,68,68,0.15);color:#ff4444',
+    'S':  'background:rgba(255,215,0,0.15);color:#FFD700',
+    'A':  'background:rgba(192,192,192,0.15);color:#C0C0C0',
+    'B':  'background:rgba(205,127,50,0.15);color:#CD7F32',
+    'C':  'background:rgba(60,180,75,0.15);color:#3cb44b',
+    'D':  'background:rgba(230,25,75,0.15);color:#e6194B',
+  };
+  const rows = results.map(r => {
+    const t1won = r.t1.score > r.t2.score;
+    const tierStyle = TIER_STYLE[r.tier] || 'background:var(--surface2);color:var(--muted)';
+    const t1NameStyle = t1won ? 'font-weight:600;color:var(--text)' : 'font-weight:400;color:var(--muted)';
+    const t2NameStyle = !t1won ? 'font-weight:600;color:var(--text)' : 'font-weight:400;color:var(--muted)';
+    const t1ScoreStyle = t1won ? 'color:var(--green);font-weight:700' : 'color:var(--red);font-weight:700;opacity:0.75';
+    const t2ScoreStyle = !t1won ? 'color:var(--green);font-weight:700' : 'color:var(--red);font-weight:700;opacity:0.75';
+    return `
+      <div style="display:flex;align-items:center;padding:14px 4px;gap:14px;border-bottom:1px solid var(--border)">
+        <div style="width:30px;height:30px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:800;${tierStyle}">${r.tier}</div>
+        <div style="flex:1;min-width:0;text-align:left">
+          <span style="font-size:0.95rem;${t1NameStyle}">${r.t1.name}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;min-width:64px;justify-content:center">
+          <span style="font-size:1.1rem;${t1ScoreStyle}">${r.t1.score}</span>
+          <span style="color:var(--muted);font-size:0.9rem">-</span>
+          <span style="font-size:1.1rem;${t2ScoreStyle}">${r.t2.score}</span>
+        </div>
+        <div style="flex:1;min-width:0;text-align:right">
+          <span style="font-size:0.95rem;${t2NameStyle}">${r.t2.name}</span>
+        </div>
+        <div style="flex-shrink:0;width:36px;text-align:right">
+          <span style="font-size:0.75rem;color:var(--muted)">${r.format || 'bo3'}</span>
+        </div>
+      </div>`;
+  }).join('');
+  setEl('ms-featured-results', rows);
+}
+
+function renderMSHotTeams(winrateTeams, ratingTeams) {
+  if ((!winrateTeams || !winrateTeams.length) && (!ratingTeams || !ratingTeams.length)) {
+    setEl('ms-hot-teams', '<div class="empty-msg">Not enough data this month.</div>'); return;
+  }
+  const mkList = (teams, valFn, col) => (teams || []).slice(0, 5).map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i+1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}${t.rank ? ` <span style="color:var(--muted);font-weight:400">(#${t.rank})</span>` : ''}</span>
+      </div>
+      <div style="text-align:right"><span style="font-weight:700;color:${col}">${valFn(t)}</span></div>
+    </div>`).join('') || '<div class="empty-msg" style="padding:20px">No data.</div>';
+
+  setEl('ms-hot-teams', `
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Highest Win Rates</div>
+      ${mkList(winrateTeams, t => `${t.winrate}% <span style="color:var(--muted);font-size:0.78rem;margin-left:4px">${t.wins}W ${t.losses}L</span>`, 'var(--green)')}
+    </div>
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Rating Increase</div>
+      ${mkList(ratingTeams, t => `${t.delta > 0 ? '+' : ''}${t.delta.toFixed ? t.delta.toFixed(1) : t.delta} pts`, 'var(--green)')}
+    </div>
+  `);
+}
+
+function renderMSColdTeams(winrateTeams, ratingTeams) {
+  if ((!winrateTeams || !winrateTeams.length) && (!ratingTeams || !ratingTeams.length)) {
+    setEl('ms-cold-teams', '<div class="empty-msg">Not enough data this month.</div>'); return;
+  }
+  const mkList = (teams, valFn, col) => (teams || []).slice(0, 5).map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i+1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}${t.rank ? ` <span style="color:var(--muted);font-weight:400">(#${t.rank})</span>` : ''}</span>
+      </div>
+      <div style="text-align:right"><span style="font-weight:700;color:${col}">${valFn(t)}</span></div>
+    </div>`).join('') || '<div class="empty-msg" style="padding:20px">No data.</div>';
+
+  setEl('ms-cold-teams', `
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Lowest Win Rates</div>
+      ${mkList(winrateTeams, t => `${t.winrate}% <span style="color:var(--muted);font-size:0.78rem;margin-left:4px">${t.wins}W ${t.losses}L</span>`, 'var(--red)')}
+    </div>
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Rating Decrease</div>
+      ${mkList(ratingTeams, t => `${t.delta > 0 ? '+' : ''}${t.delta.toFixed ? t.delta.toFixed(1) : t.delta} pts`, 'var(--red)')}
+    </div>
+  `);
+}
+
+function renderMSTiles(tiles, label) {
+  if (!tiles) { setEl('ms-tiles', '<div class="empty-msg">No data available.</div>'); return; }
+  const cards = [];
+  const tile = (heading, name, sub, col) => `
+    <div class="stat-card">
+      <div class="label">${heading}</div>
+      <div class="value" style="font-size:1.2rem">${name}</div>
+      <div class="sub"${col ? ` style="color:${col}"` : ''}>${sub}</div>
+    </div>`;
+  if (tiles.highest_rating_change) { const t = tiles.highest_rating_change; cards.push(tile('Greatest Rating Increase', t.name, `${t.delta > 0 ? '+' : ''}${t.delta} pts`, t.delta > 0 ? 'var(--green)' : 'var(--red)')); }
+  if (tiles.lowest_rating_change)  { const t = tiles.lowest_rating_change;  cards.push(tile('Greatest Rating Decrease', t.name, `${t.delta > 0 ? '+' : ''}${t.delta} pts`, t.delta > 0 ? 'var(--green)' : 'var(--red)')); }
+  if (tiles.highest_form_change)   { const t = tiles.highest_form_change;   cards.push(tile('Greatest Form Increase',   t.name, `${t.delta > 0 ? '+' : ''}${t.delta} form pts`, t.delta > 0 ? 'var(--green)' : 'var(--red)')); }
+  if (tiles.lowest_form_change)    { const t = tiles.lowest_form_change;    cards.push(tile('Greatest Form Decrease',   t.name, `${t.delta > 0 ? '+' : ''}${t.delta} form pts`, t.delta > 0 ? 'var(--green)' : 'var(--red)')); }
+  if (tiles.biggest_upset)         { const t = tiles.biggest_upset;         cards.push(tile('Biggest Upset', t.winner, `beat ${t.loser} (Δ${t.gap} pts)`)); }
+  if (tiles.most_positions_gained) { const t = tiles.most_positions_gained; cards.push(tile('Most Positions Gained', t.name, `+${t.positions_gained} (#${t.rank_30d_ago} → #${t.rank_now})`, 'var(--green)')); }
+  if (tiles.most_positions_lost)   { const t = tiles.most_positions_lost;   cards.push(tile('Most Positions Lost',   t.name, `-${t.positions_lost} (#${t.rank_30d_ago} → #${t.rank_now})`, 'var(--red)')); }
+  if (tiles.longest_win_streak)    { const t = tiles.longest_win_streak;    cards.push(tile('Longest Win Streak',  t.name, `${t.streak} in a row`, 'var(--green)')); }
+  if (tiles.longest_loss_streak)   { const t = tiles.longest_loss_streak;   cards.push(tile('Longest Loss Streak', t.name, `${t.streak} in a row`, 'var(--red)')); }
+  setEl('ms-tiles', cards.length ? cards.join('') : `<div class="empty-msg">No standout data for ${label}.</div>`);
 }
 
 function renderHomeTopTeam(team) {
