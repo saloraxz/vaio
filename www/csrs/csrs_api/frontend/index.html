@@ -208,92 +208,10 @@ nav > a.wip { cursor: default; opacity: 0.6; pointer-events: none; }
 .rank-date-bar {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 10px;
   margin-bottom: 16px;
 }
-.rank-preset-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.rank-preset-label {
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
-  color: var(--muted);
-  white-space: nowrap;
-  margin-right: 4px;
-}
-.rank-pills {
-  display: flex;
-  gap: 4px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 3px;
-}
-.rank-pill {
-  background: none;
-  border: none;
-  border-radius: 999px;
-  color: var(--muted);
-  font-size: 0.78rem;
-  font-weight: 500;
-  padding: 5px 13px;
-  cursor: pointer;
-  transition: all 0.15s;
-  white-space: nowrap;
-}
-.rank-pill:hover { color: var(--text); background: rgba(255,255,255,0.06); }
-.rank-pill.active { background: var(--accent); color: #0d0d0f; font-weight: 700; }
-.rank-custom-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  max-height: 0;
-  overflow: hidden;
-  opacity: 0;
-  transition: max-height 0.25s ease, opacity 0.2s ease, padding 0.2s ease;
-  padding-top: 0; padding-bottom: 0;
-}
-.rank-custom-row.open {
-  max-height: 60px;
-  opacity: 1;
-  padding: 10px 14px;
-}
-.rank-custom-row label {
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  color: var(--muted);
-  white-space: nowrap;
-}
-.rank-custom-row .dp-wrap {
-  flex: 1;
-  max-width: 180px;
-}
-.rank-as-of-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(245,166,35,0.1);
-  border: 1px solid rgba(245,166,35,0.25);
-  border-radius: 6px;
-  padding: 4px 10px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--accent);
-  margin-top: 2px;
-  transition: opacity 0.2s;
-}
-.rank-as-of-badge.hidden { opacity: 0; pointer-events: none; }
 
 .controls {
   display: flex;
@@ -1020,37 +938,21 @@ tr:last-child td { border-bottom: none; }
   <div class="page" id="page-rankings">
     <div class="page-header">
       <h2>Rankings</h2>
+      <div class="controls" style="margin:0">
+        <input type="text" id="rank-search" placeholder="Search team…" style="width:200px">
+      </div>
     </div>
 
     <!-- Date selector -->
     <div class="rank-date-bar">
-      <div class="rank-preset-row">
-        <span class="rank-preset-label">As of</span>
-        <div class="rank-pills">
-          <button class="rank-pill active" data-rank-preset="live">Live</button>
-          <button class="rank-pill" data-rank-preset="1m">−1M</button>
-          <button class="rank-pill" data-rank-preset="3m">−3M</button>
-          <button class="rank-pill" data-rank-preset="6m">−6M</button>
-          <button class="rank-pill" data-rank-preset="1y">−1Y</button>
-          <button class="rank-pill" data-rank-preset="custom">Custom</button>
+      <div class="dp-wrap" id="dp-rank-date-wrap">
+        <input type="hidden" id="rank-date">
+        <div class="dp-input" id="dp-rank-date-btn" onclick="dpToggle('rank-date')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+          <span id="dp-rank-date-label">Select date</span>
         </div>
+        <div class="dp-cal" id="dp-rank-date-cal"></div>
       </div>
-      <div class="rank-custom-row" id="rank-custom-date">
-        <label>Date</label>
-        <div class="dp-wrap" id="dp-rank-date-wrap">
-          <input type="hidden" id="rank-date">
-          <div class="dp-input" id="dp-rank-date-btn" onclick="dpToggle('rank-date')">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
-            <span id="dp-rank-date-label">Select date</span>
-          </div>
-          <div class="dp-cal" id="dp-rank-date-cal"></div>
-        </div>
-      </div>
-      <div class="rank-as-of-badge hidden" id="rank-date-label"></div>
-    </div>
-
-    <div style="padding:0 0 12px">
-      <input type="text" id="rank-search" placeholder="Search team…" style="width:200px">
     </div>
 
     <div class="card" style="padding:0">
@@ -2085,10 +1987,10 @@ async function loadRankings() {
   try {
     const search = document.getElementById('rank-search').value;
     const date = dpGet('rank-date');
-    // Only send date param when a pill other than Live is active
-    const activePill = document.querySelector('.rank-pill.active');
-    const isLive = !activePill || activePill.dataset.rankPreset === 'live';
-    const dateParam = (!isLive && date) ? `&date=${encodeURIComponent(date)}` : '';
+    // Today == live: omit the date param so the backend serves current
+    // rankings exactly as before, even though the button always shows an
+    // actual date rather than a separate "Live" label.
+    const dateParam = (date && date !== getTodayStr()) ? `&date=${encodeURIComponent(date)}` : '';
     const d = await api(`/api/rankings?limit=200&search=${encodeURIComponent(search)}${dateParam}`);
     rankingsData = d.rankings;
     renderRankings(rankingsData);
@@ -2140,68 +2042,18 @@ document.getElementById('rank-search').addEventListener('input', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Rankings — date preset pills
+// Rankings — "as of" date picker
 // ---------------------------------------------------------------------------
 (function () {
-  const pills     = document.querySelectorAll('.rank-pill');
-  const customRow = document.getElementById('rank-custom-date');
-  const badge     = document.getElementById('rank-date-label');
-
-  function pad(n) { return String(n).padStart(2, '0'); }
-  function fmt(d) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
-
-  // Init custom picker — fires loadRankings when a day is picked
+  // Init custom picker — fires loadRankings whenever a day is picked
   dpInit('rank-date', (val) => {
-    if (!val) return;
-    const d = new Date(val);
-    const label = d.toLocaleDateString('default', { day: 'numeric', month: 'short', year: 'numeric' });
-    showBadge(`Showing rankings as of ${label}`);
     loadRankings();
   });
 
-  function setActivePill(preset) {
-    pills.forEach(p => p.classList.toggle('active', p.dataset.rankPreset === preset));
-  }
-
-  function showBadge(text) {
-    badge.textContent = text;
-    badge.classList.toggle('hidden', !text);
-  }
-
-  function applyPreset(preset) {
-    setActivePill(preset);
-    const now = new Date();
-
-    if (preset === 'live') {
-      dpSet('rank-date', '');
-      customRow.classList.remove('open');
-      showBadge('');
-      loadRankings();
-      return;
-    }
-
-    if (preset === 'custom') {
-      if (!dpGet('rank-date')) dpSet('rank-date', fmt(now));
-      customRow.classList.add('open');
-      // Don't load yet — wait for date picker selection
-      return;
-    }
-
-    customRow.classList.remove('open');
-    const d = new Date(now);
-    if (preset === '1m') d.setMonth(d.getMonth() - 1);
-    else if (preset === '3m') d.setMonth(d.getMonth() - 3);
-    else if (preset === '6m') d.setMonth(d.getMonth() - 6);
-    else if (preset === '1y') d.setFullYear(d.getFullYear() - 1);
-    dpSet('rank-date', fmt(d));
-    const label = d.toLocaleDateString('default', { day: 'numeric', month: 'short', year: 'numeric' });
-    showBadge(`Showing rankings as of ${label}`);
-    loadRankings();
-  }
-
-  pills.forEach(pill => {
-    pill.addEventListener('click', () => applyPreset(pill.dataset.rankPreset));
-  });
+  // Defaults to today — same date format loadRankings() treats as "live"
+  // (no date param sent), so opening the page shows current rankings while
+  // the button still always displays an actual date, never a "Live" label.
+  dpSet('rank-date', getTodayStr());
 })();
 
 // ---------------------------------------------------------------------------
