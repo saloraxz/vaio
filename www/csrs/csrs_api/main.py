@@ -2048,6 +2048,23 @@ def home(
                 "rank_30d_ago": rank_30d_ago[name], "rank_now": current_rank[name],
             }
 
+    # --- Featured Results: 5 most recent high-tier matches ---
+    allowed_tiers = {"S+", "S", "A", "B", "C"}
+    featured_results = []
+    for m in reversed(history):
+        if m.get("tier") not in allowed_tiers:
+            continue
+        t1, t2 = m["t1"], m["t2"]
+        featured_results.append({
+            "date": m["date"],
+            "event": m["event"],
+            "tier": m["tier"],
+            "t1": {"name": t1["name"], "score": t1["score"]},
+            "t2": {"name": t2["name"], "score": t2["score"]},
+        })
+        if len(featured_results) >= 5:
+            break
+
     # --- Active event spotlight: no grand_final played yet for that event ---
     event_has_gf: dict = {}
     event_last_match: dict = {}
@@ -2065,6 +2082,7 @@ def home(
         "total_teams": total_teams,
         "top_team": top_team,
         "top_form_team": top_form_team,
+        "featured_results": featured_results,
         "hot_teams": hot_teams,
         "cold_teams": cold_teams,
         "top_rating_increase": top_rating_increase,

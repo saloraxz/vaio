@@ -275,15 +275,9 @@ nav > a.wip { cursor: default; opacity: 0.6; pointer-events: none; }
   color: var(--muted);
   white-space: nowrap;
 }
-.rank-custom-row input[type="date"] {
+.rank-custom-row .dp-wrap {
   flex: 1;
-  max-width: 160px;
-  padding: 6px 10px;
-  font-size: 0.85rem;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
+  max-width: 180px;
 }
 .rank-as-of-badge {
   display: inline-flex;
@@ -319,6 +313,133 @@ input[type="text"], input[type="date"], select {
 }
 input[type="text"]:focus, input[type="date"]:focus, select:focus { border-color: var(--accent); }
 input[type="text"]::placeholder { color: var(--muted); }
+
+/* ── Custom date picker ── */
+.dp-wrap { position: relative; display: inline-block; }
+.dp-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  font-size: 0.85rem;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s;
+  min-width: 140px;
+  white-space: nowrap;
+}
+.dp-input:hover { border-color: var(--muted); }
+.dp-input.open { border-color: var(--accent); }
+.dp-input svg { flex-shrink: 0; color: var(--muted); }
+.dp-cal {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 9999;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  padding: 12px;
+  width: 260px;
+  display: none;
+}
+.dp-cal.open { display: block; }
+.dp-cal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.dp-cal-header span {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+.dp-cal-header span:hover { color: var(--accent); }
+.dp-nav-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 1rem;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+.dp-nav-btn:hover { background: var(--surface2); color: var(--text); }
+.dp-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-bottom: 4px;
+}
+.dp-weekdays span {
+  text-align: center;
+  font-size: 0.7rem;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 4px 0;
+}
+.dp-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.dp-day {
+  text-align: center;
+  padding: 6px 2px;
+  font-size: 0.82rem;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.1s, color 0.1s;
+}
+.dp-day:hover { background: var(--surface2); }
+.dp-day.today { color: var(--accent); font-weight: 700; }
+.dp-day.selected { background: var(--accent); color: #0d0d0f; font-weight: 700; }
+.dp-day.selected:hover { background: var(--accent2); }
+.dp-day.other-month { color: var(--muted); opacity: 0.4; }
+.dp-day.disabled { opacity: 0.2; cursor: default; pointer-events: none; }
+.dp-month-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-top: 4px;
+}
+.dp-month-btn {
+  padding: 8px 4px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  text-align: center;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.1s;
+}
+.dp-month-btn:hover { background: var(--surface2); }
+.dp-month-btn.selected { background: var(--accent); color: #0d0d0f; font-weight: 700; }
+.dp-year-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-top: 4px;
+}
+.dp-year-btn {
+  padding: 8px 4px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  text-align: center;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.1s;
+}
+.dp-year-btn:hover { background: var(--surface2); }
+.dp-year-btn.selected { background: var(--accent); color: #0d0d0f; font-weight: 700; }
 
 button {
   background: var(--accent);
@@ -916,7 +1037,14 @@ tr:last-child td { border-bottom: none; }
       </div>
       <div class="rank-custom-row" id="rank-custom-date">
         <label>Date</label>
-        <input type="date" id="rank-date">
+        <div class="dp-wrap" id="dp-rank-date-wrap">
+          <input type="hidden" id="rank-date">
+          <div class="dp-input" id="dp-rank-date-btn" onclick="dpToggle('rank-date')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+            <span id="dp-rank-date-label">Select date</span>
+          </div>
+          <div class="dp-cal" id="dp-rank-date-cal"></div>
+        </div>
       </div>
       <div class="rank-as-of-badge hidden" id="rank-date-label"></div>
     </div>
@@ -1070,11 +1198,25 @@ tr:last-child td { border-bottom: none; }
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
         <div>
           <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">Start Date</div>
-          <input type="date" id="elite-start">
+          <div class="dp-wrap" id="dp-elite-start-wrap">
+            <input type="hidden" id="elite-start">
+            <div class="dp-input" id="dp-elite-start-btn" onclick="dpToggle('elite-start')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+              <span id="dp-elite-start-label">Select date</span>
+            </div>
+            <div class="dp-cal" id="dp-elite-start-cal"></div>
+          </div>
         </div>
         <div>
           <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">End Date</div>
-          <input type="date" id="elite-end">
+          <div class="dp-wrap" id="dp-elite-end-wrap">
+            <input type="hidden" id="elite-end">
+            <div class="dp-input" id="dp-elite-end-btn" onclick="dpToggle('elite-end')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+              <span id="dp-elite-end-label">Select date</span>
+            </div>
+            <div class="dp-cal" id="dp-elite-end-cal"></div>
+          </div>
         </div>
         <button onclick="loadElite()">Generate</button>
         <button class="secondary" onclick="setElitePreset('all')">All Time</button>
@@ -1167,6 +1309,146 @@ tr:last-child td { border-bottom: none; }
 </main>
 
 <script>
+// ---------------------------------------------------------------------------
+// Custom Date Picker
+// ---------------------------------------------------------------------------
+const _dpState = {}; // id -> { year, month, mode: 'day'|'month'|'year', value, onChange }
+
+function dpInit(id, onChange) {
+  const today = new Date();
+  _dpState[id] = { year: today.getFullYear(), month: today.getMonth(), mode: 'day', value: null, onChange };
+  dpRender(id);
+}
+
+function dpToggle(id) {
+  const cal = document.getElementById(`dp-${id}-cal`);
+  const btn = document.getElementById(`dp-${id}-btn`);
+  const isOpen = cal.classList.contains('open');
+  // Close all
+  document.querySelectorAll('.dp-cal.open').forEach(c => c.classList.remove('open'));
+  document.querySelectorAll('.dp-input.open').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    cal.classList.add('open');
+    btn.classList.add('open');
+    dpRender(id);
+  }
+}
+
+function dpSet(id, yyyy_mm_dd) {
+  if (!_dpState[id]) dpInit(id, null);
+  const s = _dpState[id];
+  s.value = yyyy_mm_dd;
+  if (yyyy_mm_dd) {
+    const [y, m] = yyyy_mm_dd.split('-').map(Number);
+    s.year = y; s.month = m - 1;
+  }
+  const hidden = document.getElementById(id);
+  if (hidden) hidden.value = yyyy_mm_dd || '';
+  const lbl = document.getElementById(`dp-${id}-label`);
+  if (lbl) lbl.textContent = yyyy_mm_dd ? _dpFmtDisplay(yyyy_mm_dd) : 'Select date';
+  dpRender(id);
+}
+
+function dpGet(id) {
+  const hidden = document.getElementById(id);
+  return hidden ? hidden.value : '';
+}
+
+function _dpFmtDisplay(yyyy_mm_dd) {
+  if (!yyyy_mm_dd) return 'Select date';
+  const [y, m, d] = yyyy_mm_dd.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function dpRender(id) {
+  const cal = document.getElementById(`dp-${id}-cal`);
+  if (!cal) return;
+  if (!_dpState[id]) dpInit(id, null);
+  const s = _dpState[id];
+  const today = new Date();
+
+  if (s.mode === 'year') {
+    const base = Math.floor(s.year / 12) * 12;
+    const years = Array.from({length: 12}, (_, i) => base + i);
+    cal.innerHTML = `
+      <div class="dp-cal-header">
+        <button class="dp-nav-btn" onclick="_dpYearPage('${id}',-12)">‹</button>
+        <span onclick="_dpMode('${id}','day')">${base}–${base+11}</span>
+        <button class="dp-nav-btn" onclick="_dpYearPage('${id}',12)">›</button>
+      </div>
+      <div class="dp-year-grid">
+        ${years.map(y => `<div class="dp-year-btn${y===s.year?' selected':''}" onclick="_dpPickYear('${id}',${y})">${y}</div>`).join('')}
+      </div>`;
+    return;
+  }
+
+  if (s.mode === 'month') {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    cal.innerHTML = `
+      <div class="dp-cal-header">
+        <button class="dp-nav-btn" onclick="_dpYearPage('${id}',-1)">‹</button>
+        <span onclick="_dpMode('${id}','year')">${s.year}</span>
+        <button class="dp-nav-btn" onclick="_dpYearPage('${id}',1)">›</button>
+      </div>
+      <div class="dp-month-grid">
+        ${months.map((mn, i) => `<div class="dp-month-btn${i===s.month?' selected':''}" onclick="_dpPickMonth('${id}',${i})">${mn}</div>`).join('')}
+      </div>`;
+    return;
+  }
+
+  // Day view
+  const firstDay = new Date(s.year, s.month, 1).getDay();
+  const daysInMonth = new Date(s.year, s.month + 1, 0).getDate();
+  const monthName = new Date(s.year, s.month, 1).toLocaleString('default', { month: 'long' });
+  const selParts = s.value ? s.value.split('-').map(Number) : null;
+
+  let cells = '';
+  const offset = (firstDay + 6) % 7; // Mon-start
+  const prevDays = new Date(s.year, s.month, 0).getDate();
+  for (let i = 0; i < offset; i++) {
+    cells += `<div class="dp-day other-month">${prevDays - offset + i + 1}</div>`;
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    const isToday = d === today.getDate() && s.month === today.getMonth() && s.year === today.getFullYear();
+    const isSel = selParts && d === selParts[2] && s.month === selParts[1]-1 && s.year === selParts[0];
+    const cls = ['dp-day', isToday ? 'today' : '', isSel ? 'selected' : ''].filter(Boolean).join(' ');
+    const val = `${s.year}-${String(s.month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    cells += `<div class="${cls}" onclick="_dpPickDay('${id}','${val}')">${d}</div>`;
+  }
+  const remaining = (7 - ((offset + daysInMonth) % 7)) % 7;
+  for (let i = 1; i <= remaining; i++) cells += `<div class="dp-day other-month">${i}</div>`;
+
+  cal.innerHTML = `
+    <div class="dp-cal-header">
+      <button class="dp-nav-btn" onclick="_dpMonthPage('${id}',-1)">‹</button>
+      <span onclick="_dpMode('${id}','month')">${monthName} ${s.year}</span>
+      <button class="dp-nav-btn" onclick="_dpMonthPage('${id}',1)">›</button>
+    </div>
+    <div class="dp-weekdays"><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span><span>Su</span></div>
+    <div class="dp-days">${cells}</div>`;
+}
+
+function _dpMode(id, mode) { _dpState[id].mode = mode; dpRender(id); }
+function _dpMonthPage(id, d) { const s=_dpState[id]; s.month+=d; if(s.month<0){s.month=11;s.year--;}else if(s.month>11){s.month=0;s.year++;} dpRender(id); }
+function _dpYearPage(id, d) { _dpState[id].year+=d; dpRender(id); }
+function _dpPickYear(id, y) { _dpState[id].year=y; _dpState[id].mode='month'; dpRender(id); }
+function _dpPickMonth(id, m) { _dpState[id].month=m; _dpState[id].mode='day'; dpRender(id); }
+function _dpPickDay(id, val) {
+  dpSet(id, val);
+  document.getElementById(`dp-${id}-cal`).classList.remove('open');
+  document.getElementById(`dp-${id}-btn`).classList.remove('open');
+  const s = _dpState[id];
+  if (s.onChange) s.onChange(val);
+}
+
+// Close picker on outside click
+document.addEventListener('click', e => {
+  if (!e.target.closest('.dp-wrap')) {
+    document.querySelectorAll('.dp-cal.open').forEach(c => c.classList.remove('open'));
+    document.querySelectorAll('.dp-input.open').forEach(b => b.classList.remove('open'));
+  }
+}, true);
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -1308,17 +1590,8 @@ async function loadMeta() {
     const version = versionRes.ok ? (await versionRes.text()).trim() : 'unknown';
     if (d.earliest_match) {
       earliestDataDate = d.earliest_match;
-      // Apply min attribute to all graph date pickers
-      const startInputs = ['elite-start'];
-      startInputs.forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.min = earliestDataDate;
-      });
       // If elite-start is blank (set by "All Time" before meta loaded), fill it in now
-      const eliteStart = document.getElementById('elite-start');
-      if (eliteStart && !eliteStart.value) {
-        eliteStart.value = earliestDataDate;
-      }
+      if (!dpGet('elite-start')) dpSet('elite-start', earliestDataDate);
     }
     const el = document.getElementById('sidebar-meta');
     el.innerHTML = `
@@ -1811,8 +2084,7 @@ async function loadRankings() {
   setLoading('rankings-table');
   try {
     const search = document.getElementById('rank-search').value;
-    const dateEl = document.getElementById('rank-date');
-    const date = dateEl ? dateEl.value : '';
+    const date = dpGet('rank-date');
     // Only send date param when a pill other than Live is active
     const activePill = document.querySelector('.rank-pill.active');
     const isLive = !activePill || activePill.dataset.rankPreset === 'live';
@@ -1873,11 +2145,19 @@ document.getElementById('rank-search').addEventListener('input', () => {
 (function () {
   const pills     = document.querySelectorAll('.rank-pill');
   const customRow = document.getElementById('rank-custom-date');
-  const dateEl    = document.getElementById('rank-date');
   const badge     = document.getElementById('rank-date-label');
 
   function pad(n) { return String(n).padStart(2, '0'); }
   function fmt(d) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
+
+  // Init custom picker — fires loadRankings when a day is picked
+  dpInit('rank-date', (val) => {
+    if (!val) return;
+    const d = new Date(val);
+    const label = d.toLocaleDateString('default', { day: 'numeric', month: 'short', year: 'numeric' });
+    showBadge(`Showing rankings as of ${label}`);
+    loadRankings();
+  });
 
   function setActivePill(preset) {
     pills.forEach(p => p.classList.toggle('active', p.dataset.rankPreset === preset));
@@ -1893,7 +2173,7 @@ document.getElementById('rank-search').addEventListener('input', () => {
     const now = new Date();
 
     if (preset === 'live') {
-      dateEl.value = '';
+      dpSet('rank-date', '');
       customRow.classList.remove('open');
       showBadge('');
       loadRankings();
@@ -1901,9 +2181,9 @@ document.getElementById('rank-search').addEventListener('input', () => {
     }
 
     if (preset === 'custom') {
-      if (!dateEl.value) dateEl.value = fmt(now);
+      if (!dpGet('rank-date')) dpSet('rank-date', fmt(now));
       customRow.classList.add('open');
-      // Don't load yet — wait for date input change
+      // Don't load yet — wait for date picker selection
       return;
     }
 
@@ -1913,7 +2193,7 @@ document.getElementById('rank-search').addEventListener('input', () => {
     else if (preset === '3m') d.setMonth(d.getMonth() - 3);
     else if (preset === '6m') d.setMonth(d.getMonth() - 6);
     else if (preset === '1y') d.setFullYear(d.getFullYear() - 1);
-    dateEl.value = fmt(d);
+    dpSet('rank-date', fmt(d));
     const label = d.toLocaleDateString('default', { day: 'numeric', month: 'short', year: 'numeric' });
     showBadge(`Showing rankings as of ${label}`);
     loadRankings();
@@ -1921,14 +2201,6 @@ document.getElementById('rank-search').addEventListener('input', () => {
 
   pills.forEach(pill => {
     pill.addEventListener('click', () => applyPreset(pill.dataset.rankPreset));
-  });
-
-  dateEl.addEventListener('change', () => {
-    if (!dateEl.value) return;
-    const d = new Date(dateEl.value);
-    const label = d.toLocaleDateString('default', { day: 'numeric', month: 'short', year: 'numeric' });
-    showBadge(`Showing rankings as of ${label}`);
-    loadRankings();
   });
 })();
 
@@ -2407,7 +2679,7 @@ async function setElitePreset(preset) {
   const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
   const today = fmt(now);
 
-  document.getElementById('elite-end').value = today;
+  dpSet('elite-end', today);
 
   if (preset === 'all') {
     if (!earliestDataDate) {
@@ -2416,21 +2688,21 @@ async function setElitePreset(preset) {
         if (meta.earliest_match) earliestDataDate = meta.earliest_match;
       } catch(e) {}
     }
-    document.getElementById('elite-start').value = earliestDataDate || '';
+    dpSet('elite-start', earliestDataDate || '');
   } else if (preset === '3m') {
     const d = new Date(now); d.setMonth(d.getMonth() - 3);
-    document.getElementById('elite-start').value = fmt(d);
+    dpSet('elite-start', fmt(d));
   } else if (preset === '1m') {
     const d = new Date(now); d.setMonth(d.getMonth() - 1);
-    document.getElementById('elite-start').value = fmt(d);
+    dpSet('elite-start', fmt(d));
   }
 
   loadElite();
 }
 
 async function loadElite() {
-  const start = document.getElementById('elite-start').value;
-  const end   = document.getElementById('elite-end').value;
+  const start = dpGet('elite-start');
+  const end   = dpGet('elite-end');
   if (!start || !end) return;
 
   setEl('elite-content', '<div class="loading"><div class="spinner"></div> Building chart…</div>');
@@ -2444,8 +2716,8 @@ async function loadElite() {
 }
 
 function normalizeElitePayload(payload) {
-  const startInput = document.getElementById('elite-start')?.value || '—';
-  const endInput = document.getElementById('elite-end')?.value || '—';
+  const startInput = dpGet('elite-start') || '—';
+  const endInput = dpGet('elite-end') || '—';
   const eliteThreshold = Number.isFinite(payload?.elite_threshold)
     ? payload.elite_threshold
     : 850;
@@ -2745,9 +3017,9 @@ function toggleEliteLine(index) {
   const now = new Date();
   const pad = n => String(n).padStart(2, '0');
   const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-  document.getElementById('elite-end').value = fmt(now);
+  dpSet('elite-end', fmt(now));
   const start = new Date(now); start.setMonth(start.getMonth() - 3);
-  document.getElementById('elite-start').value = fmt(start);
+  dpSet('elite-start', fmt(start));
 })();
 
 // ---------------------------------------------------------------------------
@@ -2917,6 +3189,10 @@ attachAutocomplete('td-input', 'td-dd', 'team', function(val) {
 document.addEventListener('DOMContentLoaded', function() {
   var inp = document.getElementById('td-input');
   if (inp) inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadTeamDetails(); });
+
+  // Init elite date pickers (no onChange — user clicks Generate manually)
+  dpInit('elite-start', null);
+  dpInit('elite-end', null);
 });
 
 // ---------------------------------------------------------------------------
