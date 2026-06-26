@@ -1938,7 +1938,7 @@ function renderHomeTiles(tiles) {
       <div class="stat-card">
         <div class="label">Most Positions Gained</div>
         <div class="value" style="font-size:1.2rem">${t.name}</div>
-        <div class="sub">+${t.positions_gained} (#${t.rank_30d_ago} → #${t.rank_now})</div>
+        <div class="sub" style="color:var(--green)">+${t.positions_gained} (#${t.rank_30d_ago} → #${t.rank_now})</div>
       </div>`);
   }
   if (tiles.most_positions_lost) {
@@ -1947,7 +1947,7 @@ function renderHomeTiles(tiles) {
       <div class="stat-card">
         <div class="label">Most Positions Lost</div>
         <div class="value" style="font-size:1.2rem">${t.name}</div>
-        <div class="sub">-${t.positions_lost} (#${t.rank_30d_ago} → #${t.rank_now})</div>
+        <div class="sub" style="color:var(--red)">-${t.positions_lost} (#${t.rank_30d_ago} → #${t.rank_now})</div>
       </div>`);
   }
   if (tiles.longest_win_streak) {
@@ -2914,8 +2914,9 @@ document.querySelectorAll('.more-sheet-item[data-page]').forEach(a => {
     if (!page) return; // WIP placeholder — no page to show yet
     closeMoreSheet();
     showPage(page);
-    if (page === 'rankings')   loadRankings();
-    if (page === 'history')    loadHistory(1);
+    if (page === 'rankings')      loadRankings();
+    if (page === 'history')       loadHistory(1);
+    if (page === 'month-summary') loadMonthSummary();
     if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
   });
 });

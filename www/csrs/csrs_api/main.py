@@ -536,83 +536,40 @@ def simulate_elo(
 def get_rankings(
     limit: int = Query(50, ge=1, le=200),
     search: str = Query("", description="Filter by team name"),
-    date: Optional[str] = Query(None, description="Show rankings as-of this date (YYYY-MM-DD)"),
 ):
-    from collections import defaultdict
-    from datetime import timedelta
-
     data = load_data()
+    teams: dict = data.get("teams", {})
     peaks: dict = data.get("peaks", {})
     provisional: dict = data.get("provisional_teams", {})
     history: list = data.get("history", [])
+    best_ever_rank: dict = _compute_best_ever_ranks_cached(history, teams=teams)
 
-    # If a historical date is requested, replay history up to that date to
-    # reconstruct team points as they stood at close of that day.
-    if date:
-        try:
-            as_of = datetime.strptime(date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
-        # Replay: last recorded pts_after for each team up to and including as_of
-        snapshot: dict = {}
-        for m in history:
-            d_str = m.get("date", "")
-            if not d_str or d_str == "N/A":
-                continue
-            try:
-                md = datetime.strptime(d_str.replace(" UTC", "").strip()[:16], "%Y-%m-%d %H:%M")
-            except Exception:
-                try:
-                    md = datetime.strptime(d_str[:10], "%Y-%m-%d")
-                except Exception:
-                    continue
-            if md > as_of.replace(hour=23, minute=59):
-                break
-            for side in ("t1", "t2"):
-                snapshot[m[side]["name"]] = m[side]["pts_after"]
-        teams = snapshot
-        as_of_dt = as_of
-    else:
-        teams = data.get("teams", {})
-        as_of_dt = datetime.now()
+    # Build sparkline data from last 30 days of per-team ratings.
+    from collections import defaultdict
+    from datetime import timedelta
 
-    if date:
-        # Cap history to as_of date so peak rank doesn't include future matches.
-        # Don't pass `teams` (no "now" snapshot — that would use post-date data).
-        history_capped = [
-            m for m in history
-            if m.get("date") and m.get("date") != "N/A"
-            and _parse_match_date(m["date"]) <= as_of.replace(hour=23, minute=59, second=59)
-        ]
-        best_ever_rank: dict = _compute_best_ever_ranks(history_capped)
-    else:
-        best_ever_rank: dict = _compute_best_ever_ranks_cached(history, teams=data.get("teams", {}))
-
-    # Sparkline: 30 days before the as_of date
     team_spark: dict = defaultdict(list)
-    spark_cutoff = (as_of_dt - timedelta(days=30)).strftime("%Y-%m-%d")
-    spark_limit = as_of_dt.strftime("%Y-%m-%d")
+    cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     for entry in history:
         date_str = entry.get("date", "")
-        if date_str[:10] < spark_cutoff:
+        if date_str[:10] < cutoff:
             continue
-        if date_str[:10] > spark_limit:
-            break
         for side in ("t1", "t2"):
             team_name = entry[side]["name"]
             team_spark[team_name].append(round(entry[side]["pts_after"], 2))
 
     # Build date index for O(log n) last-match lookups
     date_index = _build_match_date_index(history)
+    today = datetime.now()
 
-    # Compute depreciated display ratings as of as_of_dt
+    # Compute depreciated display ratings
     team_display: dict = {}
     for name, pts in teams.items():
-        last = _get_last_match_date(name, index=date_index, before_date=as_of_dt)
+        last = _get_last_match_date(name, index=date_index)
         if last is None:
             team_display[name] = pts
             continue
-        days_inactive = (as_of_dt - last).days
+        days_inactive = (today - last).days
         team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
 
     # Sort by depreciated rating so rank reflects real standing
@@ -624,8 +581,8 @@ def get_rankings(
             continue
         dep_pts = team_display[name]
         dep_loss = round(pts - dep_pts, 2)
-        last_match = _get_last_match_date(name, index=date_index, before_date=as_of_dt)
-        days_inactive = (as_of_dt - last_match).days if last_match else 0
+        last_match = _get_last_match_date(name, index=date_index)
+        days_inactive = (today - last_match).days if last_match else 0
         peak_info = peaks.get(name, {})
         spark = team_spark.get(name, [])
         results.append({
@@ -686,11 +643,9 @@ def get_team(team_name: str):
     ranked_dep = sorted(team_dep.items(), key=lambda x: x[1], reverse=True)
     rank = next((i + 1 for i, (n, _) in enumerate(ranked_dep) if n == matched), None)
 
-    # Build full timeline, computing form score at each match using the
-    # same _calculate_form_at_match_index logic the rest of the app uses.
+    # Build full timeline
     timeline = []
-    global_match_indices = []  # parallel list of history indices for team matches
-    for gi, entry in enumerate(history):
+    for entry in history:
         side = None
         if entry["t1"]["name"] == matched:
             side = "t1"
@@ -704,11 +659,6 @@ def get_team(team_name: str):
         opp = entry[opp_side]
         won = me["score"] > opp["score"]
 
-        # Form score AFTER this match (use gi+1 so this match is included)
-        form_at = _calculate_form_at_match_index(matched, gi + 1, history)
-        form_grade = form_at[0] if form_at else None
-        form_score = round(form_at[1], 1) if form_at else None
-
         timeline.append({
             "date": entry["date"],
             "event": entry["event"],
@@ -721,10 +671,7 @@ def get_team(team_name: str):
             "tier": entry["tier"],
             "env": entry.get("env", "LAN"),
             "url": entry.get("url"),
-            "form_score": form_score,
-            "form_grade": form_grade,
         })
-        global_match_indices.append(gi)
 
     # 3-month filtered subset
     def parse_date(s):
@@ -738,53 +685,6 @@ def get_team(team_name: str):
         if (pd := parse_date(m["date"])) and pd >= cutoff_3m
     ]
 
-    # Compute rank_after for each 3m timeline entry by replaying running
-    # raw points across all teams up to each match's date, then ranking.
-    # We use a running snapshot of pts_after per team from full history,
-    # limited to matches on or before each timeline entry's date.
-    if timeline_3m:
-        # Build a running pts_after snapshot up to cutoff_3m start
-        running_pts: dict = {}
-        for entry in history:
-            date_str = entry.get("date", "")
-            if not date_str or date_str == "N/A":
-                continue
-            pd_ = parse_date(date_str)
-            if pd_ is None or pd_ >= cutoff_3m:
-                break
-            for side in ("t1", "t2"):
-                running_pts[entry[side]["name"]] = entry[side]["pts_after"]
-
-        # Now replay matches in the 3m window, updating running_pts after each
-        # match and computing rank for the team at that point.
-        # We iterate through full history again for the 3m window in order.
-        tl_3m_idx = 0
-        tl_dates = [parse_date(m["date"]) for m in timeline_3m]
-
-        for entry in history:
-            date_str = entry.get("date", "")
-            if not date_str or date_str == "N/A":
-                continue
-            pd_ = parse_date(date_str)
-            if pd_ is None or pd_ < cutoff_3m:
-                continue
-
-            # Update running pts for both participants
-            for side in ("t1", "t2"):
-                running_pts[entry[side]["name"]] = entry[side]["pts_after"]
-
-            # Check if this match is one of our team's 3m matches
-            is_our_match = (
-                entry["t1"]["name"] == matched or entry["t2"]["name"] == matched
-            )
-            if is_our_match and tl_3m_idx < len(timeline_3m):
-                # Compute rank at this point (raw points snapshot)
-                ranked_snap = sorted(running_pts.values(), reverse=True)
-                my_pts = running_pts.get(matched, 0)
-                rank_after = sum(1 for p in ranked_snap if p > my_pts) + 1
-                timeline_3m[tl_3m_idx]["rank_after"] = rank_after
-                tl_3m_idx += 1
-
     # All-time stats
     total_matches = len(timeline)
     wins_all      = sum(1 for t in timeline if t["won"])
@@ -797,18 +697,37 @@ def get_team(team_name: str):
         timeline_3m[-1]["pts_after"] - timeline_3m[0]["pts_before"], 2
     ) if timeline_3m else 0.0
 
-    # Form — last 15 matches (n=15 default), matching CSRS.py exactly.
+    # Form — only from matches within the 3-month window (max 15)
+    # Build a history slice containing only 3m matches, preserving global indices
+    # so _calculate_form_at_match_index gets the right pts_before values.
+    # Easiest: find the global index of the first 3m match, then call with that slice.
+    first_3m_global_idx = None
+    for gi, entry in enumerate(history):
+        t1n = entry.get("t1", {}).get("name")
+        t2n = entry.get("t2", {}).get("name")
+        if t1n != matched and t2n != matched:
+            continue
+        pd = parse_date(entry.get("date", ""))
+        if pd and pd >= cutoff_3m:
+            first_3m_global_idx = gi
+            break
+
     form_data = None
-    form_all = _calculate_form_at_match_index(matched, len(history), history)
-    if form_all:
-        grade, score, streak = form_all
-        recent_5 = streak[-5:] if len(streak) >= 5 else streak
-        form_data = {
-            "grade": grade,
-            "score": round(score, 1),
-            "streak": streak,
-            "recent": recent_5,
-        }
+    if first_3m_global_idx is not None:
+        # Restrict streak/score to 3-month-window matches only
+        form_3m = _calculate_form_at_match_index(
+            matched, len(history), history,
+            n=len(timeline_3m) if timeline_3m else 15
+        )
+        if form_3m:
+            grade, score, streak = form_3m
+            recent_5 = streak[-5:] if len(streak) >= 5 else streak
+            form_data = {
+                "grade": grade,
+                "score": round(score, 1),
+                "streak": streak,
+                "recent": recent_5,
+            }
 
     peak_info = dict(peaks.get(matched, {}))
     peak_info["rank"] = _compute_best_ever_ranks_cached(history, teams=teams).get(matched, peak_info.get("rank"))
@@ -1421,11 +1340,10 @@ def elite_over_time(
             last_match_day    = carried_date[name]
             last_match_index  = carried_index[name]
         else:
-            # No match before start_dt for this team — start at the selected
-            # start date, not one day before it (which was bleeding the x-axis
-            # back by a day). The hollow open-circle on day 0 acts as the anchor.
+            # No match before start_dt for this team — fall back to the old
+            # behavior: start one day before their first in-range match.
             start_rating      = starting_ratings.get(name, teams.get(name, 1000))
-            start_point        = start_dt
+            start_point        = max(start_dt, first_match_date - timedelta(days=1))
             last_match_day     = first_match_date
             last_match_index   = matches[0][2]
 
@@ -1535,32 +1453,12 @@ def _parse_match_date(date_str: str):
         return datetime.strptime(clean[:10], "%Y-%m-%d")
 
 
-@app.get("/api/home/months")
-def home_months():
-    """Return sorted list of YYYY-MM months that have at least one match."""
-    data = load_data()
-    history: list = data.get("history", [])
-    months = set()
-    for m in history:
-        date_str = m.get("date", "")
-        if not date_str or date_str == "N/A":
-            continue
-        try:
-            d = _parse_match_date(date_str)
-            months.add(d.strftime("%Y-%m"))
-        except Exception:
-            continue
-    return {"months": sorted(months, reverse=True)}
-
-
 @app.get("/api/home")
-def home(
-    start: Optional[str] = Query(None, description="Start date YYYY-MM-DD (default: 30 days ago)"),
-    end:   Optional[str] = Query(None, description="End date YYYY-MM-DD (default: today)"),
-):
+def home(end: str = Query("", description="Optional YYYY-MM-DD — when set, win/loss streak tiles are computed as of this date instead of live. Every other tile on this endpoint is unaffected and always reflects the current live state.")):
     """
-    Aggregated data for the Home / Month Summary screen.
-    When start+end are omitted, defaults to the last 30 days.
+    Aggregated data for the Home screen — all tiles below are scoped to the
+    last 30 days unless noted otherwise, computed fresh per-request except
+    where noted (peak/best-ever-rank reuses the existing cached replay).
     """
     from datetime import timedelta
 
@@ -1569,19 +1467,8 @@ def home(
     teams: dict = data.get("teams", {})
 
     today = datetime.now()
-
-    if start and end:
-        try:
-            cutoff_start = datetime.strptime(start, "%Y-%m-%d")
-            cutoff_end   = datetime.strptime(end,   "%Y-%m-%d").replace(hour=23, minute=59, second=59)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="start/end must be YYYY-MM-DD")
-    else:
-        cutoff_start = today - timedelta(days=30)
-        cutoff_end   = today
-
-    # Keep backward-compat alias used throughout function
-    cutoff_30d = cutoff_start
+    cutoff_30d = today - timedelta(days=30)
+    streak_as_of = _parse_match_date(end + " 23:59") if end else None
 
     recent: list = []
     for m in history:
@@ -1592,7 +1479,7 @@ def home(
             d = _parse_match_date(date_str)
         except Exception:
             continue
-        if cutoff_start <= d <= cutoff_end:
+        if d >= cutoff_30d:
             recent.append((d, m))
     recent.sort(key=lambda x: x[0])  # chronological, oldest first
 
@@ -1614,44 +1501,43 @@ def home(
     ranked_now = sorted(teams.items(), key=lambda x: team_display[x[0]], reverse=True)
     current_rank = {name: i + 1 for i, (name, _pts) in enumerate(ranked_now)}
 
-    # --- #1 Team: highest pts_after recorded within the window ---
-    # Build a snapshot of each team's last pts_after inside the window,
-    # and the global history index at which that happened (for form calc).
-    team_pts_in_window: dict = {}   # name -> pts_after at their last window match
-    team_last_gi_in_window: dict = {}  # name -> global history index
-    for gi, m in enumerate(history):
-        date_str = m.get("date", "")
-        if not date_str or date_str == "N/A":
-            continue
-        try:
-            d = _parse_match_date(date_str)
-        except Exception:
-            continue
-        if d < cutoff_start or d > cutoff_end:
-            continue
-        for side in ("t1", "t2"):
-            name = m[side]["name"]
-            team_pts_in_window[name] = m[side]["pts_after"]
-            team_last_gi_in_window[name] = gi
-
     top_team = None
-    if team_pts_in_window:
-        top_name = max(team_pts_in_window, key=lambda n: team_pts_in_window[n])
+    if ranked_now:
+        top_name, _ = ranked_now[0]
         spark = [
             round(m[side]["pts_after"], 2)
             for d, m in recent
             for side in ("t1", "t2")
             if m[side]["name"] == top_name
         ]
-        last_gi = team_last_gi_in_window[top_name]
-        form_at = _calculate_form_at_match_index(top_name, last_gi + 1, history)
+        form_3m = _calculate_form_at_match_index(top_name, len(history), history)
         top_team = {
             "name": top_name,
-            "points": round(team_pts_in_window[top_name], 2),
+            "points": round(team_display[top_name], 2),
             "sparkline_30d": spark,
-            "form_grade": form_at[0] if form_at else None,
-            "form_score": round(form_at[1], 1) if form_at else None,
+            "form_grade": form_3m[0] if form_3m else None,
+            "form_score": round(form_3m[1], 1) if form_3m else None,
         }
+
+    # --- Featured Results: 5 most recent matches, tier in {S+, S, A, B, C} ---
+    # (D = below cutoff, R = deprecated regional tier, both excluded)
+    allowed_tiers = {"S+", "S", "A", "B", "C"}
+    featured_results = []
+    for m in reversed(history):  # newest first, full history (not 30d-capped)
+        if m.get("tier") not in allowed_tiers:
+            continue
+        t1, t2 = m["t1"], m["t2"]
+        winner = t1["name"] if t1["score"] > t2["score"] else t2["name"]
+        featured_results.append({
+            "date": m["date"],
+            "event": m["event"],
+            "tier": m["tier"],
+            "t1": {"name": t1["name"], "score": t1["score"]},
+            "t2": {"name": t2["name"], "score": t2["score"]},
+            "winner": winner,
+        })
+        if len(featured_results) >= 5:
+            break
 
     # --- Hot Teams: top win rate, last 30d, min 5 matches, restricted to current top-30 rank ---
     top_30_names = {name for name, _r in current_rank.items() if current_rank[name] <= 30}
@@ -1685,16 +1571,19 @@ def home(
         for side in ("t1", "t2"):
             team_match_indices.setdefault(m[side]["name"], []).append(gi)
 
-    # --- #1 Form Team: best form score as of their last match in the window ---
+    # --- #1 Form Team: highest 3-month-style form score among current top-30 ---
     top_form_team = None
     best_form_score = None
-    for name, last_gi in team_last_gi_in_window.items():
-        form = _calculate_form_at_match_index(name, last_gi + 1, history)
+    for name in top_30_names:
+        form = _calculate_form_at_match_index(name, len(history), history)
         if not form:
             continue
         grade, score, _streak = form
         if best_form_score is None or score > best_form_score:
             best_form_score = score
+            # 30d form sparkline: form score as of each of this team's
+            # matches in the last 30 days (mirrors the rating sparkline,
+            # which uses pts_after at each match in the same window).
             form_spark = []
             for gi in team_match_indices.get(name, []):
                 m = history[gi]
@@ -1705,7 +1594,7 @@ def home(
                     d = _parse_match_date(d_str)
                 except Exception:
                     continue
-                if d < cutoff_start or d > cutoff_end:
+                if d < cutoff_30d:
                     continue
                 f = _calculate_form_at_match_index(name, gi + 1, history)
                 if f:
@@ -1926,12 +1815,22 @@ def home(
     # Walks each team's full match history backwards from their most recent
     # match (not bounded to the 30d window — a streak can run longer than
     # that), counting consecutive identical results until it breaks.
+    # When `end` is supplied (Month Summary), "most recent match" means most
+    # recent as of that date, not literally right now — so a historical
+    # month shows the streak that was actually current at that point in
+    # time, not whatever streak happens to be running today.
     # Tie-break: same streak length -> the team with the higher current
     # (depreciated) rating wins.
     tile_win_streak = None
     tile_loss_streak = None
     for name in top_30_names:
         indices = team_match_indices.get(name, [])
+        if streak_as_of is not None:
+            indices = [
+                gi for gi in indices
+                if history[gi].get("date") and history[gi]["date"] != "N/A"
+                and _parse_match_date(history[gi]["date"]) <= streak_as_of
+            ]
         if not indices:
             continue
         streak_len = 0
@@ -2018,52 +1917,42 @@ def home(
             continue  # rank moved purely from other teams' decay, not from playing
         gained = rank_30d_ago[name] - current_rank[name]  # positive = moved up
         rating = team_display[name]
-        is_better = False
-        if best_gain is None:
-            is_better = True
-        elif gained > best_gain:
-            is_better = True
-        elif gained == best_gain and rating > best_gain_rating:
-            is_better = True
-        if is_better:
-            best_gain = gained
-            best_gain_rating = rating
-            tile_positions_gained = {
-                "name": name, "positions_gained": gained,
-                "rank_30d_ago": rank_30d_ago[name], "rank_now": current_rank[name],
-            }
 
-        is_worse = False
-        if worst_drop is None:
-            is_worse = True
-        elif gained < worst_drop:
-            is_worse = True
-        elif gained == worst_drop and rating > worst_drop_rating:
-            is_worse = True
-        if is_worse:
-            worst_drop = gained
-            worst_drop_rating = rating
-            tile_positions_lost = {
-                "name": name, "positions_lost": -gained,
-                "rank_30d_ago": rank_30d_ago[name], "rank_now": current_rank[name],
-            }
+        # Gained: only counts if they ended up inside the top 30 — climbing
+        # from #300 to #250 isn't a "standout", climbing into contention is.
+        if current_rank[name] <= 30:
+            is_better = False
+            if best_gain is None:
+                is_better = True
+            elif gained > best_gain:
+                is_better = True
+            elif gained == best_gain and rating > best_gain_rating:
+                is_better = True
+            if is_better:
+                best_gain = gained
+                best_gain_rating = rating
+                tile_positions_gained = {
+                    "name": name, "positions_gained": gained,
+                    "rank_30d_ago": rank_30d_ago[name], "rank_now": current_rank[name],
+                }
 
-    # --- Featured Results: 5 most recent high-tier matches ---
-    allowed_tiers = {"S+", "S", "A", "B", "C"}
-    featured_results = []
-    for m in reversed(history):
-        if m.get("tier") not in allowed_tiers:
-            continue
-        t1, t2 = m["t1"], m["t2"]
-        featured_results.append({
-            "date": m["date"],
-            "event": m["event"],
-            "tier": m["tier"],
-            "t1": {"name": t1["name"], "score": t1["score"]},
-            "t2": {"name": t2["name"], "score": t2["score"]},
-        })
-        if len(featured_results) >= 5:
-            break
+        # Lost: only counts if they started inside the top 30 — falling from
+        # #300 to #350 isn't a "standout", falling out of contention is.
+        if rank_30d_ago[name] <= 30:
+            is_worse = False
+            if worst_drop is None:
+                is_worse = True
+            elif gained < worst_drop:
+                is_worse = True
+            elif gained == worst_drop and rating > worst_drop_rating:
+                is_worse = True
+            if is_worse:
+                worst_drop = gained
+                worst_drop_rating = rating
+                tile_positions_lost = {
+                    "name": name, "positions_lost": -gained,
+                    "rank_30d_ago": rank_30d_ago[name], "rank_now": current_rank[name],
+                }
 
     # --- Active event spotlight: no grand_final played yet for that event ---
     event_has_gf: dict = {}
@@ -2111,13 +2000,11 @@ def meta():
     data = load_data()
     history = data.get("history", [])
     last_match = history[-1]["date"] if history else None
-    earliest_match = history[0]["date"][:10] if history else None
     return {
         "version": data.get("version", 1),
         "total_teams": len(data.get("teams", {})),
         "total_matches": len(history),
         "last_match": last_match,
-        "earliest_match": earliest_match,
         "data_file": str(DATA_FILE),
     }
 
