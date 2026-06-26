@@ -1453,12 +1453,33 @@ def _parse_match_date(date_str: str):
         return datetime.strptime(clean[:10], "%Y-%m-%d")
 
 
+@app.get("/api/home/months")
+def home_months():
+    """
+    Returns a list of distinct YYYY-MM strings (newest first) for which
+    match history exists. Used to populate the Month Summary picker.
+    """
+    data = load_data()
+    history: list = data.get("history", [])
+    months = set()
+    for m in history:
+        date_str = m.get("date", "")
+        if date_str and date_str != "N/A" and len(date_str) >= 7:
+            months.add(date_str[:7])
+    return {"months": sorted(months, reverse=True)}
+
+
 @app.get("/api/home")
-def home(end: str = Query("", description="Optional YYYY-MM-DD — when set, win/loss streak tiles are computed as of this date instead of live. Every other tile on this endpoint is unaffected and always reflects the current live state.")):
+def home(
+    start: str = Query("", description="Optional YYYY-MM-DD — when set alongside end, scopes all 'recent' tiles to this date range instead of the last 30 days."),
+    end: str = Query("", description="Optional YYYY-MM-DD — when set, win/loss streak tiles are computed as of this date instead of live. When paired with start, scopes all tiles to that date range."),
+):
     """
     Aggregated data for the Home screen — all tiles below are scoped to the
     last 30 days unless noted otherwise, computed fresh per-request except
     where noted (peak/best-ever-rank reuses the existing cached replay).
+    When start+end are provided (e.g. for Month Summary), all tiles are
+    scoped to that date window instead.
     """
     from datetime import timedelta
 
@@ -1468,6 +1489,15 @@ def home(end: str = Query("", description="Optional YYYY-MM-DD — when set, win
 
     today = datetime.now()
     cutoff_30d = today - timedelta(days=30)
+
+    # Date window: use explicit start/end when both provided, else last-30-days default
+    if start and end:
+        window_start = _parse_match_date(start + " 00:00")
+        window_end   = _parse_match_date(end   + " 23:59")
+    else:
+        window_start = cutoff_30d
+        window_end   = today
+
     streak_as_of = _parse_match_date(end + " 23:59") if end else None
 
     recent: list = []
@@ -1479,7 +1509,7 @@ def home(end: str = Query("", description="Optional YYYY-MM-DD — when set, win
             d = _parse_match_date(date_str)
         except Exception:
             continue
-        if d >= cutoff_30d:
+        if window_start <= d <= window_end:
             recent.append((d, m))
     recent.sort(key=lambda x: x[0])  # chronological, oldest first
 
