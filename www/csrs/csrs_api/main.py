@@ -1519,17 +1519,61 @@ def home(
     total_matches = len(history)
     total_teams = len(teams)
 
-    # --- #1 ranked team + 30d rating sparkline + form ---
-    team_display: dict = {}
-    for name, pts in teams.items():
-        last = _get_last_match_date(name, index=date_index)
-        if last is None:
-            team_display[name] = pts
-            continue
-        days_inactive = (today - last).days
-        team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
-    ranked_now = sorted(teams.items(), key=lambda x: team_display[x[0]], reverse=True)
+    # --- Standings snapshot ---
+    # For the live home page (no start/end), use live teams dict + today's
+    # depreciation — the normal path.
+    # For a historical month (start+end provided), recompute standings from
+    # match history up to window_end so every tile reflects that moment in
+    # time, not today. This also drives top_30_names, so Hot/Cold teams and
+    # all other top-30-restricted tiles are correctly scoped.
+    is_historical = window_end.date() < today.date()
+
+    if is_historical:
+        _running: dict = {}
+        for m in history:
+            ds = m.get("date", "")
+            if not ds or ds == "N/A":
+                continue
+            try:
+                _d = _parse_match_date(ds)
+            except Exception:
+                continue
+            if _d > window_end:
+                break
+            for side in ("t1", "t2"):
+                _running[m[side]["name"]] = m[side]["pts_after"]
+        team_display: dict = {
+            name: _apply_depreciation(name, pts, match_date=window_end, index=date_index)
+            for name, pts in _running.items()
+        }
+        ranked_now = sorted(_running.items(), key=lambda x: team_display.get(x[0], x[1]), reverse=True)
+    else:
+        team_display: dict = {}
+        for name, pts in teams.items():
+            last = _get_last_match_date(name, index=date_index)
+            if last is None:
+                team_display[name] = pts
+                continue
+            days_inactive = (today - last).days
+            team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
+        ranked_now = sorted(teams.items(), key=lambda x: team_display[x[0]], reverse=True)
+
     current_rank = {name: i + 1 for i, (name, _pts) in enumerate(ranked_now)}
+
+    # form_match_index: the history index up to which form is computed for this window.
+    # For historical months, cap at the last match on or before window_end.
+    # For live home page, use the full history.
+    form_match_index = len(history)
+    if is_historical:
+        for gi in range(len(history) - 1, -1, -1):
+            ds = history[gi].get("date", "")
+            if ds and ds != "N/A":
+                try:
+                    if _parse_match_date(ds) <= window_end:
+                        form_match_index = gi + 1
+                        break
+                except Exception:
+                    pass
 
     top_team = None
     if ranked_now:
@@ -1540,7 +1584,7 @@ def home(
             for side in ("t1", "t2")
             if m[side]["name"] == top_name
         ]
-        form_3m = _calculate_form_at_match_index(top_name, len(history), history)
+        form_3m = _calculate_form_at_match_index(top_name, form_match_index, history)
         top_team = {
             "name": top_name,
             "points": round(team_display[top_name], 2),
@@ -1549,11 +1593,10 @@ def home(
             "form_score": round(form_3m[1], 1) if form_3m else None,
         }
 
-    # --- Featured Results: 5 most recent matches, tier in {S+, S, A, B, C} ---
-    # (D = below cutoff, R = deprecated regional tier, both excluded)
+    # --- Featured Results: 5 most recent qualifying matches within the window ---
     allowed_tiers = {"S+", "S", "A", "B", "C"}
     featured_results = []
-    for m in reversed(history):  # newest first, full history (not 30d-capped)
+    for _d, m in reversed(recent):  # recent is already window-scoped, newest last → reversed = newest first
         if m.get("tier") not in allowed_tiers:
             continue
         t1, t2 = m["t1"], m["t2"]
@@ -1602,18 +1645,18 @@ def home(
             team_match_indices.setdefault(m[side]["name"], []).append(gi)
 
     # --- #1 Form Team: highest 3-month-style form score among current top-30 ---
+    # When in historical mode, form is computed as of window_end (not today).
     top_form_team = None
     best_form_score = None
+
     for name in top_30_names:
-        form = _calculate_form_at_match_index(name, len(history), history)
+        form = _calculate_form_at_match_index(name, form_match_index, history)
         if not form:
             continue
         grade, score, _streak = form
         if best_form_score is None or score > best_form_score:
             best_form_score = score
-            # 30d form sparkline: form score as of each of this team's
-            # matches in the last 30 days (mirrors the rating sparkline,
-            # which uses pts_after at each match in the same window).
+            # sparkline: form score at each of this team's matches within the window
             form_spark = []
             for gi in team_match_indices.get(name, []):
                 m = history[gi]
@@ -1624,7 +1667,7 @@ def home(
                     d = _parse_match_date(d_str)
                 except Exception:
                     continue
-                if d < cutoff_30d:
+                if not (window_start <= d <= window_end):
                     continue
                 f = _calculate_form_at_match_index(name, gi + 1, history)
                 if f:
@@ -1636,11 +1679,8 @@ def home(
                 "sparkline_30d": form_spark,
             }
 
-    # --- Top 5 Rating Increase: 30d depreciated-rating delta, restricted to top-30 ---
-    # Mirrors the same "rank 30 days ago" raw-points snapshot used by the
-    # "most positions gained" tile below, just computed earlier so both can
-    # reuse it without duplicating the walk over history.
-    running_raw_points_30d_ago_for_rating: dict = {}
+    # --- Top 5 Rating Increase/Decrease: delta from window_start to window_end ---
+    running_raw_points_window_start: dict = {}
     for m in history:
         date_str = m.get("date", "")
         if not date_str or date_str == "N/A":
@@ -1649,33 +1689,33 @@ def home(
             d = _parse_match_date(date_str)
         except Exception:
             continue
-        if d > cutoff_30d:
+        if d > window_start:
             break
         for side in ("t1", "t2"):
-            running_raw_points_30d_ago_for_rating[m[side]["name"]] = m[side]["pts_after"]
+            running_raw_points_window_start[m[side]["name"]] = m[side]["pts_after"]
 
     rating_increase = []
-    rating_change_all = []  # signed deltas, top-30 teams w/ >= MIN_MATCHES_30D matches — feeds Standouts tiles below
+    rating_change_all = []
     for name in top_30_names:
-        if name not in running_raw_points_30d_ago_for_rating:
-            continue  # too new / no snapshot 30 days ago
+        if name not in running_raw_points_window_start:
+            continue
         if matches_30d.get(name, 0) < MIN_MATCHES_30D:
-            continue  # not enough recent activity for a 30d swing to be meaningful
+            continue
         before = _apply_depreciation(
-            name, running_raw_points_30d_ago_for_rating[name],
-            match_date=cutoff_30d, index=date_index,
+            name, running_raw_points_window_start[name],
+            match_date=window_start, index=date_index,
         )
-        after = team_display[name]
+        after = team_display.get(name, 0)
         delta = round(after - before, 1)
         rating_change_all.append({"name": name, "delta": delta, "_after": after})
         if delta > 0:
-            rating_increase.append({"name": name, "delta": delta, "rank": current_rank[name]})
+            rating_increase.append({"name": name, "delta": delta, "rank": current_rank.get(name)})
     rating_increase.sort(key=lambda x: x["delta"], reverse=True)
     top_rating_increase = rating_increase[:5]
 
-    # --- Top 5 Rating Decrease: inverse of the above, feeds Cold Teams ---
+    # --- Top 5 Rating Decrease ---
     rating_decrease = [
-        {"name": rc["name"], "delta": rc["delta"], "rank": current_rank[rc["name"]]}
+        {"name": rc["name"], "delta": rc["delta"], "rank": current_rank.get(rc["name"])}
         for rc in rating_change_all
         if rc["delta"] < 0
     ]
@@ -1779,17 +1819,14 @@ def home(
     if tile_upset:
         tile_upset.pop("_loser_pts_before", None)
 
-    # --- Tile: Highest form-score change (30d) ---
-    # Compares each team's current form score against their form score as of
-    # their last match before the 30-day cutoff. Teams need enough match
-    # history on both sides of the cutoff for the comparison to be meaningful.
+    # --- Tile: Highest/Lowest form-score change (window) ---
     tile_form_change = None
     tile_form_change_low = None
     for name in top_30_names:
         if matches_30d.get(name, 0) < MIN_MATCHES_30D:
-            continue  # not enough recent activity for a 30d form swing to be meaningful
+            continue
         indices = team_match_indices.get(name, [])
-        idx_before_cutoff = None
+        idx_before_window = None
         for gi in indices:
             d_str = history[gi].get("date", "")
             if not d_str or d_str == "N/A":
@@ -1798,13 +1835,13 @@ def home(
                 d = _parse_match_date(d_str)
             except Exception:
                 continue
-            if d <= cutoff_30d:
-                idx_before_cutoff = gi + 1  # form calc is exclusive of this index
-        if idx_before_cutoff is None:
-            continue  # team has no match history before the cutoff
+            if d <= window_start:
+                idx_before_window = gi + 1
+        if idx_before_window is None:
+            continue
 
-        form_before = _calculate_form_at_match_index(name, idx_before_cutoff, history)
-        form_now = _calculate_form_at_match_index(name, len(history), history)
+        form_before = _calculate_form_at_match_index(name, idx_before_window, history)
+        form_now = _calculate_form_at_match_index(name, form_match_index, history)
         if not form_before or not form_now:
             continue
 
@@ -1906,10 +1943,14 @@ def home(
     if tile_loss_streak:
         tile_loss_streak.pop("_rating", None)
 
-    # --- Tile: Most positions gained (rank 30 days ago vs rank now) ---
-    # Teams with no recorded points 30 days ago (too new) are excluded —
+    # --- Tile: Most positions gained/lost (rank at window_start vs rank at window_end) ---
+    # For the live home page, window_end == today and window_start == 30 days ago.
+    # For a historical month (month summary), both are the actual month boundaries.
+    # Teams with no recorded points before window_start are excluded —
     # there's no valid "before" rank to compare against.
-    running_raw_points_30d_ago: dict = {}
+
+    # "Before" snapshot: points of each team as of window_start
+    running_before: dict = {}
     for m in history:
         date_str = m.get("date", "")
         if not date_str or date_str == "N/A":
@@ -1918,39 +1959,41 @@ def home(
             d = _parse_match_date(date_str)
         except Exception:
             continue
-        if d > cutoff_30d:
+        if d > window_start:
             break
         for side in ("t1", "t2"):
-            running_raw_points_30d_ago[m[side]["name"]] = m[side]["pts_after"]
+            running_before[m[side]["name"]] = m[side]["pts_after"]
 
-    depreciated_30d_ago: dict = {
-        name: _apply_depreciation(name, pts, match_date=cutoff_30d, index=date_index)
-        for name, pts in running_raw_points_30d_ago.items()
+    depreciated_before: dict = {
+        name: _apply_depreciation(name, pts, match_date=window_start, index=date_index)
+        for name, pts in running_before.items()
     }
-    ranked_30d_ago = sorted(depreciated_30d_ago.items(), key=lambda x: x[1], reverse=True)
-    rank_30d_ago = {name: i + 1 for i, (name, _pts) in enumerate(ranked_30d_ago)}
+    ranked_before = sorted(depreciated_before.items(), key=lambda x: x[1], reverse=True)
+    rank_before = {name: i + 1 for i, (name, _pts) in enumerate(ranked_before)}
 
-    # Tie-break: same positions gained -> the team with the higher current
-    # (depreciated) rating wins.
+    # "After" snapshot: current_rank/team_display already reflect window_end
+    # (for historical months) or today (for live home page) — computed earlier.
+    rank_after = current_rank
+    rating_after = team_display
+
+    # Tie-break: same positions gained -> the team with the higher rating at window_end wins.
     tile_positions_gained = None
     best_gain = None
     best_gain_rating = None
-    # Tie-break: same positions lost -> the team with the higher current
-    # (depreciated) rating wins (i.e. the bigger name slipping counts more).
+    # Tie-break: same positions lost -> the team with the higher rating (bigger name slipping) wins.
     tile_positions_lost = None
     worst_drop = None
     worst_drop_rating = None
-    for name in teams:
-        if name not in rank_30d_ago:
+    for name in rank_after:
+        if name not in rank_before:
             continue
         if matches_30d.get(name, 0) < MIN_MATCHES_30D:
-            continue  # rank moved purely from other teams' decay, not from playing
-        gained = rank_30d_ago[name] - current_rank[name]  # positive = moved up
-        rating = team_display[name]
+            continue
+        gained = rank_before[name] - rank_after[name]  # positive = moved up
+        rating = rating_after.get(name, 0)
 
-        # Gained: only counts if they ended up inside the top 30 — climbing
-        # from #300 to #250 isn't a "standout", climbing into contention is.
-        if current_rank[name] <= 30:
+        # Gained: only counts if they ended up inside the top 30
+        if rank_after[name] <= 30:
             is_better = False
             if best_gain is None:
                 is_better = True
@@ -1963,12 +2006,11 @@ def home(
                 best_gain_rating = rating
                 tile_positions_gained = {
                     "name": name, "positions_gained": gained,
-                    "rank_30d_ago": rank_30d_ago[name], "rank_now": current_rank[name],
+                    "rank_30d_ago": rank_before[name], "rank_now": rank_after[name],
                 }
 
-        # Lost: only counts if they started inside the top 30 — falling from
-        # #300 to #350 isn't a "standout", falling out of contention is.
-        if rank_30d_ago[name] <= 30:
+        # Lost: only counts if they started inside the top 30
+        if rank_before[name] <= 30:
             is_worse = False
             if worst_drop is None:
                 is_worse = True
@@ -1981,7 +2023,7 @@ def home(
                 worst_drop_rating = rating
                 tile_positions_lost = {
                     "name": name, "positions_lost": -gained,
-                    "rank_30d_ago": rank_30d_ago[name], "rank_now": current_rank[name],
+                    "rank_30d_ago": rank_before[name], "rank_now": rank_after[name],
                 }
 
     # --- Active event spotlight: no grand_final played yet for that event ---
