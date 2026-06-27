@@ -788,8 +788,8 @@ tr:last-child td { border-bottom: none; }
         <span class="chevron">&#9656;</span>
       </div>
       <div class="nav-subnav">
-        <a data-page="" class="wip">Rating Graph <span class="wip-tag">WIP</span></a>
-        <a data-page="" class="wip">Form Graph <span class="wip-tag">WIP</span></a>
+        <a data-page="rating-graph">Rating Graph</a>
+        <a data-page="form-graph">Form Graph</a>
         <a data-page="elite">Elite Teams Over Time</a>
         <a data-page="" class="wip">Analyse Team Form <span class="wip-tag">WIP</span></a>
         <a data-page="" class="wip">Compare Teams <span class="wip-tag">WIP</span></a>
@@ -850,17 +850,17 @@ tr:last-child td { border-bottom: none; }
     </span>
     <span>Elite Teams Over Time</span>
   </a>
-  <a data-page="" class="more-sheet-item wip">
+  <a data-page="rating-graph" class="more-sheet-item">
     <span class="more-sheet-icon">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
     </span>
-    <span>Rating Graph <span class="wip-tag">WIP</span></span>
+    <span>Rating Graph</span>
   </a>
-  <a data-page="" class="more-sheet-item wip">
+  <a data-page="form-graph" class="more-sheet-item">
     <span class="more-sheet-icon">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
     </span>
-    <span>Form Graph <span class="wip-tag">WIP</span></span>
+    <span>Form Graph</span>
   </a>
   <a data-page="" class="more-sheet-item wip">
     <span class="more-sheet-icon">
@@ -1208,6 +1208,36 @@ tr:last-child td { border-bottom: none; }
     </div>
   </div>
 
+  <!-- Rating Graph -->
+  <div class="page" id="page-rating-graph">
+    <div class="page-header"><h2>Rating Graph</h2></div>
+    <div class="card">
+      <div class="controls" style="margin-bottom:0">
+        <div class="search-wrap" style="display:inline-block;width:300px">
+          <input type="text" id="rg-input" placeholder="Search team…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="rg-dd"></div>
+        </div>
+        <button onclick="loadRatingGraph()">View</button>
+      </div>
+    </div>
+    <div id="rg-result"></div>
+  </div>
+
+  <!-- Form Graph -->
+  <div class="page" id="page-form-graph">
+    <div class="page-header"><h2>Form Graph</h2></div>
+    <div class="card">
+      <div class="controls" style="margin-bottom:0">
+        <div class="search-wrap" style="display:inline-block;width:300px">
+          <input type="text" id="fg-input" placeholder="Search team…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="fg-dd"></div>
+        </div>
+        <button onclick="loadFormGraph()">View</button>
+      </div>
+    </div>
+    <div id="fg-result"></div>
+  </div>
+
 </main>
 
 <script>
@@ -1385,7 +1415,9 @@ document.querySelectorAll('nav a[data-page]').forEach(a => {
     if (page === 'history')       loadHistory(1);
     if (page === 'analytics')     loadAnalytics();
     if (page === 'month-summary') loadMonthSummary();
-    if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
+    if (page === 'team-details')  { setTimeout(() => document.getElementById('td-input').focus(), 50); }
+    if (page === 'rating-graph')  { setTimeout(() => document.getElementById('rg-input').focus(), 50); }
+    if (page === 'form-graph')    { setTimeout(() => document.getElementById('fg-input').focus(), 50); }
   });
 });
 
@@ -2918,6 +2950,8 @@ document.querySelectorAll('.more-sheet-item[data-page]').forEach(a => {
     if (page === 'history')       loadHistory(1);
     if (page === 'month-summary') loadMonthSummary();
     if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
+    if (page === 'rating-graph') { setTimeout(() => document.getElementById('rg-input').focus(), 50); }
+    if (page === 'form-graph')   { setTimeout(() => document.getElementById('fg-input').focus(), 50); }
   });
 });
 
@@ -3381,6 +3415,239 @@ function renderTeamDetails(d) {
       }
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Rating Graph — single-team rating-over-time, last 3 months
+// ---------------------------------------------------------------------------
+let rgChart = null;
+
+attachAutocomplete('rg-input', 'rg-dd', 'team', function(val) {
+  loadRatingGraph(val);
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  var inp = document.getElementById('rg-input');
+  if (inp) inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadRatingGraph(); });
+});
+
+async function loadRatingGraph(name) {
+  name = name || document.getElementById('rg-input').value.trim();
+  if (!name) return;
+  document.getElementById('rg-input').value = name;
+  var el = document.getElementById('rg-result');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> Loading…</div>';
+  try {
+    var d = await api('/api/team/' + encodeURIComponent(name));
+    renderRatingGraph(d);
+  } catch(e) {
+    el.innerHTML = '<div class="error-msg">' + e.message + '</div>';
+  }
+}
+
+function renderRatingGraph(d) {
+  if (rgChart) { rgChart.destroy(); rgChart = null; }
+
+  var pts_delta_sign = d.pts_delta_3m >= 0 ? '+' : '';
+  var pts_delta_col  = d.pts_delta_3m >= 0 ? 'var(--green)' : 'var(--red)';
+
+  var html =
+    '<div class="team-detail-header" style="margin-top:16px">' +
+      '<h2>' + d.name + '</h2>' +
+      '<span class="rank-badge">#' + d.rank + '</span>' +
+      '<span class="rank-badge" style="color:var(--accent)">' + d.points.toFixed(2) + ' pts</span>' +
+    '</div>' +
+    '<div class="stat-grid">' +
+      '<div class="stat-card"><div class="label">Current Rating</div><div class="value">' + d.points.toFixed(1) + '</div></div>' +
+      '<div class="stat-card"><div class="label">Peak Rating</div><div class="value">' + (d.peak && d.peak.points ? d.peak.points.toFixed(1) : '\u2014') + '</div></div>' +
+      '<div class="stat-card"><div class="label">Rating Change (3 months)</div>' +
+        '<div class="value" style="color:' + pts_delta_col + '">' + pts_delta_sign + d.pts_delta_3m.toFixed(1) + '</div></div>' +
+    '</div>' +
+    '<div class="card"><h3 style="margin-bottom:12px;font-size:1rem">Rating History (Last 3 Months)</h3>' +
+      '<div class="chart-wrap"><canvas id="rg-chart"></canvas></div></div>';
+
+  document.getElementById('rg-result').innerHTML = html;
+
+  var tl = d.timeline_3m || [];
+  if (!tl.length) return;
+  var labels = tl.map(function(m) { return m.date.split(' ')[0]; });
+  var values = tl.map(function(m) { return m.pts_after; });
+  var ctx = document.getElementById('rg-chart').getContext('2d');
+  rgChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Rating',
+        data: values,
+        borderColor: '#f5a623',
+        backgroundColor: 'rgba(245,166,35,0.08)',
+        borderWidth: 2,
+        pointRadius: 4,
+        pointBackgroundColor: '#f5a623',
+        pointBorderColor: '#16181c',
+        pointBorderWidth: 1.5,
+        tension: 0,
+        fill: true,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1e2127',
+          borderColor: '#2a2d35',
+          borderWidth: 1,
+          callbacks: {
+            title: function(i) { return tl[i[0].dataIndex].date.split(' ')[0]; },
+            label: function(i) {
+              var m = tl[i.dataIndex];
+              var sign = m.pts_delta >= 0 ? '+' : '';
+              return ' ' + m.pts_after.toFixed(1) + ' pts  vs ' + m.opponent + '  ' + m.score + '  (' + sign + m.pts_delta.toFixed(2) + ')';
+            }
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
+        y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } }
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Form Graph — single-team form-score-over-time, last 3 months
+// ---------------------------------------------------------------------------
+let fgChart = null;
+
+attachAutocomplete('fg-input', 'fg-dd', 'team', function(val) {
+  loadFormGraph(val);
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  var inp = document.getElementById('fg-input');
+  if (inp) inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadFormGraph(); });
+});
+
+async function loadFormGraph(name) {
+  name = name || document.getElementById('fg-input').value.trim();
+  if (!name) return;
+  document.getElementById('fg-input').value = name;
+  var el = document.getElementById('fg-result');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> Loading…</div>';
+  try {
+    var d = await api('/api/team/' + encodeURIComponent(name));
+    renderFormGraph(d);
+  } catch(e) {
+    el.innerHTML = '<div class="error-msg">' + e.message + '</div>';
+  }
+}
+
+function renderFormGraph(d) {
+  if (fgChart) { fgChart.destroy(); fgChart = null; }
+
+  var formHtml = '<div class="empty-msg" style="padding:20px">Not enough recent matches for a form score.</div>';
+  if (d.form) {
+    var f = d.form;
+    var fc = tdFormColor(f.grade);
+    var recentDots = f.recent.split('').map(function(c) {
+      return '<span style="display:inline-block;width:22px;height:22px;border-radius:50%;background:' +
+        (c === 'W' ? 'var(--green)' : 'var(--red)') +
+        ';font-size:0.6rem;font-weight:700;color:#fff;line-height:22px;text-align:center">' + c + '</span>';
+    }).join('');
+    formHtml =
+      '<div class="stat-card">' +
+        '<div class="label">Form (last 15 matches)</div>' +
+        '<div style="display:flex;align-items:center;gap:16px;padding-top:6px">' +
+          '<span style="font-size:2rem;font-weight:700;color:' + fc + '">' + f.grade + '</span>' +
+          '<span style="font-size:1.1rem;color:var(--muted)">' + f.score.toFixed(1) + ' / 100</span>' +
+          '<div style="display:flex;gap:5px;margin-left:8px">' + recentDots + '</div>' +
+        '</div>' +
+      '</div>';
+  }
+
+  var html =
+    '<div class="team-detail-header" style="margin-top:16px">' +
+      '<h2>' + d.name + '</h2>' +
+      '<span class="rank-badge">#' + d.rank + '</span>' +
+      '<span class="rank-badge" style="color:var(--accent)">' + d.points.toFixed(2) + ' pts</span>' +
+    '</div>' +
+    '<div class="stat-grid">' + formHtml + '</div>' +
+    '<div class="card"><h3 style="margin-bottom:12px;font-size:1rem">Form History (Last 3 Months)</h3>' +
+      '<div class="chart-wrap"><canvas id="fg-chart"></canvas></div></div>';
+
+  document.getElementById('fg-result').innerHTML = html;
+
+  var tl = d.timeline_3m || [];
+  if (!tl.length) return;
+  var labels = tl.map(function(m) { return m.date.split(' ')[0]; });
+  var formScores = tl.map(function(m) { return m.form_score != null ? m.form_score : null; });
+  var formPointColors = tl.map(function(m) { return m.won ? '#4caf82' : '#e05a5a'; });
+
+  var ctx = document.getElementById('fg-chart').getContext('2d');
+  fgChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Form Score',
+        data: formScores,
+        borderColor: '#f5a623',
+        backgroundColor: 'rgba(245,166,35,0.07)',
+        borderWidth: 2,
+        pointRadius: 5,
+        pointBackgroundColor: formPointColors,
+        pointBorderColor: '#16181c',
+        pointBorderWidth: 1.5,
+        tension: 0,
+        fill: true,
+        spanGaps: false,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1e2127',
+          borderColor: '#2a2d35',
+          borderWidth: 1,
+          callbacks: {
+            title: function(i) { return tl[i[0].dataIndex].date.split(' ')[0]; },
+            label: function(i) {
+              var m = tl[i.dataIndex];
+              var grade = m.form_grade || '—';
+              var score = m.form_score != null ? m.form_score : '—';
+              return [
+                '  Form: ' + score + '  (Grade ' + grade + ')',
+                '  ' + (m.won ? '✓ WIN' : '✗ LOSS') + ' vs ' + m.opponent + '  ' + m.score,
+              ];
+            }
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
+        y: {
+          min: 0,
+          max: 100,
+          grid: { color: '#2a2d35' },
+          ticks: {
+            color: '#7a7f8e',
+            callback: function(v) {
+              var grades = { 85: 'S', 70: 'A', 55: 'B', 40: 'C', 0: 'D' };
+              return grades[v] != null ? grades[v] + ' (' + v + ')' : v;
+            },
+            values: [0, 40, 55, 70, 85, 100],
+          }
+        }
+      }
+    }
+  });
 }
 
 </script>
