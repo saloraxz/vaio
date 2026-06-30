@@ -14,6 +14,7 @@ import base64
 import zlib
 import sys
 import os
+import re
 import subprocess
 import logging
 import bisect
@@ -92,11 +93,18 @@ def check_and_install_dependencies() -> bool:
 # === LOGGING SETUP ===
 # =============================================================================
 
+_LOG_DIR     = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "normal")
+_ERR_LOG_DIR = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "errors")
+_FAIL_LOG_DIR= os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "fails")
+os.makedirs(_LOG_DIR,      exist_ok=True)
+os.makedirs(_ERR_LOG_DIR,  exist_ok=True)
+os.makedirs(_FAIL_LOG_DIR, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("csrs.log", encoding='utf-8'),
+        logging.FileHandler(os.path.join(_LOG_DIR, "csrs.log"), encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -125,8 +133,8 @@ aliases: Dict[str, str] = {}
 unsaved_changes: bool = False
 STARTING_TEAMS: Dict[str, float] = {}
 SAVE_VERSION: int = 1
-SAVE_FILE: str = "data.save"
-ERROR_LOG: str = "csrs_error.log"
+SAVE_FILE: str = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "main", "data.save")
+ERROR_LOG: str = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "errors", "csrs_error.log")
 
 # =============================================================================
 # === CONFIGURATION ===
@@ -172,9 +180,10 @@ DEFAULT_CONFIG = {
 
 # Load Configuration
 CONFIG = DEFAULT_CONFIG.copy()
-if os.path.exists("config.json"):
+_CONFIG_FILE = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "data", "config.json")
+if os.path.exists(_CONFIG_FILE):
     try:
-        with open("config.json", "r", encoding='utf-8') as f:
+        with open(_CONFIG_FILE, "r", encoding='utf-8') as f:
             user_config = json.load(f)
             CONFIG.update(user_config)
         logger.info("Loaded custom config.json")
@@ -231,16 +240,13 @@ PITY_MIN_POINTS = CONFIG.get("PITY_MIN_POINTS", DEFAULT_CONFIG["PITY_MIN_POINTS"
 DEPRECIATION_THRESHOLD = CONFIG.get("DEPRECIATION_THRESHOLD", DEFAULT_CONFIG.get("DEPRECIATION_THRESHOLD", 14))
 
 SAVE_VERSION = 1
-SAVE_FILE = "data.save"
-ERROR_LOG = "csrs_error.log"
-
-# =============================================================================
-# === SAVE/LOAD SYSTEM (ENCODING & BACKUPS) ===
+SAVE_FILE = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "main", "data.save")
+ERROR_LOG = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "errors", "csrs_error.log")
 # =============================================================================
 
 SAVE_VERSION = 1  # Increment this if data structure changes
-SAVE_FILE = "data.save"
-ERROR_LOG = "csrs_error.log"
+SAVE_FILE = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "main", "data.save")
+ERROR_LOG = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "errors", "csrs_error.log")
 
 # Legacy file names - used only for one-time migration on first run
 _LEGACY_DEFAULT  = "default.txt"
@@ -337,15 +343,17 @@ def _rotate_backups():
     
     Maintains up to 5 backup files for recovery purposes.
     """
+    _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
+    os.makedirs(_backup_dir, exist_ok=True)
     try:
         for i in range(4, 0, -1):
-            src = f"backup_{i}.save"
-            dst = f"backup_{i+1}.save"
+            src = os.path.join(_backup_dir, f"backup_{i}.save")
+            dst = os.path.join(_backup_dir, f"backup_{i+1}.save")
             if os.path.exists(src):
                 os.replace(src, dst)
         if os.path.exists(SAVE_FILE):
             import shutil
-            shutil.copy2(SAVE_FILE, "backup_1.save")
+            shutil.copy2(SAVE_FILE, os.path.join(_backup_dir, "backup_1.save"))
     except Exception as e:
         error_log(f"Backup rotation failed: {e}")
 
@@ -355,6 +363,7 @@ def save_all(silent: bool = False) -> bool:
     Uses atomic save (temp file + rename) to prevent corruption.
     """
     global unsaved_changes
+    os.makedirs(os.path.dirname(SAVE_FILE), exist_ok=True)
     temp_file = SAVE_FILE + ".tmp"
     
     try:
@@ -412,7 +421,10 @@ def load_all():
     """Load state from data.save. Auto-recovers from backup if corrupted."""
     global teams, aliases, history, peak_ratings, event_tiers, adjustments, unsaved_changes
     
-    files_to_try = [SAVE_FILE, "backup_1.save", "backup_2.save", "backup_3.save"]
+    _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
+    files_to_try = [SAVE_FILE] + [
+        os.path.join(_backup_dir, f"backup_{i}.save") for i in range(1, 4)
+    ]
     
     for filename in files_to_try:
         if not os.path.exists(filename):
@@ -1179,12 +1191,17 @@ def import_save_file() -> None:
 def restore_from_backup() -> None:
     """Restore data from a backup file."""
     print("\n--- Restore from Backup ---")
-    backups = [f"backup_{i}.save" for i in range(1, 6) if os.path.exists(f"backup_{i}.save")]
+    _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
+    backups = [
+        os.path.join(_backup_dir, f"backup_{i}.save")
+        for i in range(1, 6)
+        if os.path.exists(os.path.join(_backup_dir, f"backup_{i}.save"))
+    ]
     if not backups:
         print(">>> No backup files found.")
         return
     for i, b in enumerate(backups, 1):
-        print(f"  {i}. {b}")
+        print(f"  {i}. {os.path.basename(b)}")
     print("  0. Back")
     try:
         sel_raw = check_cmd(input("Select backup to restore: "))
@@ -1192,7 +1209,7 @@ def restore_from_backup() -> None:
             return
         sel = int(sel_raw) - 1
         if 0 <= sel < len(backups):
-            confirm = get_cmd(check_cmd(input(f"Restore from {backups[sel]}? This will overwrite current data. (y/n): ")))
+            confirm = get_cmd(check_cmd(input(f"Restore from {os.path.basename(backups[sel])}? This will overwrite current data. (y/n): ")))
             if confirm == 'y':
                 with open(backups[sel], "r", encoding='utf-8') as f:
                     load_logic(f.read().strip())
@@ -1205,13 +1222,21 @@ def restore_from_backup() -> None:
 
 
 def list_save_files() -> None:
-    """List all .save files in directory."""
+    """List all .save files in the structured save directories."""
+    _data_dir = os.environ.get("CSRS_DATA_DIR", ".")
+    _main_dir   = os.path.join(_data_dir, "save", "main")
+    _backup_dir = os.path.join(_data_dir, "save", "backup")
     print("\nAvailable Save Files:")
-    files = [f for f in os.listdir() if f.endswith('.save')]
-    if files:
-        for f in files: 
-            print(f"  - {f} ({os.path.getsize(f)} bytes)")
-    else:
+    found = False
+    for d in [_main_dir, _backup_dir]:
+        if os.path.isdir(d):
+            for f in sorted(os.listdir(d)):
+                if f.endswith('.save'):
+                    full = os.path.join(d, f)
+                    rel  = os.path.relpath(full, _data_dir)
+                    print(f"  - {rel} ({os.path.getsize(full)} bytes)")
+                    found = True
+    if not found:
         print("  - No .save files found.")
 
 
@@ -3154,15 +3179,17 @@ def team_management_menu() -> None:
 
 def _create_backup():
     """Create a rotated backup of data.save (backup_1.save most recent)."""
+    _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
+    os.makedirs(_backup_dir, exist_ok=True)
     try:
         for i in range(2, 0, -1):
-            src = f"backup_{i}.save"
-            dst = f"backup_{i+1}.save"
+            src = os.path.join(_backup_dir, f"backup_{i}.save")
+            dst = os.path.join(_backup_dir, f"backup_{i+1}.save")
             if os.path.exists(src):
                 os.replace(src, dst)
         if os.path.exists(SAVE_FILE):
             import shutil
-            shutil.copy2(SAVE_FILE, "backup_1.save")
+            shutil.copy2(SAVE_FILE, os.path.join(_backup_dir, "backup_1.save"))
     except Exception:
         pass
 
@@ -7220,96 +7247,52 @@ def compare_csrs_vrs_rankings():
     vrs_fetch_date = datetime.now().strftime("%Y-%m-%d")
     
     try:
-        from playwright.sync_api import sync_playwright
         from datetime import date as date_cls
-        
         today = date_cls.today()
         vrs_url = f"https://www.hltv.org/valve-ranking/teams/{today.year}/{today.strftime('%B').lower()}/{today.day}"
-        
-        p = None
-        browser = None
-        page = None
-        
-        try:
-            p = sync_playwright().start()
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
-            )
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                viewport={"width": 1920, "height": 1080}
-            )
-            page = context.new_page()
-            
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-            
-            page.goto(vrs_url, timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
-            
-            # FIXED: Use HLTV's ACTUAL VRS page structure from your HTML dump
-            vrs_data = page.evaluate("""() => {
-                const results = {};
-                
-                // Each team is in a .ranking-header div
-                const entries = document.querySelectorAll('.ranking-header');
-                
-                console.log('Found ranking-header entries:', entries.length);
-                
-                for (let i = 0; i < entries.length; i++) {
-                    const entry = entries[i];
-                    
-                    // Skip old rosters
-                    if (entry.innerHTML.indexOf('old-roster') !== -1) continue;
-                    
-                    // Get rank from .position span
-                    const positionEl = entry.querySelector('.position');
-                    if (!positionEl) continue;
-                    
-                    const rankText = positionEl.textContent.trim();
-                    const rankMatch = rankText.match(/#?(\\d+)/);
-                    if (!rankMatch) continue;
-                    const rank = parseInt(rankMatch[1]);
-                    
-                    // Get team name from .teamLine .name span
-                    const nameEl = entry.querySelector('.teamLine .name');
-                    if (!nameEl) continue;
-                    
-                    const teamName = nameEl.textContent.trim().toLowerCase();
-                    if (!teamName || teamName.length < 2) continue;
-                    
-                    // Get points from .points span
-                    const pointsEl = entry.querySelector('.points');
-                    if (!pointsEl) continue;
-                    
-                    const pointsText = pointsEl.textContent.trim();
-                    const pointsMatch = pointsText.match(/(\\d+)\\s*(?:Valve\\s*points)?/);
-                    if (!pointsMatch) continue;
-                    const points = parseFloat(pointsMatch[1]);
-                    
-                    if (rank && teamName && points) {
-                        results[teamName] = {'rank': rank, 'points': points};
-                        console.log(`Found: ${teamName} = #${rank} (${points} pts)`);
-                    }
-                }
-                
-                console.log('Total teams extracted:', Object.keys(results).length);
-                return results;
-            }""")
-            
-            for team_name_lower, data in vrs_data.items():
-                vrs_full_rankings[team_name_lower] = data['rank']
-            
-            print(f"  [OK] Fetched {len(vrs_full_rankings)} teams from VRS\n")
-            
-        finally:
+
+        with BrowserSession() as sess:
+            page = sess.new_page()
             try:
-                if page: page.close()
-                if context: context.close()
-                if browser: browser.close()
-                if p: p.stop()
-            except: pass
-            
+                page.goto(vrs_url, timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+
+                vrs_data = page.evaluate("""() => {
+                    const results = {};
+                    const entries = document.querySelectorAll('.ranking-header');
+                    console.log('Found ranking-header entries:', entries.length);
+                    for (let i = 0; i < entries.length; i++) {
+                        const entry = entries[i];
+                        if (entry.innerHTML.indexOf('old-roster') !== -1) continue;
+                        const positionEl = entry.querySelector('.position');
+                        if (!positionEl) continue;
+                        const rankMatch = positionEl.textContent.trim().match(/#?(\\d+)/);
+                        if (!rankMatch) continue;
+                        const rank = parseInt(rankMatch[1]);
+                        const nameEl = entry.querySelector('.teamLine .name');
+                        if (!nameEl) continue;
+                        const teamName = nameEl.textContent.trim().toLowerCase();
+                        if (!teamName || teamName.length < 2) continue;
+                        const pointsEl = entry.querySelector('.points');
+                        if (!pointsEl) continue;
+                        const pointsMatch = pointsEl.textContent.trim().match(/(\\d+)\\s*(?:Valve\\s*points)?/);
+                        if (!pointsMatch) continue;
+                        const points = parseFloat(pointsMatch[1]);
+                        if (rank && teamName && points) {
+                            results[teamName] = {'rank': rank, 'points': points};
+                        }
+                    }
+                    return results;
+                }""")
+
+                for team_name_lower, data in vrs_data.items():
+                    vrs_full_rankings[team_name_lower] = data['rank']
+
+                print(f"  [OK] Fetched {len(vrs_full_rankings)} teams from VRS\n")
+            finally:
+                try: page.close()
+                except: pass
+
     except Exception as e:
         print(f"  [!] VRS scrape error: {e}")
         log_scrape_error("VRS Rankings", vrs_url if 'vrs_url' in locals() else "Unknown", str(e))
@@ -7390,8 +7373,24 @@ def compare_csrs_vrs_rankings():
 
 _BROWSER_DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
+
+# Pool of realistic UAs rotated per BrowserSession to avoid fingerprint
+# consistency that Cloudflare flags on repeated headless visits.
+_BROWSER_UA_POOL = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+]
+
+def _pick_ua() -> str:
+    """Pick a random UA from the pool each call."""
+    import random
+    return random.choice(_BROWSER_UA_POOL)
 
 _BROWSER_DEFAULT_LAUNCH_ARGS = [
     "--no-sandbox",
@@ -7402,23 +7401,102 @@ _BROWSER_DEFAULT_LAUNCH_ARGS = [
     "--disable-dev-shm-usage",
     "--no-first-run",
     "--no-default-browser-check",
+    "--disable-infobars",
+    "--disable-features=IsolateOrigins,site-per-process",
+    "--window-size=1920,1080",
+    "--start-maximized",
 ]
+
+_CAMOUFOX_HEADLESS = True
+
+# Path to a JSON cookie file exported from a real logged-in HLTV browser
+# session (e.g. via the "Cookie-Editor" extension → Export → JSON).
+# If the file exists, cookies are loaded into every BrowserSession, which
+# makes Cloudflare treat the scraper as an authenticated user.
+# Leave as None or point to a non-existent path to skip.
+HLTV_COOKIE_FILE = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "data", "hltv_cookies.json")
+
+def _load_hltv_cookies() -> list:
+    """Load HLTV cookies from JSON file if it exists, else return empty list."""
+    import json
+    if not os.path.exists(HLTV_COOKIE_FILE):
+        return []
+    try:
+        with open(HLTV_COOKIE_FILE) as f:
+            raw = json.load(f)
+        # Normalise both Cookie-Editor format and plain list-of-dicts
+        cookies = []
+        for c in raw:
+            cookie = {
+                "name":   c.get("name", ""),
+                "value":  c.get("value", ""),
+                "domain": c.get("domain", ".hltv.org"),
+                "path":   c.get("path", "/"),
+            }
+            if cookie["name"] and cookie["value"]:
+                cookies.append(cookie)
+        if cookies:
+            print(f"[Browser] Loaded {len(cookies)} HLTV cookies from {HLTV_COOKIE_FILE}")
+        return cookies
+    except Exception as e:
+        print(f"[Browser] Failed to load cookie file: {e}")
+        return []
+
+
+
+
+
+class _ThreadSafeProxy:
+    """
+    Wraps a Camoufox/Playwright object (context, page, etc.) so that every
+    attribute access that returns a callable is automatically dispatched
+    through the BrowserSession worker thread.  This lets all existing code
+    that calls context.new_page(), page.goto(), page.evaluate(), etc. work
+    unchanged even when the real object lives on a different thread.
+    """
+    def __init__(self, obj, run_in_thread):
+        # Use object.__setattr__ to avoid triggering our own __setattr__
+        object.__setattr__(self, "_obj",           obj)
+        object.__setattr__(self, "_run_in_thread", run_in_thread)
+
+    def __getattr__(self, name):
+        obj          = object.__getattribute__(self, "_obj")
+        run_in_thread = object.__getattribute__(self, "_run_in_thread")
+        attr = getattr(obj, name)
+        if not callable(attr):
+            return attr
+        def _dispatch(*args, **kwargs):
+            result = run_in_thread(lambda: getattr(obj, name)(*args, **kwargs))
+            # Wrap returned contexts/pages/etc. in the same proxy
+            _proxiable = ("BrowserContext", "Page", "Frame", "ElementHandle",
+                          "JSHandle", "Response", "Request", "Route",
+                          "WebSocket", "Worker", "CDPSession", "Browser")
+            if result is not None and type(result).__name__ in _proxiable:
+                return _ThreadSafeProxy(result, run_in_thread)
+            return result
+        return _dispatch
+
+    # Forward item access (e.g. dict-like results) transparently
+    def __getitem__(self, key):
+        return object.__getattribute__(self, "_obj")[key]
+
+    def __iter__(self):
+        return iter(object.__getattribute__(self, "_obj"))
+
+    def __bool__(self):
+        return bool(object.__getattribute__(self, "_obj"))
+
+    def __repr__(self):
+        return f"<_ThreadSafeProxy wrapping {object.__getattribute__(self, '_obj')!r}>"
 
 
 class BrowserSession:
     """
-    Holds one Playwright instance + browser + context, reused across
-    many page loads. Call start()/stop() directly, or use as a context
-    manager (`with BrowserSession() as session:`).
+    Holds one browser instance + context, reused across many page loads.
+    Uses Camoufox (Firefox-based, randomised fingerprint) to bypass
+    Cloudflare TLS/JA3 fingerprinting that blocks Playwright Chromium.
 
-    Problem: every scraper currently does its own
-    sync_playwright().start() -> browser.launch() -> ... -> browser.close()
-    per call. Launching Chromium takes the majority of the 5-18s seen per
-    scrape. For a single interactive match import this is fine, but for a
-    batch run processing many matches it's the dominant cost.
-
-    Fix: launch ONE browser + context for the whole batch, and have each
-    scraper open/close only a `page` on that shared context.
+    Falls back to Playwright Chromium if Camoufox is not installed.
 
     Usage:
         with BrowserSession() as session:
@@ -7428,59 +7506,221 @@ class BrowserSession:
     """
 
     def __init__(self, headless: bool = True):
-        self.headless = headless
-        self._playwright = None
-        self.browser = None
-        self.context = None
+        self.headless        = headless
+        self._camoufox       = None   # Camoufox context manager
+        self._playwright     = None   # fallback
+        self.browser         = None
+        self.context         = None
+        self._stealth_fn     = None
+        self._cf_thread      = None   # persistent thread owning Camoufox
+        self._cf_queue       = None   # queue to send callables into that thread
+        self._cf_stop_event  = None   # signals thread to exit
+
+    def _run_in_cf_thread(self, fn):
+        """Submit a callable to the persistent Camoufox thread and return its result."""
+        import queue
+        result_q = queue.Queue()
+        def _task():
+            try:
+                result_q.put(("ok", fn()))
+            except Exception as exc:
+                result_q.put(("err", exc))
+        self._cf_queue.put(_task)
+        tag, val = result_q.get()
+        if tag == "err":
+            raise val
+        return val
 
     def start(self) -> "BrowserSession":
         if self.context is not None:
-            return self  # already started — no-op, safe to call twice
+            return self  # already started
 
-        from playwright.sync_api import sync_playwright
+        # ── Try Camoufox first ──
+        # Camoufox's sync API must live entirely on one thread. If we're inside
+        # an asyncio loop (which owns the main thread) we spin up a *persistent*
+        # worker thread that never exits until stop() is called, so Camoufox's
+        # internal event loop always finds its home thread alive.
+        _inside_asyncio = False
+        try:
+            import asyncio
+            asyncio.get_running_loop()
+            _inside_asyncio = True
+        except RuntimeError:
+            pass
 
-        self._playwright = sync_playwright().start()
-        self.browser = self._playwright.chromium.launch(
-            headless=self.headless,
-            args=_BROWSER_DEFAULT_LAUNCH_ARGS,
-        )
-        self.context = self.browser.new_context(
-            user_agent=_BROWSER_DEFAULT_USER_AGENT,
-            viewport={"width": 1920, "height": 1080},
-            locale="en-US",
-            timezone_id="America/New_York",
-        )
-        self.context.add_cookies([{
-            "name": "cookieConsent",
-            "value": "1",
-            "domain": ".hltv.org",
-            "path": "/",
-        }])
-        self.context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-        )
+        try:
+            import queue, threading
+            from camoufox.sync_api import Camoufox
+
+            # Cookies to load — fetch on main thread before handing off
+            cookies = _load_hltv_cookies()
+            if not cookies:
+                cookies = [{"name": "cookieConsent", "value": "1",
+                            "domain": ".hltv.org", "path": "/"}]
+
+            if _inside_asyncio:
+                cf_queue      = queue.Queue()
+                stop_event    = threading.Event()
+                self._cf_queue      = cf_queue
+                self._cf_stop_event = stop_event
+
+                def _cf_worker():
+                    # Use local refs — self attrs may be None'd by stop() before
+                    # this loop checks them again.
+                    while not stop_event.is_set():
+                        try:
+                            task = cf_queue.get(timeout=0.2)
+                            task()
+                        except queue.Empty:
+                            continue
+
+                self._cf_thread = threading.Thread(target=_cf_worker, daemon=True)
+                self._cf_thread.start()
+
+                _cookies = cookies  # capture for closure
+                def _launch():
+                    cf  = Camoufox(headless=self.headless, os=("windows", "macos", "linux"))
+                    b   = cf.__enter__()
+                    ctx = b.new_context()
+                    ctx.add_cookies(_cookies)   # must happen on this thread
+                    return cf, b, ctx
+
+                self._camoufox, self.browser, self.context = self._run_in_cf_thread(_launch)
+                # Wrap context in a proxy so callers on the main thread are
+                # automatically dispatched to the worker thread
+                self.context = _ThreadSafeProxy(self.context, self._run_in_cf_thread)
+            else:
+                # No asyncio loop — launch directly on the current thread
+                self._camoufox = Camoufox(headless=self.headless, os=("windows", "macos", "linux"))
+                self.browser   = self._camoufox.__enter__()
+                self.context   = self.browser.new_context()
+                self.context.add_cookies(cookies)
+
+            print("[Browser] Using Camoufox (anti-fingerprint Firefox)")
+            return self
+        except ImportError:
+            pass
+        except Exception as e:
+            # Clean up thread if launch failed
+            if self._cf_stop_event:
+                self._cf_stop_event.set()
+            if self._cf_thread and self._cf_thread.is_alive():
+                self._cf_thread.join(timeout=3)
+            self._cf_thread = self._cf_queue = self._cf_stop_event = None
+            print(f"[Browser] Camoufox failed ({e}), falling back to Playwright")
+
+        # ── Fallback: Playwright Chromium (run in thread to avoid asyncio conflict) ──
+        import threading
+        import concurrent.futures
+
+        def _launch_playwright():
+            from playwright.sync_api import sync_playwright
+            pw = sync_playwright().start()
+            b = pw.chromium.launch(
+                headless=self.headless,
+                args=_BROWSER_DEFAULT_LAUNCH_ARGS,
+            )
+            ua = _pick_ua()
+            ctx = b.new_context(
+                user_agent=ua,
+                viewport={"width": 1920, "height": 1080},
+                locale="en-US",
+                timezone_id="America/New_York",
+                color_scheme="dark",
+                java_script_enabled=True,
+                extra_http_headers={
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "sec-ch-ua": '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                },
+            )
+            return pw, b, ctx
+
+        # Run outside any asyncio loop
+        try:
+            import asyncio
+            asyncio.get_running_loop()
+            # We're inside an asyncio loop — launch in a separate thread
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                self._playwright, self.browser, self.context = ex.submit(_launch_playwright).result()
+        except RuntimeError:
+            # No running loop — safe to launch directly
+            self._playwright, self.browser, self.context = _launch_playwright()
+
+        cookies = _load_hltv_cookies()
+        if not cookies:
+            cookies = [{"name": "cookieConsent", "value": "1",
+                        "domain": ".hltv.org", "path": "/"}]
+        self.context.add_cookies(cookies)
+        self.context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            window.chrome = { runtime: {} };
+        """)
+        try:
+            from playwright_stealth import stealth_sync as _stealth
+            self._stealth_fn = _stealth
+        except ImportError:
+            pass
+        print("[Browser] Using Playwright Chromium (Camoufox not available)")
         return self
 
     def new_page(self):
-        """Convenience: get a fresh page on the shared context."""
+        """Get a fresh page with stealth applied and a random human-like delay."""
+        import random, time
         if self.context is None:
             self.start()
-        return self.context.new_page()
+        page = self.context.new_page()
+        if self._stealth_fn:
+            self._stealth_fn(page)
+        time.sleep(random.uniform(1.5, 4.0))
+        return page
 
     def stop(self) -> None:
-        """Close context, browser, and stop Playwright. Safe to call multiple times."""
-        for closer in (
-            lambda: self.context.close() if self.context else None,
-            lambda: self.browser.close() if self.browser else None,
-            lambda: self._playwright.stop() if self._playwright else None,
-        ):
+        """Close everything. Safe to call multiple times."""
+        if self._cf_thread is not None:
+            # All Camoufox teardown must happen on the worker thread.
+            # Unwrap proxy to get the real underlying context object.
+            _raw_ctx = (object.__getattribute__(self.context, "_obj")
+                        if isinstance(self.context, _ThreadSafeProxy) else self.context)
+            ctx, browser, cf = _raw_ctx, self.browser, self._camoufox
+            def _teardown():
+                for fn in (
+                    lambda: ctx.close()               if ctx     else None,
+                    lambda: browser.close()           if browser else None,
+                    lambda: cf.__exit__(None,None,None) if cf    else None,
+                ):
+                    try: fn()
+                    except Exception: pass
             try:
-                closer()
+                self._run_in_cf_thread(_teardown)
             except Exception:
                 pass
-        self.context = None
-        self.browser = None
-        self._playwright = None
+            # Now signal the worker to exit and wait for it
+            if self._cf_stop_event:
+                self._cf_stop_event.set()
+            if self._cf_thread.is_alive():
+                self._cf_thread.join(timeout=5)
+        else:
+            # No worker thread — close directly
+            for closer in (
+                lambda: self.context.close()               if self.context    else None,
+                lambda: self.browser.close()               if self.browser    else None,
+                lambda: self._camoufox.__exit__(None,None,None) if self._camoufox else None,
+                lambda: self._playwright.stop()            if self._playwright else None,
+            ):
+                try: closer()
+                except Exception: pass
+        self.context        = None
+        self.browser        = None
+        self._camoufox      = None
+        self._playwright    = None
+        self._cf_thread     = None
+        self._cf_queue      = None
+        self._cf_stop_event = None
 
     def __enter__(self) -> "BrowserSession":
         self.start()
@@ -7495,6 +7735,7 @@ class BrowserSession:
         return self.context is not None
 
 
+
 # === WEB SCRAPING (VRS & HLTV) ===
 # =============================================================================
 
@@ -7507,7 +7748,7 @@ def log_scrape_error(source, url, error):
     """Log scraping errors to file for debugging."""
     try:
         from datetime import datetime
-        with open("scrape_errors.log", "a", encoding="utf-8") as f:
+        with open(os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "errors", "scrape_errors.log"), "a", encoding="utf-8") as f:
             f.write(f"[{datetime.now()}] {source} | {url} | {error}\n")
     except Exception:
         pass
@@ -7545,38 +7786,15 @@ def scrape_vrs_points(team_name, match_date=None, context=None):
                     return pts
             return None
 
-        p = None
-        browser = None
-        page = None
         owns_browser = context is None
+        _sess = None
         try:
-            from playwright.sync_api import sync_playwright
             if owns_browser:
-                p = sync_playwright().start()
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-extensions",
-                        "--disable-gpu",
-                        "--disable-dev-shm-usage",
-                    ]
-                )
-                context = browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    viewport={"width": 1920, "height": 1080},
-                    locale="en-US",
-                )
+                _sess = BrowserSession()
+                _sess.start()
+                context = _sess.context
             page = context.new_page()
-            
-            page.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-            """)
-            
+
             page.goto(vrs_url, timeout=30000, wait_until="domcontentloaded")
             page.wait_for_selector(".ranked-team", state="attached", timeout=15000)
             page.wait_for_timeout(2000)
@@ -7612,7 +7830,6 @@ def scrape_vrs_points(team_name, match_date=None, context=None):
                 return results;
             }""")
             
-            # FIXED: Store cache with version and timestamp
             _vrs_cache[cache_key] = {
                 'version': VRS_CACHE_VERSION,
                 'timestamp': datetime.now().isoformat(),
@@ -7629,16 +7846,8 @@ def scrape_vrs_points(team_name, match_date=None, context=None):
             try:
                 if page: page.close()
             except: pass
-            if owns_browser:
-                try:
-                    if context: context.close()
-                except: pass
-                try:
-                    if browser: browser.close()
-                except: pass
-                try:
-                    if p: p.stop()
-                except: pass
+            if owns_browser and _sess:
+                _sess.stop()
             
     except Exception as e:
         # FIXED: Log error to file
@@ -7784,53 +7993,19 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
     - Tuple of (t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final)
     - Returns None if scraping fails
     """
-    p = None
-    browser = None
-    page = None
     owns_browser = context is None
-    
+    _sess = None
+
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-        
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
         if owns_browser:
             print("  Starting browser...")
-            p = sync_playwright().start()
-            
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-extensions",
-                    "--disable-gpu",
-                    "--disable-dev-shm-usage",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                ]
-            )
-            
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                viewport={"width": 1920, "height": 1080},
-                locale="en-US",
-                timezone_id="America/New_York",
-            )
-            
-            context.add_cookies([{
-                "name": "cookieConsent",
-                "value": "1",
-                "domain": ".hltv.org",
-                "path": "/"
-            }])
-        
+            _sess = BrowserSession()
+            _sess.start()
+            context = _sess.context
+
         page = context.new_page()
-        
-        page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-        """)
         
         print("  Connecting to HLTV...")
         page.goto(url, timeout=30000, wait_until="domcontentloaded")
@@ -8020,6 +8195,26 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
                 }
             });
 
+            // === MATCH COMPLETION CHECK ===
+            // HLTV shows a .countdown element on the match page. For finished
+            // matches it reads "Match over". For live/upcoming matches it shows
+            // a live indicator or a countdown timer instead. We use this as the
+            // authoritative signal that a match has actually been played —
+            // results-listing pages can occasionally include in-progress
+            // matches before HLTV finalises them, so this is a second check
+            // done on the match page itself (a different page than the results
+            // listing) to be certain.
+            const countdownEl = document.querySelector('.countdown');
+            result.countdown_text = countdownEl ? countdownEl.textContent.trim() : null;
+            result.match_over = result.countdown_text
+                ? result.countdown_text.toLowerCase().includes('match over')
+                : null;  // null = no countdown element found at all (treat cautiously)
+
+            // Also check for the live-match indicator HLTV uses while a match
+            // is actively being played
+            const liveEl = document.querySelector('.matchpage-live-bar, .live-match-status, .countdown.live');
+            result.is_live = !!liveEl;
+
             return result;
         }""")
         
@@ -8037,7 +8232,30 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
             log_scrape_error("Match", url, f"Could not find 2 scores. Found: {data.get('scores', [])}")
             print_error("Could not find match scores on the page.")
             return None
-        
+
+        # === REJECT UNFINISHED MATCHES ===
+        # Only "Match over" on the .countdown element confirms the match has
+        # actually concluded. is_live or any other countdown text (a running
+        # timer, "LIVE", etc.) means the match isn't finished yet — scores
+        # shown could still change, so we must not import it.
+        countdown_text = data.get('countdown_text')
+        match_over     = data.get('match_over')
+        is_live        = data.get('is_live', False)
+
+        if is_live or match_over is False:
+            reason = f"countdown='{countdown_text}', is_live={is_live}"
+            log_scrape_error("Match", url, f"Skipped — match not finished ({reason})")
+            _batch_log(f"  [SKIP] Not finished — {url} ({reason})")
+            print_error(f"Match not finished yet, skipping ({reason})")
+            return None
+
+        if match_over is None:
+            # No countdown element found at all — log it but don't block the
+            # import outright, since older/archived matches sometimes don't
+            # render this element. We just want visibility into when this
+            # happens for debugging.
+            _batch_log(f"  [WARN] No countdown element found — {url} (importing anyway)")
+
         t1_name, t2_name = data['teams'][0], data['teams'][1]
         
         try:
@@ -8074,6 +8292,17 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
         if forfeit_team:
             forfeit_name = t1_name if forfeit_team == 'team1' else t2_name
             print_info(f"  [!] Forfeit detected: {forfeit_name} forfeited the match")
+
+        # Debug log: date/time/event/completion info for every successfully
+        # scraped match — makes it easy to audit a batch_import.log afterwards
+        # for date ordering issues or matches that shouldn't have been there.
+        _batch_log(
+            f"  [MATCH] {t1_name} {s1}-{s2} {t2_name} | "
+            f"date={match_date} | event='{event_name}' | "
+            f"countdown='{countdown_text}' | match_over={match_over} | "
+            f"url={url}"
+        )
+
         return t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env
         
     except PlaywrightTimeout:
@@ -8122,29 +8351,11 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
         print("  4. Check csrs.log for detailed error information")
         return None
     finally:
-        # Clean up resources. If we reused a shared context (owns_browser=False),
-        # only close the page we opened — leave context/browser for the caller.
         try:
-            if page:
-                page.close()
-        except:
-            pass
-        if owns_browser:
-            try:
-                if context:
-                    context.close()
-            except:
-                pass
-            try:
-                if browser:
-                    browser.close()
-            except:
-                pass
-            try:
-                if p:
-                    p.stop()
-            except:
-                pass
+            if page: page.close()
+        except: pass
+        if owns_browser and _sess:
+            _sess.stop()
 
 def scrape_event_tier(event_href: str, event_name: str = '', context=None) -> Tuple[str, dict]:
     """
@@ -8167,32 +8378,18 @@ def scrape_event_tier(event_href: str, event_name: str = '', context=None) -> Tu
         D   : >= 3 VRS Top 30 teams  OR  >= 20% of ranked teams are Top 30
         E   : At least 1 ranked team present but below D threshold (catch-all)
     """
-    p = None
-    browser = None
-    page = None
     owns_browser = context is None
+    _sess = None
+    page = None
 
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
         if owns_browser:
             print("  Scraping event page for tier detection...")
-            p = sync_playwright().start()
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox", "--disable-setuid-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-gpu", "--disable-dev-shm-usage",
-                ]
-            )
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                viewport={"width": 1920, "height": 1080},
-                locale="en-US",
-                timezone_id="America/New_York",
-            )
-            context.add_cookies([{"name": "cookieConsent", "value": "1", "domain": ".hltv.org", "path": "/"}])
+            _sess = BrowserSession()
+            _sess.start()
+            context = _sess.context
 
         page = context.new_page()
         page.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
@@ -8248,16 +8445,7 @@ def scrape_event_tier(event_href: str, event_name: str = '', context=None) -> Tu
                 return 'S+', details
             return 'S', details
 
-        # Minimum 60% of teams must be VRS ranked for tier detection to be valid
         pct_ranked = (ranked_count / total_teams) if total_teams > 0 else 0.0
-        if pct_ranked < 0.60:
-            details = {
-                'total_teams': total_teams,
-                'ranked_count': ranked_count,
-                'pct_ranked': pct_ranked,
-                'insufficient_vrs': True,
-            }
-            return None, details
 
         top10 = sum(1 for r in vrs_ranks if r <= 10)
         top20 = sum(1 for r in vrs_ranks if r <= 20)
@@ -8280,19 +8468,18 @@ def scrape_event_tier(event_href: str, event_name: str = '', context=None) -> Tu
             'vrs_ranks': sorted(vrs_ranks),
         }
 
-        # Apply tier rules (S+/S are manual-only — never auto-detected)
+        # Apply tier rules based on VRS field composition.
+        # Run on whatever ranked teams are present — E catches small/regional events.
         if top10 >= 6 or pct_top10 >= 0.75:
             tier = 'A'
         elif top20 >= 8 or pct_top10 >= 0.50:
             tier = 'B'
-        elif top20 >= 4 or pct_top20 >= 0.50:
+        elif top20 >= 2 or pct_top20 >= 0.25:
             tier = 'C'
         elif top30 >= 3 or pct_top30 >= 0.20:
             tier = 'D'
-        elif ranked_count >= 1:
-            tier = 'E'
         else:
-            tier = None  # No VRS-ranked teams at all — should be caught by 60% check above
+            tier = 'E'  # Doesn't meet D — catches all below-D and zero-ranked events
 
         return tier, details
 
@@ -8306,15 +8493,9 @@ def scrape_event_tier(event_href: str, event_name: str = '', context=None) -> Tu
     finally:
         try:
             if page: page.close()
-        except Exception:
-            pass
-        if owns_browser:
-            try:
-                if context: context.close()
-                if browser: browser.close()
-                if p: p.stop()
-            except Exception:
-                pass
+        except Exception: pass
+        if owns_browser and _sess:
+            _sess.stop()
 
 
 def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, Any]], find_team_func, save_func, 
@@ -8501,14 +8682,6 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
                 if auto_tier in ('S+', 'S'):
                     print(f"  (Detected via event name{'/venue' if auto_tier == 'S+' else ''}: '{event_name}')")
                 tier_raw = auto_tier
-            elif auto_tier is None and details.get('insufficient_vrs'):
-                # Below 60% VRS ranked — cannot assign tier
-                print(f"\n  --- Event Field Analysis ---")
-                print(f"  Teams attending : {details.get('total_teams', '?')}")
-                print(f"  VRS ranked      : {details.get('ranked_count', '?')} ({details.get('pct_ranked', 0)*100:.0f}%)")
-                print(f"\n  [!] Only {details.get('pct_ranked', 0)*100:.0f}% of teams are VRS ranked (minimum 60% required).")
-                print(f"  This event cannot be assigned a tier. Match will be skipped.")
-                continue
             else:
                 # Scrape failed entirely — fall back to manual
                 print(f"  [!] Could not auto-detect tier. Please enter manually.")
@@ -8696,7 +8869,7 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
 
     _vrs_session_cache.clear()
 
-BATCH_LOG_FILE = "batch_import.log"
+BATCH_LOG_FILE = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "normal", "batch_import.log")
 
 def _batch_log(msg: str) -> None:
     """Write a timestamped line to the batch import log and stdout."""
@@ -8712,107 +8885,349 @@ def _batch_log(msg: str) -> None:
 HLTV_RESULTS_PAGE_SIZE = 100   # confirmed live: HLTV's own "1 - 100 of N" counter on /results
 HLTV_RESULTS_MAX_PAGES = 500   # circuit breaker (50,000 matches) in case the total-count parse ever fails
 
+# ── Month/date parsing helpers ────────────────────────────────────────────────
 
-def scrape_hltv_results(start_date: str, end_date: str = None, context=None) -> List[str]:
+_MONTH_MAP = {
+    'Jan':1,'Feb':2,'Mar':3,'Apr':4,'May':5,'Jun':6,
+    'Jul':7,'Aug':8,'Sep':9,'Oct':10,'Nov':11,'Dec':12,
+    'January':1,'February':2,'March':3,'April':4,'May':5,'June':6,
+    'July':7,'August':8,'September':9,'October':10,'November':11,'December':12,
+}
+
+def _parse_hltv_end_date(date_str: str, year: int = 2026) -> str | None:
     """
-    Walk HLTV's /results listing for every match URL between start_date and
-    end_date (inclusive), across every tier HLTV lists (no tier filtering —
-    that happens later, per-match, the same way interactive import already
-    auto-detects tier).
-
-    Parameters:
-    - start_date / end_date: 'YYYY-MM-DD' strings. end_date defaults to today.
-    - context: optional Playwright BrowserContext to reuse (from BrowserSession).
-               If None, launches and tears down its own browser.
-
-    HLTV serves this as /results?startDate=...&endDate=...&offset=N, 100
-    results per page, and prints its own "X - Y of Z" counter on the page —
-    we parse that to know when to stop instead of guessing a page count.
-
-    Returns a de-duplicated, order-preserved list of full match URLs
-    (https://www.hltv.org/matches/...).
+    Parse HLTV date range strings like 'Jun 11th-Jun 21st' or 'Jun 25th-Jun 26th'
+    and return the END date as 'YYYY-MM-DD'.
     """
-    if not end_date:
-        end_date = datetime.now().strftime("%Y-%m-%d")
+    parts = date_str.strip().split('-')
+    end_part = parts[-1].strip() if len(parts) > 1 else parts[0].strip()
+    m = re.match(r'(\w+)\s*(\d+)', end_part)
+    if m:
+        month = _MONTH_MAP.get(m.group(1), 0)
+        day   = int(re.sub(r'\D', '', m.group(2)))
+        if month:
+            return f"{year}-{month:02d}-{day:02d}"
+    return None
 
-    owns_browser = context is None
-    p = None
-    browser = None
-    page = None
-    all_urls: List[str] = []
-    seen = set()
+def _parse_hltv_month_year(text: str):
+    """Parse 'June 20261 - 50 of 8019' -> (2026, 6)"""
+    m = re.match(r'(\w+)\s+(\d{4})', text.strip())
+    if m:
+        month = _MONTH_MAP.get(m.group(1), 0)
+        year  = int(m.group(2))
+        return year, month
+    return None, None
+
+
+def scrape_events_archive(
+    start_date: str,
+    cookies: list | None = None,
+    event_index_file: str = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "data", "event_index.json"),
+) -> list[dict]:
+    """
+    Walk /events/archive?offset=0,50,100,... using Camoufox + real cookies,
+    parsing event IDs and end dates. Stops when all events on a page are older
+    than start_date. Caches results in event_index_file so repeat calls are fast.
+
+    Returns list of dicts: [{id, name, end_date}, ...]
+    """
+    import json as _json
+    from bs4 import BeautifulSoup
+
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+
+    # Load existing index
+    index: dict[str, dict] = {}
+    if os.path.exists(event_index_file):
+        try:
+            with open(event_index_file) as f:
+                index = {str(e["id"]): e for e in _json.load(f)}
+        except Exception:
+            index = {}
+
+    if not cookies:
+        cookies = _load_hltv_cookies()
+
+    pw_cookies = [
+        {"name": c.get("name",""), "value": c.get("value",""),
+         "domain": c.get("domain",".hltv.org"), "path": c.get("path","/")}
+        for c in cookies if c.get("name") and c.get("value")
+    ]
+
+    newly_found = []
+    offset = 0
+    stop_early = False
 
     try:
-        from playwright.sync_api import sync_playwright
+        from camoufox.sync_api import Camoufox
+    except ImportError:
+        _batch_log("  [ERROR] Camoufox not installed — cannot scrape events archive")
+        return list(index.values())
 
-        if owns_browser:
-            p = sync_playwright().start()
-            browser = p.chromium.launch(headless=True, args=_BROWSER_DEFAULT_LAUNCH_ARGS)
-            context = browser.new_context(
-                user_agent=_BROWSER_DEFAULT_USER_AGENT,
-                viewport={"width": 1920, "height": 1080},
-                locale="en-US",
-                timezone_id="America/New_York",
-            )
-            context.add_cookies([{
-                "name": "cookieConsent", "value": "1", "domain": ".hltv.org", "path": "/",
-            }])
-
+    with Camoufox(headless=True, os=("windows","macos","linux")) as browser:
+        context = browser.new_context()
+        if pw_cookies:
+            context.add_cookies(pw_cookies)
         page = context.new_page()
-        page.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-        )
 
-        offset = 0
-        total = None
-        _batch_log(f"  Scraping HLTV results {start_date} -> {end_date} ...")
+        # Warm up the session via homepage first — CF is much more likely to
+        # pass subsequent requests after seeing a normal landing page visit
+        _batch_log("  Warming up session via hltv.org homepage...")
+        try:
+            page.goto("https://www.hltv.org", timeout=30000, wait_until="domcontentloaded")
+            page.wait_for_timeout(4000)
+        except Exception:
+            pass
+
+        while not stop_early:
+            url = f"https://www.hltv.org/events/archive?offset={offset}"
+            _batch_log(f"  Scraping events archive offset={offset}...")
+            try:
+                page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+                html = page.content()
+            except Exception as e:
+                _batch_log(f"  [WARN] Archive page failed at offset={offset}: {e}")
+                break
+
+            if "Just a moment" in html or "challenge-platform" in html:
+                _batch_log("  [WARN] Cloudflare challenge on archive page — stopping")
+                break
+
+            soup = BeautifulSoup(html, "html.parser")
+            month_blocks = soup.find_all("div", class_="events-month")
+
+            if not month_blocks:
+                _batch_log("  No events-month blocks found — stopping")
+                break
+
+            page_had_events = False
+            for block in month_blocks:
+                headline = block.find(class_="standard-headline")
+                if not headline:
+                    continue
+                year, month_num = _parse_hltv_month_year(headline.get_text(strip=True))
+                if not year:
+                    continue
+
+                for event_link in block.find_all("a", href=re.compile(r'/events/\d+/')):
+                    href = event_link.get("href", "")
+                    id_m = re.search(r'/events/(\d+)/', href)
+                    if not id_m:
+                        continue
+                    event_id = int(id_m.group(1))
+                    page_had_events = True
+
+                    # Already indexed
+                    if str(event_id) in index:
+                        evt = index[str(event_id)]
+                        if evt.get("end_date") and evt["end_date"] < start_date:
+                            stop_early = True
+                        continue
+
+                    name_el = event_link.find(class_="text-ellipsis")
+                    name = name_el.get_text(strip=True) if name_el else href
+
+                    # Parse end date from col-desc
+                    end_date = None
+                    for d in event_link.find_all(class_="col-desc"):
+                        txt = d.get_text(strip=True)
+                        if re.search(r'\w{3}\s*\d+.*-.*\w{3}\s*\d+', txt):
+                            end_date = _parse_hltv_end_date(txt, year)
+                            break
+
+                    evt = {"id": event_id, "name": name, "end_date": end_date}
+                    index[str(event_id)] = evt
+                    newly_found.append(evt)
+
+                    # Stop if this event ended before our target start
+                    if end_date and end_date < start_date:
+                        stop_early = True
+
+            if not page_had_events:
+                break
+
+            offset += 50
+            import time as _time; _time.sleep(2)
+
+        page.close()
+
+    # Save updated index
+    try:
+        with open(event_index_file, "w") as f:
+            _json.dump(list(index.values()), f, indent=2)
+        _batch_log(f"  Event index saved: {len(index)} total events")
+    except Exception as e:
+        _batch_log(f"  [WARN] Could not save event index: {e}")
+
+    # Return all events ending on or after start_date
+    result = [
+        e for e in index.values()
+        if e.get("end_date") and e["end_date"] >= start_date
+    ]
+    if result:
+        dates = sorted(e["end_date"] for e in result)
+        _batch_log(
+            f"  [EVENT INDEX] {len(result)} events in range | "
+            f"earliest_end={dates[0]} | latest_end={dates[-1]}"
+        )
+    return result
+
+
+def scrape_active_events(cookies: list | None = None) -> list[dict]:
+    """
+    Scrape /events to get currently active/upcoming event IDs.
+    Returns list of dicts: [{id, name}, ...]
+    """
+    import json as _json
+    from bs4 import BeautifulSoup
+
+    if not cookies:
+        cookies = _load_hltv_cookies()
+
+    pw_cookies = [
+        {"name": c.get("name",""), "value": c.get("value",""),
+         "domain": c.get("domain",".hltv.org"), "path": c.get("path","/")}
+        for c in cookies if c.get("name") and c.get("value")
+    ]
+
+    events = []
+    try:
+        from camoufox.sync_api import Camoufox
+        with Camoufox(headless=True, os=("windows","macos","linux")) as browser:
+            context = browser.new_context()
+            if pw_cookies:
+                context.add_cookies(pw_cookies)
+            page = context.new_page()
+            # Warm up session
+            try:
+                page.goto("https://www.hltv.org", timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(4000)
+            except Exception:
+                pass
+            page.goto("https://www.hltv.org/events", timeout=30000, wait_until="domcontentloaded")
+            page.wait_for_timeout(3000)
+            html = page.content()
+            page.close()
+
+        if "Just a moment" in html or "challenge-platform" in html:
+            _batch_log("  [WARN] CF challenge on /events — no active events scraped")
+            return events
+
+        soup = BeautifulSoup(html, "html.parser")
+        for event_link in soup.find_all("a", href=re.compile(r'/events/\d+/')):
+            href = event_link.get("href","")
+            id_m = re.search(r'/events/(\d+)/', href)
+            if not id_m:
+                continue
+            event_id = int(id_m.group(1))
+            name_el = event_link.find(class_="text-ellipsis")
+            name = name_el.get_text(strip=True) if name_el else href
+            if not any(e["id"] == event_id for e in events):
+                events.append({"id": event_id, "name": name})
+
+    except ImportError:
+        _batch_log("  [WARN] Camoufox not installed — cannot scrape active events")
+    except Exception as e:
+        _batch_log(f"  [WARN] Active events scrape failed: {e}")
+
+    return events
+
+
+def scrape_hltv_results_by_event(event_id: int, cookies: list | None = None, page=None) -> list[str]:
+    """
+    Scrape /results?event=<id> for all match URLs for a given event.
+    Uses Camoufox (which bypasses CF with real cookies) for the listing page.
+    Returns de-duplicated list of full match URLs, oldest-first.
+
+    Pass an existing Camoufox page object to reuse a browser session across
+    multiple events (avoids repeated browser launches and warm-ups).
+    """
+    import time as _time, random as _random
+    from bs4 import BeautifulSoup
+
+    if not cookies:
+        cookies = _load_hltv_cookies()
+
+    pw_cookies = [
+        {"name": c.get("name",""), "value": c.get("value",""),
+         "domain": c.get("domain",".hltv.org"), "path": c.get("path","/")}
+        for c in cookies if c.get("name") and c.get("value")
+    ]
+
+    all_urls: list[str] = []
+    seen: set[str] = set()
+
+    owns_browser = page is None
+
+    try:
+        from camoufox.sync_api import Camoufox
+    except ImportError:
+        _batch_log("  [ERROR] Camoufox not installed.")
+        return all_urls
+
+    base_url = f"https://www.hltv.org/results?event={event_id}"
+    offset = 0
+    total  = None
+
+    try:
+        if owns_browser:
+            _browser_ctx = Camoufox(headless=_CAMOUFOX_HEADLESS, os=("windows","macos","linux"))
+            browser = _browser_ctx.__enter__()
+            context = browser.new_context()
+            if pw_cookies:
+                context.add_cookies(pw_cookies)
+            page = context.new_page()
+            # Warm up via homepage
+            try:
+                page.goto("https://www.hltv.org", timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+            except Exception:
+                pass
 
         while True:
-            if offset // HLTV_RESULTS_PAGE_SIZE >= HLTV_RESULTS_MAX_PAGES:
-                _batch_log(f"  [WARN] Hit page safety cap ({HLTV_RESULTS_MAX_PAGES} pages) — stopping early.")
-                break
-
-            list_url = f"https://www.hltv.org/results?startDate={start_date}&endDate={end_date}&offset={offset}"
+            url = base_url if offset == 0 else f"{base_url}&offset={offset}"
             try:
-                page.goto(list_url, timeout=30000, wait_until="domcontentloaded")
-                page.wait_for_selector("a[href*='/matches/']", state="attached", timeout=15000)
-                page.wait_for_timeout(1200)
+                page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(2000)
             except Exception as e:
-                _batch_log(f"  [WARN] Page load failed at offset {offset}: {e}")
+                _batch_log(f"  [WARN] Event {event_id} page failed at offset {offset}: {e}")
                 break
 
-            data = page.evaluate(r"""() => {
-                const out = { hrefs: [], pagination_text: null };
-                document.querySelectorAll('a[href*="/matches/"]').forEach(a => {
-                    const href = a.getAttribute('href');
-                    if (href && /^\/matches\/\d+\//.test(href)) {
-                        out.hrefs.push(href);
-                    }
-                });
-                // HLTV's own counter reads like "1 - 100 of 3482"
-                const bodyText = document.body.innerText || '';
-                const m = bodyText.match(/(\d+)\s*-\s*(\d+)\s*of\s*(\d+)/);
-                if (m) out.pagination_text = m[0];
-                return out;
-            }""")
+            html = page.content()
 
-            hrefs = data.get("hrefs", [])
-            new_count = 0
-            for href in hrefs:
-                full_url = "https://www.hltv.org" + href
+            if "Just a moment" in html or "challenge-platform" in html:
+                _batch_log(f"  [WARN] CF challenge on event {event_id} results — stopping")
+                break
+
+            soup = BeautifulSoup(html, "html.parser")
+
+            if total is None:
+                body_text = soup.get_text()
+                m = re.search(r'(\d+)\s*-\s*(\d+)\s*of\s*(\d+)', body_text)
+                if m:
+                    total = int(m.group(3))
+
+            # IMPORTANT: HLTV's /results page (including ?event=<id>) also
+            # renders a "RECENT ACTIVITY" sidebar widget further down the
+            # page that links to /matches/<id>/... URLs for unrelated,
+            # recently-played matches — not scoped to this event at all.
+            # Searching the whole page picks those up too, which is what
+            # caused unrelated events' matches to bleed into an event's
+            # scraped URL list. Scoping to div.results excludes the sidebar.
+            results_container = soup.find("div", class_="results")
+            search_root = results_container if results_container is not None else soup
+            if results_container is None:
+                _batch_log(f"  [WARN] event {event_id}: could not find div.results — "
+                           f"falling back to whole-page search, results may include sidebar links")
+
+            hrefs = []
+            for a in search_root.find_all("a", href=re.compile(r'^/matches/\d+/')):
+                full_url = "https://www.hltv.org" + a.get("href","")
                 if full_url not in seen:
                     seen.add(full_url)
                     all_urls.append(full_url)
-                    new_count += 1
-
-            if total is None and data.get("pagination_text"):
-                try:
-                    total = int(data["pagination_text"].split("of")[-1].strip())
-                    _batch_log(f"  HLTV reports {total} matches in this range.")
-                except Exception:
-                    total = None
-
-            _batch_log(f"  Offset {offset}: {len(hrefs)} links on page, {new_count} new (collected so far: {len(all_urls)})")
+                    hrefs.append(full_url)
 
             if not hrefs:
                 break
@@ -8820,29 +9235,171 @@ def scrape_hltv_results(start_date: str, end_date: str = None, context=None) -> 
                 break
 
             offset += HLTV_RESULTS_PAGE_SIZE
-            page.wait_for_timeout(800)  # be polite between page loads
+            _time.sleep(_random.uniform(1.0, 2.5))
 
-    except Exception as e:
-        log_scrape_error("scrape_hltv_results", f"{start_date}->{end_date}", str(e))
-        _batch_log(f"  [ERROR] scrape_hltv_results failed: {e}")
     finally:
-        try:
-            if page:
-                page.close()
-        except Exception:
-            pass
         if owns_browser:
-            for closer in (
-                lambda: context.close() if context else None,
-                lambda: browser.close() if browser else None,
-                lambda: p.stop() if p else None,
-            ):
-                try:
-                    closer()
-                except Exception:
-                    pass
+            try: page.close()
+            except: pass
+            try: _browser_ctx.__exit__(None, None, None)
+            except: pass
+
+    # HLTV results pages are newest-first. Reverse so we import
+    # chronologically oldest-first — critical for correct Elo calculation.
+    ordered = list(reversed(all_urls))
+
+    _batch_log(
+        f"  [EVENT SCRAPE] event_id={event_id} | "
+        f"total_urls={len(ordered)} | "
+        f"first={ordered[0] if ordered else None} | "
+        f"last={ordered[-1] if ordered else None}"
+    )
+
+    return ordered
+
+
+def scrape_hltv_results(start_date: str, end_date: str = None, context=None) -> list[str]:
+    """
+    DEPRECATED date-range scraper — kept for backward compatibility.
+    Now routes through event-based scraping internally.
+
+    For the daemon's rolling window, we scrape active events instead of
+    date-range URLs (which are Cloudflare-blocked).
+    """
+    _batch_log("  [INFO] Using event-based scraping (date-range URLs are CF-blocked)")
+    cookies = _load_hltv_cookies()
+
+    # Get active events from /events page
+    active = scrape_active_events(cookies=cookies)
+    if not active:
+        _batch_log("  [WARN] No active events found — nothing to scrape")
+        return []
+
+    _batch_log(f"  Found {len(active)} active events to check")
+    all_urls: list[str] = []
+    seen: set[str] = set()
+
+    for evt in active:
+        _batch_log(f"  Scraping event {evt['id']}: {evt['name'][:50]}")
+        urls = scrape_hltv_results_by_event(evt["id"], cookies=cookies)
+        for u in urls:
+            if u not in seen:
+                seen.add(u)
+                all_urls.append(u)
+        _batch_log(f"    -> {len(urls)} match URLs")
 
     return all_urls
+
+
+    """
+    Walk HLTV's /results listing for every match URL between start_date and
+    end_date (inclusive), across every tier HLTV lists.
+
+    Uses curl_cffi to impersonate a real browser's TLS fingerprint, bypassing
+    Cloudflare's JS challenge which blocks Playwright/Camoufox on the results
+    listing page. Individual match pages are still scraped via BrowserSession.
+
+    Returns a de-duplicated, order-preserved list of full match URLs.
+    """
+    if not end_date:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+
+    all_urls: List[str] = []
+    seen = set()
+
+    # ── curl_cffi: impersonates Chrome TLS fingerprint, bypasses CF ──
+    try:
+        from curl_cffi import requests as cf_requests  # type: ignore
+        from bs4 import BeautifulSoup                  # type: ignore
+    except ImportError:
+        _batch_log("  [ERROR] curl_cffi or beautifulsoup4 not installed. Run: pip install curl_cffi beautifulsoup4")
+        return all_urls
+
+    session = cf_requests.Session(impersonate="chrome136")
+    session.headers.update({
+        "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language":           "en-US,en;q=0.9",
+        "Accept-Encoding":           "gzip, deflate, br",
+        "Cache-Control":             "max-age=0",
+        "Sec-Fetch-Dest":            "document",
+        "Sec-Fetch-Mode":            "navigate",
+        "Sec-Fetch-Site":            "none",
+        "Sec-Fetch-User":            "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "Referer":                   "https://www.google.com/",
+    })
+    # Add HLTV cookies if available
+    cookies = _load_hltv_cookies()
+    for c in cookies:
+        session.cookies.set(c["name"], c["value"], domain=c.get("domain", ".hltv.org"))
+    if not cookies:
+        session.cookies.set("cookieConsent", "1", domain=".hltv.org")
+        session.cookies.set("hltvConsent",   "true", domain=".hltv.org")
+
+    offset = 0
+    total  = None
+    _batch_log(f"  Scraping HLTV results {start_date} -> {end_date} ...")
+
+    import re, time, random
+
+    while True:
+        if offset // HLTV_RESULTS_PAGE_SIZE >= HLTV_RESULTS_MAX_PAGES:
+            _batch_log(f"  [WARN] Hit page safety cap ({HLTV_RESULTS_MAX_PAGES} pages) — stopping.")
+            break
+
+        list_url = f"https://www.hltv.org/results?startDate={start_date}&endDate={end_date}&offset={offset}"
+        try:
+            resp = session.get(list_url, timeout=30)
+            if resp.status_code == 403:
+                # Retry once with a different impersonate target
+                _batch_log(f"  [WARN] 403 with chrome136, retrying with chrome131...")
+                session2 = cf_requests.Session(impersonate="chrome131")
+                session2.headers.update(session.headers)
+                session2.cookies.update(session.cookies)
+                resp = session2.get(list_url, timeout=30)
+            resp.raise_for_status()
+        except Exception as e:
+            _batch_log(f"  [WARN] Request failed at offset {offset}: {e}")
+            break
+
+        html = resp.text
+
+        # Check if still getting a CF challenge
+        if "Just a moment" in html or "challenge-platform" in html:
+            _batch_log(f"  [WARN] Still getting Cloudflare challenge — try adding hltv_cookies.json")
+            break
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Parse total from "1 - 100 of 3482"
+        if total is None:
+            body_text = soup.get_text()
+            m = re.search(r'(\d+)\s*-\s*(\d+)\s*of\s*(\d+)', body_text)
+            if m:
+                total = int(m.group(3))
+                _batch_log(f"  HLTV reports {total} matches in this range.")
+
+        hrefs = []
+        for a in soup.find_all("a", href=re.compile(r'^/matches/\d+/')):
+            href = a.get("href", "")
+            full_url = "https://www.hltv.org" + href
+            if full_url not in seen:
+                seen.add(full_url)
+                all_urls.append(full_url)
+                hrefs.append(href)
+
+        _batch_log(f"  Offset {offset}: {len(hrefs)} new URLs (collected: {len(all_urls)})")
+
+        if not hrefs:
+            break
+        if total is not None and offset + HLTV_RESULTS_PAGE_SIZE >= total:
+            break
+
+        offset += HLTV_RESULTS_PAGE_SIZE
+        time.sleep(random.uniform(1.0, 2.5))  # polite delay between pages
+
+    return all_urls
+
 
 
 def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
@@ -8950,15 +9507,13 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
                 if event_name:
                     event_tiers[event_name] = tier_raw
                     mark_unsaved()
-            elif details.get('insufficient_vrs'):
-                _batch_log(f"  SKIP: <60% VRS ranked teams — cannot assign tier")
-                failed.append(url_raw)
-                continue
             else:
-                tier_raw = 'A'
-                _batch_log(f"  Tier: A (scrape failed, using default)")
+                # Scrape failed entirely (exception/timeout) — fall back to E
+                tier_raw = 'E'
+                _batch_log(f"  Tier: E (scrape failed, using fallback)")
         else:
-            _batch_log(f"  Tier: A (no event href, using default)")
+            tier_raw = 'E'
+            _batch_log(f"  Tier: E (no event href, using fallback)")
 
         # --- Environment ---
         if match_env in ('ONLINE', 'LAN'):
@@ -9395,13 +9950,13 @@ def _git_push() -> bool:
     try:
         # Stage data.save only — never commit source code automatically
         subprocess.run(
-            ["git", "add", "data.save"],
+            ["git", "add", SAVE_FILE],
             cwd=repo_dir, check=True, capture_output=True
         )
 
         # Check if there's actually anything to commit
         status = subprocess.run(
-            ["git", "status", "--porcelain", "data.save"],
+            ["git", "status", "--porcelain", SAVE_FILE],
             cwd=repo_dir, capture_output=True, text=True
         )
         if not status.stdout.strip():
@@ -9439,10 +9994,10 @@ def _git_push() -> bool:
 # === AUTO IMPORT (headless daemon mode) ===
 # =============================================================================
 
-def run_auto_import(lookback_hours: int = 2) -> int:
+def run_auto_import(lookback_hours: int = 48) -> int:
     """
     Headless single-pass auto-import.
-    Scrapes HLTV for matches in the last `lookback_hours` hours,
+    Scrapes currently active HLTV events for new matches,
     imports anything not already in history, saves, then pushes to GitHub.
     Returns number of matches imported (0 if nothing new or error).
     """
@@ -9454,18 +10009,34 @@ def run_auto_import(lookback_hours: int = 2) -> int:
     _batch_log(f"=== Auto-import started "
                f"(lookback {lookback_hours}h: {start_date} -> {end_date}) ===")
 
-    # --- Scrape phase ---
+    cookies = _load_hltv_cookies()
+
+    # --- Scrape phase: get active events then scrape each ---
     try:
-        with BrowserSession() as scrape_session:
-            scraped_urls = scrape_hltv_results(
-                start_date, end_date, context=scrape_session.context
-            )
+        _batch_log("  Fetching active events from HLTV...")
+        active_events = scrape_active_events(cookies=cookies)
+        if not active_events:
+            _batch_log("  No active events found — nothing to import.")
+            return 0
+        _batch_log(f"  Found {len(active_events)} active events")
+
+        scraped_urls = []
+        seen: set[str] = set()
+        for evt in active_events:
+            _batch_log(f"  Scraping event {evt['id']}: {evt['name'][:50]}")
+            urls = scrape_hltv_results_by_event(evt["id"], cookies=cookies)
+            for u in urls:
+                if u not in seen:
+                    seen.add(u)
+                    scraped_urls.append(u)
+            _batch_log(f"    -> {len(urls)} match URLs")
+
     except Exception as e:
         _batch_log(f"  [ERROR] Scrape phase failed: {e}")
         return 0
 
     if not scraped_urls:
-        _batch_log("  No match URLs found for this window — nothing to import.")
+        _batch_log("  No match URLs found — nothing to import.")
         return 0
 
     # --- Filter already-imported ---
@@ -9507,6 +10078,170 @@ def run_auto_import(lookback_hours: int = 2) -> int:
     return import_counter
 
 
+# =============================================================================
+# --delete command — wipes data/save/logs under CSRS_DATA_DIR, with
+# hltv_cookies.json hard-excluded under every circumstance. This is a
+# standalone, self-contained routine: it does NOT call load_all(), does NOT
+# require dependency checks, and does NOT touch any in-memory CSRS state.
+# =============================================================================
+
+# Absolute, normalized path to the one file that must never be deleted by
+# --delete, regardless of which target ("data", "save", "logs", "all") is
+# requested. Computed once here from the same CSRS_DATA_DIR/data/hltv_cookies.json
+# convention used everywhere else in this file (see HLTV_COOKIE_FILE above).
+_PROTECTED_COOKIE_FILE = os.path.normcase(os.path.normpath(os.path.abspath(
+    os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "data", "hltv_cookies.json")
+)))
+
+
+def _is_protected_path(path: str) -> bool:
+    """
+    Returns True if `path` IS the cookie file, or is a directory that
+    CONTAINS the cookie file (in which case the directory must be emptied
+    around it rather than removed wholesale).
+    """
+    norm = os.path.normcase(os.path.normpath(os.path.abspath(path)))
+    if norm == _PROTECTED_COOKIE_FILE:
+        return True
+    # Directory case: does the protected file live inside this directory?
+    try:
+        common = os.path.commonpath([norm, _PROTECTED_COOKIE_FILE])
+        return common == norm
+    except ValueError:
+        # Different drives on Windows, or unrelated paths — not protected.
+        return False
+
+
+def _delete_path_preserving_cookies(path: str) -> tuple[int, int]:
+    """
+    Deletes `path` (file or directory tree), except hltv_cookies.json is
+    never removed under any circumstance — if it lives inside `path`, the
+    rest of the tree is wiped around it and the cookie file (and the
+    directories needed to contain it) are left standing.
+
+    Returns (files_deleted, dirs_deleted).
+    """
+    import shutil
+
+    files_deleted = 0
+    dirs_deleted = 0
+
+    if not os.path.exists(path):
+        return (0, 0)
+
+    norm_path = os.path.normcase(os.path.normpath(os.path.abspath(path)))
+
+    # Exact-match safety net: never, ever delete the cookie file itself,
+    # no matter how it was reached.
+    if norm_path == _PROTECTED_COOKIE_FILE:
+        print(f"  [PROTECTED] Skipping {path} — hltv_cookies.json is never deleted.")
+        return (0, 0)
+
+    if os.path.isfile(path):
+        os.remove(path)
+        return (1, 0)
+
+    # Directory case.
+    if not _is_protected_path(path):
+        # Cookie file is not inside this directory at all — safe to nuke
+        # the whole tree in one go.
+        file_count = sum(len(files) for _, _, files in os.walk(path))
+        shutil.rmtree(path)
+        return (file_count, 1)
+
+    # Cookie file lives somewhere inside this directory tree — walk it
+    # bottom-up, deleting everything except the cookie file and any
+    # directory still needed to contain it.
+    for root, dirs, files in os.walk(path, topdown=False):
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            if os.path.normcase(os.path.normpath(os.path.abspath(fpath))) == _PROTECTED_COOKIE_FILE:
+                print(f"  [PROTECTED] Keeping {fpath}")
+                continue
+            try:
+                os.remove(fpath)
+                files_deleted += 1
+            except OSError as e:
+                print(f"  [WARN] Could not delete {fpath}: {e}")
+
+        for dname in dirs:
+            dpath = os.path.join(root, dname)
+            if _is_protected_path(dpath):
+                continue  # cookie file lives in here — leave the dir standing
+            try:
+                os.rmdir(dpath)  # only succeeds if now empty
+                dirs_deleted += 1
+            except OSError:
+                pass  # not empty (still contains the cookie file's directory) — fine, leave it
+
+    return (files_deleted, dirs_deleted)
+
+
+def run_delete_command(target: str, skip_confirm: bool = False) -> None:
+    """
+    Implements `python CSRS.py --delete data|save|logs|all`.
+
+    hltv_cookies.json is hard-excluded from deletion under every target,
+    including "all" — this is non-negotiable because the scraper cannot
+    log in to HLTV without it.
+    """
+    data_dir = os.environ.get("CSRS_DATA_DIR", ".")
+
+    target = target.strip().lower()
+    valid_targets = {"data", "save", "logs", "all"}
+    if target not in valid_targets:
+        print(f"[ERROR] Unknown --delete target '{target}'. Must be one of: {', '.join(sorted(valid_targets))}")
+        sys.exit(1)
+
+    target_dirs_by_name = {
+        "data": [os.path.join(data_dir, "data")],
+        "save": [os.path.join(data_dir, "save")],
+        "logs": [os.path.join(data_dir, "logs")],
+    }
+    target_dirs_by_name["all"] = (
+        target_dirs_by_name["data"] + target_dirs_by_name["save"] + target_dirs_by_name["logs"]
+    )
+
+    dirs_to_wipe = target_dirs_by_name[target]
+
+    print(f"\n{'='*60}")
+    print(f"CSRS --delete {target}")
+    print(f"{'='*60}")
+    print(f"CSRS_DATA_DIR : {os.path.abspath(data_dir)}")
+    print(f"Will wipe     : {', '.join(os.path.abspath(d) for d in dirs_to_wipe)}")
+    print(f"PROTECTED     : {_PROTECTED_COOKIE_FILE}  (never deleted, any target)")
+    print(f"{'='*60}\n")
+
+    existing_dirs = [d for d in dirs_to_wipe if os.path.exists(d)]
+    if not existing_dirs:
+        print("Nothing to delete — none of the target directories exist.")
+        return
+
+    if not skip_confirm:
+        confirm = input(
+            f"Type 'yes' to permanently delete the contents of {target} "
+            f"(hltv_cookies.json will be preserved): "
+        ).strip().lower()
+        if confirm != "yes":
+            print("Cancelled — nothing was deleted.")
+            return
+
+    total_files = 0
+    total_dirs = 0
+    for d in existing_dirs:
+        print(f"Deleting {d} ...")
+        f, dd = _delete_path_preserving_cookies(d)
+        total_files += f
+        total_dirs += dd
+        print(f"  Removed {f} file(s), {dd} director{'y' if dd == 1 else 'ies'}.")
+
+    print(f"\n{'='*60}")
+    print(f"Delete complete: {total_files} file(s), {total_dirs} director{'y' if total_dirs == 1 else 'ies'} removed.")
+    if os.path.exists(_PROTECTED_COOKIE_FILE):
+        print(f"hltv_cookies.json preserved at: {_PROTECTED_COOKIE_FILE}")
+    print(f"{'='*60}\n")
+
+
 if __name__ == "__main__":
     # -------------------------------------------------------------------------
     # CLI argument handling
@@ -9522,7 +10257,17 @@ if __name__ == "__main__":
                         help="Loop auto-import every 30 minutes until Ctrl+C")
     parser.add_argument("--lookback", type=int, default=2, metavar="HOURS",
                         help="How many hours back to scrape (default: 2)")
+    parser.add_argument("--delete", type=str, default=None, metavar="data|save|logs|all",
+                        help="Wipe the given data directory/directories under CSRS_DATA_DIR. "
+                             "hltv_cookies.json is NEVER deleted, no matter what. Requires "
+                             "interactive y/n confirmation.")
+    parser.add_argument("--yes", action="store_true",
+                        help="Skip the confirmation prompt for --delete (use with caution)")
     args, _ = parser.parse_known_args()
+
+    if args.delete:
+        run_delete_command(args.delete, skip_confirm=args.yes)
+        sys.exit(0)
 
     # === DEPENDENCY CHECK & AUTO-INSTALL ===
     if not check_and_install_dependencies():
