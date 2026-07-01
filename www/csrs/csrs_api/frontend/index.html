@@ -1181,6 +1181,17 @@ tr:last-child td { border-bottom: none; }
       </div>
       <div class="analytics-grid" id="ms-cold-teams"><div class="loading"><div class="spinner"></div> Loading…</div></div>
     </div>
+
+    <!-- Event Summary -->
+    <div class="card">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Event Summary</h2>
+      </div>
+      <select id="ms-event-select" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:0.9rem;cursor:pointer;width:100%;margin-bottom:16px">
+        <option value="">Select a month first…</option>
+      </select>
+      <div id="ms-event-summary"><div class="empty-msg" style="padding:12px 0">Select an event above to view its summary.</div></div>
+    </div>
   </div>
 
   <!-- Team Details -->
@@ -1617,6 +1628,217 @@ async function renderMonthSummaryForMonth(ym) {
   } catch(e) {
     ids.forEach(id => setError(id, e.message));
   }
+
+  // Populate event picker for this month
+  try {
+    const evData = await api(`/api/events?month=${ym}`);
+    const evSel = document.getElementById('ms-event-select');
+    if (!evData.events || !evData.events.length) {
+      evSel.innerHTML = '<option value="">No events this month</option>';
+    } else {
+      evSel.innerHTML = '<option value="">— Select event —</option>' +
+        evData.events.map(e => {
+          const tier = e.tier ? ` [${e.tier}]` : '';
+          return `<option value="${e.name.replace(/"/g,'&quot;')}">${e.name}${tier} (${e.match_count} matches)</option>`;
+        }).join('');
+    }
+    evSel.onchange = () => { if (evSel.value) loadEventSummary(evSel.value); else setEl('ms-event-summary','<div class="empty-msg" style="padding:12px 0">Select an event above.</div>'); };
+    setEl('ms-event-summary', '<div class="empty-msg" style="padding:12px 0">Select an event above to view its summary.</div>');
+  } catch(e) {
+    document.getElementById('ms-event-select').innerHTML = '<option value="">Error loading events</option>';
+  }
+}
+
+async function loadEventSummary(eventName) {
+  setEl('ms-event-summary', '<div class="loading"><div class="spinner"></div> Loading event summary…</div>');
+  try {
+    const d = await api(`/api/event-summary?event=${encodeURIComponent(eventName)}`);
+    renderEventSummary(d);
+  } catch(e) {
+    setEl('ms-event-summary', `<div class="empty-msg">Error: ${e.message}</div>`);
+  }
+}
+
+function renderEventSummary(d) {
+  const tierColor = { S: '#f5c518', A: '#4caf82', B: '#5b9cf6', C: '#f5a623', D: '#e05a5a' };
+  const sign = v => v >= 0 ? `+${v}` : `${v}`;
+  const fmtForm = f => f ? `${f.grade} (${f.score})` : '—';
+
+  const envStr = Object.entries(d.environments)
+    .sort((a,b) => b[1]-a[1])
+    .map(([k,v]) => `${k} (${v})`).join(' · ');
+
+  const dateStr = d.start_date === d.end_date
+    ? d.start_date
+    : `${d.start_date} → ${d.end_date}`;
+
+  const grandFinalHtml = d.grand_final ? `
+    <div style="background:var(--surface2);border:1px solid var(--accent);border-radius:8px;padding:14px 18px;margin-bottom:20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <span style="font-size:0.72rem;color:var(--accent);text-transform:uppercase;letter-spacing:1px;font-weight:700">🏆 Grand Final</span>
+      <span style="font-weight:700;font-size:1rem">
+        <span class="team-link" onclick="openTeam('${d.grand_final.winner.replace(/'/g,"\'")}'">${d.grand_final.winner}</span>
+        <span style="color:var(--muted);margin:0 8px">def.</span>
+        <span class="team-link" onclick="openTeam('${d.grand_final.loser.replace(/'/g,"\'")}'">${d.grand_final.loser}</span>
+        <span style="color:var(--muted);margin-left:8px">${d.grand_final.score}</span>
+      </span>
+    </div>` : '';
+
+  const ratingTable = (teams, colorFn) => teams.length ? `
+    <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+      <thead><tr style="color:var(--muted);font-size:0.75rem;text-transform:uppercase">
+        <th style="text-align:left;padding:4px 0">#</th>
+        <th style="text-align:left;padding:4px 8px">Team</th>
+        <th style="text-align:right;padding:4px 8px">Before</th>
+        <th style="text-align:right;padding:4px 8px">After</th>
+        <th style="text-align:right;padding:4px 8px">Change</th>
+        <th style="text-align:right;padding:4px 8px">Record</th>
+      </tr></thead>
+      <tbody>${teams.map((t,i) => `
+        <tr style="border-top:1px solid var(--border)">
+          <td style="padding:6px 0;color:var(--muted)">${i+1}</td>
+          <td style="padding:6px 8px"><span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\'")}'">${t.name}</span></td>
+          <td style="padding:6px 8px;text-align:right;color:var(--muted)">${t.start_rating}</td>
+          <td style="padding:6px 8px;text-align:right;font-weight:600">${t.end_rating}</td>
+          <td style="padding:6px 8px;text-align:right;font-weight:700;color:${colorFn(t.rating_change)}">${sign(t.rating_change)}</td>
+          <td style="padding:6px 8px;text-align:right;color:var(--muted)">${t.wins}W-${t.losses}L</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>` : '<div class="empty-msg" style="padding:8px 0">None</div>';
+
+  const formTable = (teams, colorFn) => teams.length ? `
+    <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+      <thead><tr style="color:var(--muted);font-size:0.75rem;text-transform:uppercase">
+        <th style="text-align:left;padding:4px 0">#</th>
+        <th style="text-align:left;padding:4px 8px">Team</th>
+        <th style="text-align:right;padding:4px 8px">Before</th>
+        <th style="text-align:right;padding:4px 8px">After</th>
+        <th style="text-align:right;padding:4px 8px">Change</th>
+        <th style="text-align:right;padding:4px 8px">Record</th>
+      </tr></thead>
+      <tbody>${teams.map((t,i) => `
+        <tr style="border-top:1px solid var(--border)">
+          <td style="padding:6px 0;color:var(--muted)">${i+1}</td>
+          <td style="padding:6px 8px"><span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\'")}'">${t.name}</span></td>
+          <td style="padding:6px 8px;text-align:right;color:var(--muted)">${fmtForm(t.form_start)}</td>
+          <td style="padding:6px 8px;text-align:right;font-weight:600">${fmtForm(t.form_end)}</td>
+          <td style="padding:6px 8px;text-align:right;font-weight:700;color:${colorFn(t.form_change)}">${sign(t.form_change)}</td>
+          <td style="padding:6px 8px;text-align:right;color:var(--muted)">${t.wins}W-${t.losses}L</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>` : '<div class="empty-msg" style="padding:8px 0">None</div>';
+
+  const upsetHtml = d.upsets.length ? d.upsets.map((u,i) => `
+    <div style="padding:10px 0;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:12px">
+      <span style="color:var(--muted);font-size:0.8rem;min-width:18px">${i+1}</span>
+      <div>
+        <span class="team-link" onclick="openTeam('${u.winner.replace(/'/g,"\'")}'">${u.winner}</span>
+        <span style="color:var(--muted);margin:0 6px">def.</span>
+        <span class="team-link" onclick="openTeam('${u.loser.replace(/'/g,"\'")}'">${u.loser}</span>
+        <span style="color:var(--muted);margin-left:6px">${u.score}</span>
+        <span style="margin-left:10px;font-size:0.78rem;color:var(--muted)">${u.diff} pt gap</span>
+        <div style="font-size:0.78rem;color:var(--muted);margin-top:2px">
+          ${u.winner}: <span style="color:#4caf82">${sign(u.winner_pts_delta)}</span> &nbsp;
+          ${u.loser}: <span style="color:#e05a5a">${sign(u.loser_pts_delta)}</span>
+        </div>
+      </div>
+    </div>`).join('') : '<div class="empty-msg" style="padding:8px 0">No upsets recorded</div>';
+
+  const posColor = v => v > 0 ? '#4caf82' : v < 0 ? '#e05a5a' : 'var(--muted)';
+  const negColor = v => v < 0 ? '#4caf82' : v > 0 ? '#e05a5a' : 'var(--muted)';
+
+  const allTeamsRows = d.all_teams.map((t,i) => `
+    <tr style="border-top:1px solid var(--border)">
+      <td style="padding:6px 4px;color:var(--muted)">${i+1}</td>
+      <td style="padding:6px 8px"><span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\'")}'">${t.name}</span></td>
+      <td style="padding:6px 8px;text-align:right;font-weight:600">${t.end_rating}</td>
+      <td style="padding:6px 8px;text-align:right;font-weight:700;color:${posColor(t.rating_change)}">${sign(t.rating_change)}</td>
+      <td style="padding:6px 8px;text-align:right;color:var(--muted)">${t.wins}W-${t.losses}L</td>
+      <td style="padding:6px 8px;text-align:right;color:var(--muted)">${t.maps_won}-${t.maps_lost} (${t.map_diff >= 0 ? '+' : ''}${t.map_diff})</td>
+      <td style="padding:6px 8px;text-align:right;color:var(--muted)">${fmtForm(t.form_start)}</td>
+      <td style="padding:6px 8px;text-align:right">${fmtForm(t.form_end)}</td>
+    </tr>`).join('');
+
+  setEl('ms-event-summary', `
+    <div style="border-top:1px solid var(--border);padding-top:16px">
+      <!-- Header -->
+      <div style="margin-bottom:16px">
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">${dateStr} · ${envStr}</div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:0.85rem;color:var(--muted)">
+          <span>Tier: <strong style="color:var(--text)">${d.tier || '—'}</strong></span>
+          <span>Matches: <strong style="color:var(--text)">${d.match_count}</strong></span>
+          <span>Teams: <strong style="color:var(--text)">${d.team_count}</strong></span>
+          ${d.stats.avg_rating_change != null ? `<span>Avg Rating Δ: <strong style="color:${posColor(d.stats.avg_rating_change)}">${sign(d.stats.avg_rating_change)}</strong></span>` : ''}
+          ${d.stats.avg_form_change != null ? `<span>Avg Form Δ: <strong style="color:${posColor(d.stats.avg_form_change)}">${sign(d.stats.avg_form_change)}</strong></span>` : ''}
+        </div>
+      </div>
+
+      ${grandFinalHtml}
+
+      <!-- Quick stats row -->
+      <div class="analytics-grid" style="margin-bottom:20px">
+        ${d.stats.highest_rated_team ? `<div style="background:var(--surface2);border-radius:8px;padding:12px 16px">
+          <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Highest Rated</div>
+          <span class="team-link" style="font-weight:700" onclick="openTeam('${d.stats.highest_rated_team.replace(/'/g,"\'")}'">${d.stats.highest_rated_team}</span>
+          <div style="color:var(--accent);font-weight:700">${d.stats.highest_rated_pts} pts</div>
+        </div>` : ''}
+        ${d.stats.most_maps_team ? `<div style="background:var(--surface2);border-radius:8px;padding:12px 16px">
+          <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Most Active</div>
+          <span class="team-link" style="font-weight:700" onclick="openTeam('${d.stats.most_maps_team.replace(/'/g,"\'")}'">${d.stats.most_maps_team}</span>
+          <div style="color:var(--muted);font-size:0.85rem">${d.stats.most_maps_count} maps · ${d.stats.most_maps_matches} matches</div>
+        </div>` : ''}
+      </div>
+
+      <!-- Rating changes -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top Rating Gainers</div>
+          ${ratingTable(d.gainers, posColor)}
+        </div>
+        <div>
+          <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top Rating Losers</div>
+          ${ratingTable(d.losers, negColor)}
+        </div>
+      </div>
+
+      <!-- Form changes -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top Form Improvers</div>
+          ${formTable(d.form_improvers, posColor)}
+        </div>
+        <div>
+          <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top Form Decliners</div>
+          ${formTable(d.form_decliners, negColor)}
+        </div>
+      </div>
+
+      <!-- Upsets -->
+      <div style="margin-bottom:20px">
+        <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Biggest Upsets</div>
+        ${upsetHtml}
+      </div>
+
+      <!-- All teams -->
+      <div>
+        <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">All Participants</div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:0.82rem;min-width:600px">
+            <thead><tr style="color:var(--muted);font-size:0.72rem;text-transform:uppercase">
+              <th style="text-align:left;padding:4px 4px">#</th>
+              <th style="text-align:left;padding:4px 8px">Team</th>
+              <th style="text-align:right;padding:4px 8px">End Pts</th>
+              <th style="text-align:right;padding:4px 8px">Δ Pts</th>
+              <th style="text-align:right;padding:4px 8px">Record</th>
+              <th style="text-align:right;padding:4px 8px">Maps</th>
+              <th style="text-align:right;padding:4px 8px">Form In</th>
+              <th style="text-align:right;padding:4px 8px">Form Out</th>
+            </tr></thead>
+            <tbody>${allTeamsRows}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `);
 }
 
 function renderMSTopTeam(team) {
@@ -3213,127 +3435,160 @@ function renderTeamDetails(d) {
 
   document.getElementById('td-result').innerHTML = html;
 
-  // Chart using 3-month timeline
-  var tl = d.timeline_3m || [];
-  if (!tl.length) return;
-  var labels = tl.map(function(m) { return m.date.split(' ')[0]; });
-  var values = tl.map(function(m) { return m.pts_after; });
+  // ── Shared setup: use daily_series from backend (has real depreciation) ──
+  // daily_series has one entry per calendar day with pts already decayed by
+  // the backend using the same _calculate_depreciation logic as the elite chart.
+  var ds = d.daily_series || [];
+  if (!ds.length) return;
+
+  var allLabels = ds.map(function(p) { return p.date; });
+
+  // Tooltip helper: find the nearest match day on or before hovered index
+  function nearestDs(idx) {
+    for (var i = idx; i >= 0; i--) {
+      if (ds[i].match) return ds[i];
+    }
+    return null;
+  }
+
+  var commonXScale = {
+    type: 'category',
+    ticks: {
+      color: '#7a7f8e',
+      maxTicksLimit: 10,
+      callback: function(val, idx) { return ds[idx] && ds[idx].match ? ds[idx].date : null; }
+    },
+    grid: { color: '#2a2d35' }
+  };
+
+  var commonTooltip = {
+    backgroundColor: '#1e2127',
+    borderColor: '#2a2d35',
+    borderWidth: 1,
+  };
+
+  // ── Rating History Chart ──
+  // Point radius: match days get a dot, transition days get a smaller hollow dot,
+  // all other days are invisible — identical to the elite chart behaviour.
+  var ratingRadius = ds.map(function(p) {
+    return p.match ? 5 : p.transition ? 4 : 0;
+  });
+  var ratingBg = ds.map(function(p) {
+    if (p.match) return p.won ? '#4caf82' : '#e05a5a';
+    if (p.transition) return '#16181c';   // hollow transition marker
+    return 'transparent';
+  });
+  var ratingBorder = ds.map(function(p) { return '#f5a623'; });
+
   var ctx = document.getElementById('td-chart').getContext('2d');
   tdChart = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: labels,
+      labels: allLabels,
       datasets: [{
         label: 'Rating',
-        data: values,
+        data: ds.map(function(p) { return p.pts; }),
         borderColor: '#f5a623',
         backgroundColor: 'rgba(245,166,35,0.08)',
         borderWidth: 2,
-        pointRadius: 4,
-        pointBackgroundColor: '#f5a623',
-        pointBorderColor: '#16181c',
+        pointRadius: ratingRadius,
+        pointBackgroundColor: ratingBg,
+        pointBorderColor: ratingBorder,
         pointBorderWidth: 1.5,
+        pointHoverRadius: 7,
         tension: 0,
         fill: true,
+        spanGaps: false,
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
-        tooltip: {
-          backgroundColor: '#1e2127',
-          borderColor: '#2a2d35',
-          borderWidth: 1,
+        tooltip: Object.assign({}, commonTooltip, {
           callbacks: {
-            title: function(i) { return tl[i[0].dataIndex].date.split(' ')[0]; },
+            title: function(i) { return ds[i[0].dataIndex].date; },
             label: function(i) {
-              var m = tl[i.dataIndex];
-              var sign = m.pts_delta >= 0 ? '+' : '';
-              return ' ' + m.pts_after.toFixed(1) + ' pts  vs ' + m.opponent + '  ' + m.score + '  (' + sign + m.pts_delta.toFixed(2) + ')';
+              var p = nearestDs(i.dataIndex);
+              if (!p) return '';
+              var sign = p.pts_delta >= 0 ? '+' : '';
+              return ' ' + ds[i.dataIndex].pts.toFixed(1) + ' pts' +
+                (p.match ? '  vs ' + p.opponent + '  ' + p.score + '  (' + sign + p.pts_delta.toFixed(2) + ')' : '  (decaying)');
             }
           }
-        }
+        })
       },
       scales: {
-        x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
+        x: commonXScale,
         y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } }
       }
     }
   });
 
   // ── Form History Chart ──
+  // Form score is held flat between matches (backend carries it forward),
+  // so the line shows the running form score decaying/updating match by match.
   var formCtx = document.getElementById('td-form-chart');
   if (formCtx) {
-    var formScores = tl.map(function(m) { return m.form_score != null ? m.form_score : null; });
-    // Point colours: green for W, red for L
-    var formPointColors = tl.map(function(m) { return m.won ? '#4caf82' : '#e05a5a'; });
-
-    // Grade thresholds (must match backend: S≥85%, A≥70%, B≥55%, C≥40% of total_form_points)
-    // total_form_points = FORM_WIN_WEIGHT + FORM_MAP_WEIGHT + FORM_COMP_WEIGHT
-    // We annotate the chart with horizontal grade bands as plugin annotations aren't
-    // available, so instead draw them as custom y-axis tick labels and light gridlines.
-    var gradeColors = { S: '#f5c518', A: '#4caf82', B: '#5b9cf6', C: '#f5a623', D: '#e05a5a' };
+    var formRadius = ds.map(function(p) {
+      return p.match ? 5 : p.transition ? 4 : 0;
+    });
+    var formBg = ds.map(function(p) {
+      if (p.match) return p.won ? '#4caf82' : '#e05a5a';
+      if (p.transition) return '#16181c';
+      return 'transparent';
+    });
 
     tdFormChart = new Chart(formCtx.getContext('2d'), {
       type: 'line',
       data: {
-        labels: labels,
+        labels: allLabels,
         datasets: [{
           label: 'Form Score',
-          data: formScores,
+          data: ds.map(function(p) { return p.form_score != null ? p.form_score : null; }),
           borderColor: '#f5a623',
           backgroundColor: 'rgba(245,166,35,0.07)',
           borderWidth: 2,
-          pointRadius: 5,
-          pointBackgroundColor: formPointColors,
-          pointBorderColor: '#16181c',
+          pointRadius: formRadius,
+          pointBackgroundColor: formBg,
+          pointBorderColor: '#f5a623',
           pointBorderWidth: 1.5,
+          pointHoverRadius: 7,
           tension: 0,
           fill: true,
-          spanGaps: false,
+          spanGaps: true,
         }]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: { display: false },
-          tooltip: {
-            backgroundColor: '#1e2127',
-            borderColor: '#2a2d35',
-            borderWidth: 1,
+          tooltip: Object.assign({}, commonTooltip, {
             callbacks: {
-              title: function(i) { return tl[i[0].dataIndex].date.split(' ')[0]; },
+              title: function(i) { return ds[i[0].dataIndex].date; },
               label: function(i) {
-                var m = tl[i.dataIndex];
-                var grade = m.form_grade || '—';
-                var score = m.form_score != null ? m.form_score : '—';
+                var p = nearestDs(i.dataIndex);
+                if (!p) return '';
+                var score = ds[i.dataIndex].form_score;
+                var grade = ds[i.dataIndex].form_grade || '—';
                 return [
-                  '  Form: ' + score + '  (Grade ' + grade + ')',
-                  '  ' + (m.won ? '✓ WIN' : '✗ LOSS') + ' vs ' + m.opponent + '  ' + m.score,
+                  '  Form: ' + (score != null ? score : '—') + '  (Grade ' + grade + ')',
+                  p.match ? '  ' + (p.won ? '✓ WIN' : '✗ LOSS') + ' vs ' + p.opponent + '  ' + p.score : '  (between matches)',
                 ];
               }
             }
-          }
+          })
         },
         scales: {
-          x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
+          x: commonXScale,
           y: {
-            min: 0,
-            max: 100,
+            min: 0, max: 100,
             grid: { color: '#2a2d35' },
-            ticks: {
-              color: '#7a7f8e',
-              callback: function(v) {
-                // Label grade thresholds; these rough values assume
-                // total_form_points ≈ 100 (as the backend caps score at 100)
-                var grades = { 85: 'S', 70: 'A', 55: 'B', 40: 'C', 0: 'D' };
-                return grades[v] != null ? grades[v] + ' (' + v + ')' : v;
-              },
-              values: [0, 40, 55, 70, 85, 100],
-            }
+            ticks: { color: '#7a7f8e' }
           }
         }
       }
@@ -3343,77 +3598,81 @@ function renderTeamDetails(d) {
   // ── Position History Chart ──
   var posCtx = document.getElementById('td-pos-chart');
   if (posCtx) {
-    var posData = tl.map(function(m) { return m.rank_after != null ? m.rank_after : null; });
-    var hasPosData = posData.some(function(v) { return v != null; });
-    if (!hasPosData) {
-      // Fallback: estimate rank from current rank + rating delta from last match
-      var lastPts = tl.length ? tl[tl.length - 1].pts_after : 0;
-      var currentRank = d.rank;
-      posData = tl.map(function(m) {
-        var diff = m.pts_after - lastPts;
-        return Math.max(1, Math.round(currentRank - diff / 5));
-      });
-    }
-    // Color points: improved rank = green, worsened = red
-    var posColors = posData.map(function(v, i) {
-      if (i === 0 || v == null) return '#f5a623';
-      var prev = posData[i - 1];
-      if (prev == null) return '#f5a623';
-      return v < prev ? '#4caf82' : v > prev ? '#e05a5a' : '#7a7f8e';
+    var posValues = ds.map(function(p) {
+      return p.rank_after != null ? p.rank_after : null;
     });
-    tdPosChart = new Chart(posCtx.getContext('2d'), {
-      type: 'line',
-      data: {
-        labels: labels,
-        datasets: [{
-          label: 'Rank',
-          data: posData,
-          borderColor: '#f5a623',
-          backgroundColor: 'rgba(245,166,35,0.06)',
-          borderWidth: 2,
-          pointRadius: 5,
-          pointBackgroundColor: posColors,
-          pointBorderColor: '#16181c',
-          pointBorderWidth: 1.5,
-          tension: 0,
-          fill: true,
-          spanGaps: true,
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: '#1e2127',
-            borderColor: '#2a2d35',
-            borderWidth: 1,
-            callbacks: {
-              title: function(i) { return tl[i[0].dataIndex].date.split(' ')[0]; },
-              label: function(i) {
-                var m = tl[i.dataIndex];
-                var rank = posData[i.dataIndex];
-                var sign = m.pts_delta >= 0 ? '+' : '';
-                return ' Rank #' + rank + '  vs ' + m.opponent + '  ' + m.score + '  (' + sign + m.pts_delta.toFixed(2) + ')';
+    // Fallback: only show dots on match days (rank only changes on match days)
+    var posRadius = ds.map(function(p) { return p.match ? 5 : 0; });
+    var posMatchValues = ds.map(function(p) {
+      return p.match && p.rank_after != null ? p.rank_after : null;
+    });
+    var posHasData = posMatchValues.some(function(v) { return v != null; });
+
+    if (posHasData) {
+      var posBg = ds.map(function(p, i) {
+        if (!p.match) return 'transparent';
+        var prev = null;
+        for (var j = i - 1; j >= 0; j--) {
+          if (ds[j].match && posMatchValues[j] != null) { prev = posMatchValues[j]; break; }
+        }
+        var cur = posMatchValues[i];
+        if (prev === null) return '#f5a623';
+        return cur < prev ? '#4caf82' : cur > prev ? '#e05a5a' : '#7a7f8e';
+      });
+
+      tdPosChart = new Chart(posCtx.getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: allLabels,
+          datasets: [{
+            label: 'Rank',
+            data: posMatchValues,
+            borderColor: '#f5a623',
+            backgroundColor: 'rgba(245,166,35,0.06)',
+            borderWidth: 2,
+            pointRadius: posRadius,
+            pointBackgroundColor: posBg,
+            pointBorderColor: '#16181c',
+            pointBorderWidth: 1.5,
+            pointHoverRadius: 7,
+            tension: 0,
+            fill: false,
+            spanGaps: true,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { display: false },
+            tooltip: Object.assign({}, commonTooltip, {
+              filter: function(item) { return item.parsed.y !== null; },
+              callbacks: {
+                title: function(i) { return ds[i[0].dataIndex].date; },
+                label: function(i) {
+                  var p = ds[i.dataIndex];
+                  if (!p.match) return '';
+                  var rank = p.rank_after;
+                  var sign = p.pts_delta >= 0 ? '+' : '';
+                  return ' Rank #' + rank + '  vs ' + p.opponent + '  ' + p.score + '  (' + sign + p.pts_delta.toFixed(2) + ')';
+                }
               }
+            })
+          },
+          scales: {
+            x: commonXScale,
+            y: {
+              reverse: true,
+              ticks: { color: '#7a7f8e', stepSize: 1, callback: function(v) { return '#' + v; } },
+              grid: { color: '#2a2d35' }
             }
           }
-        },
-        scales: {
-          x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
-          y: {
-            reverse: true,
-            ticks: {
-              color: '#7a7f8e',
-              stepSize: 1,
-              callback: function(v) { return '#' + v; }
-            },
-            grid: { color: '#2a2d35' }
-          }
         }
-      }
-    });
+      });
+    } else {
+      document.getElementById('td-pos-chart').closest('.card').style.display = 'none';
+    }
   }
 }
 
@@ -3468,10 +3727,23 @@ function renderRatingGraph(d) {
 
   document.getElementById('rg-result').innerHTML = html;
 
-  var tl = d.timeline_3m || [];
-  if (!tl.length) return;
-  var labels = tl.map(function(m) { return m.date.split(' ')[0]; });
-  var values = tl.map(function(m) { return m.pts_after; });
+  var ds = d.daily_series || [];
+  if (!ds.length) return;
+
+  var labels   = ds.map(function(p) { return p.date; });
+  var values   = ds.map(function(p) { return p.pts; });
+  var ptRadius = ds.map(function(p) { return p.match ? 5 : p.transition ? 4 : 0; });
+  var ptBg     = ds.map(function(p) {
+    if (p.match)      return p.won ? '#4caf82' : '#e05a5a';
+    if (p.transition) return '#16181c';
+    return 'transparent';
+  });
+
+  function nearestDs(idx) {
+    for (var i = idx; i >= 0; i--) { if (ds[i].match) return ds[i]; }
+    return null;
+  }
+
   var ctx = document.getElementById('rg-chart').getContext('2d');
   rgChart = new Chart(ctx, {
     type: 'line',
@@ -3483,17 +3755,20 @@ function renderRatingGraph(d) {
         borderColor: '#f5a623',
         backgroundColor: 'rgba(245,166,35,0.08)',
         borderWidth: 2,
-        pointRadius: 4,
-        pointBackgroundColor: '#f5a623',
-        pointBorderColor: '#16181c',
+        pointRadius: ptRadius,
+        pointBackgroundColor: ptBg,
+        pointBorderColor: '#f5a623',
         pointBorderWidth: 1.5,
+        pointHoverRadius: 7,
         tension: 0,
         fill: true,
+        spanGaps: false,
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
         tooltip: {
@@ -3501,17 +3776,26 @@ function renderRatingGraph(d) {
           borderColor: '#2a2d35',
           borderWidth: 1,
           callbacks: {
-            title: function(i) { return tl[i[0].dataIndex].date.split(' ')[0]; },
+            title: function(i) { return ds[i[0].dataIndex].date; },
             label: function(i) {
-              var m = tl[i.dataIndex];
-              var sign = m.pts_delta >= 0 ? '+' : '';
-              return ' ' + m.pts_after.toFixed(1) + ' pts  vs ' + m.opponent + '  ' + m.score + '  (' + sign + m.pts_delta.toFixed(2) + ')';
+              var p = nearestDs(i.dataIndex);
+              var sign = p && p.pts_delta >= 0 ? '+' : '';
+              return ' ' + ds[i.dataIndex].pts.toFixed(1) + ' pts' +
+                (p && p.match ? '  vs ' + p.opponent + '  ' + p.score + '  (' + sign + p.pts_delta.toFixed(2) + ')' : '  (decaying)');
             }
           }
         }
       },
       scales: {
-        x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
+        x: {
+          type: 'category',
+          ticks: {
+            color: '#7a7f8e',
+            maxTicksLimit: 10,
+            callback: function(val, idx) { return ds[idx] && ds[idx].match ? ds[idx].date : null; }
+          },
+          grid: { color: '#2a2d35' }
+        },
         y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } }
       }
     }
@@ -3581,11 +3865,21 @@ function renderFormGraph(d) {
 
   document.getElementById('fg-result').innerHTML = html;
 
-  var tl = d.timeline_3m || [];
-  if (!tl.length) return;
-  var labels = tl.map(function(m) { return m.date.split(' ')[0]; });
-  var formScores = tl.map(function(m) { return m.form_score != null ? m.form_score : null; });
-  var formPointColors = tl.map(function(m) { return m.won ? '#4caf82' : '#e05a5a'; });
+  var ds = d.daily_series || [];
+  if (!ds.length) return;
+
+  var labels   = ds.map(function(p) { return p.date; });
+  var ptRadius = ds.map(function(p) { return p.match ? 5 : p.transition ? 4 : 0; });
+  var ptBg     = ds.map(function(p) {
+    if (p.match)      return p.won ? '#4caf82' : '#e05a5a';
+    if (p.transition) return '#16181c';
+    return 'transparent';
+  });
+
+  function nearestDs(idx) {
+    for (var i = idx; i >= 0; i--) { if (ds[i].match) return ds[i]; }
+    return null;
+  }
 
   var ctx = document.getElementById('fg-chart').getContext('2d');
   fgChart = new Chart(ctx, {
@@ -3594,22 +3888,24 @@ function renderFormGraph(d) {
       labels: labels,
       datasets: [{
         label: 'Form Score',
-        data: formScores,
+        data: ds.map(function(p) { return p.form_score != null ? p.form_score : null; }),
         borderColor: '#f5a623',
         backgroundColor: 'rgba(245,166,35,0.07)',
         borderWidth: 2,
-        pointRadius: 5,
-        pointBackgroundColor: formPointColors,
-        pointBorderColor: '#16181c',
+        pointRadius: ptRadius,
+        pointBackgroundColor: ptBg,
+        pointBorderColor: '#f5a623',
         pointBorderWidth: 1.5,
+        pointHoverRadius: 7,
         tension: 0,
         fill: true,
-        spanGaps: false,
+        spanGaps: true,
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
         tooltip: {
@@ -3617,33 +3913,33 @@ function renderFormGraph(d) {
           borderColor: '#2a2d35',
           borderWidth: 1,
           callbacks: {
-            title: function(i) { return tl[i[0].dataIndex].date.split(' ')[0]; },
+            title: function(i) { return ds[i[0].dataIndex].date; },
             label: function(i) {
-              var m = tl[i.dataIndex];
-              var grade = m.form_grade || '—';
-              var score = m.form_score != null ? m.form_score : '—';
+              var p = nearestDs(i.dataIndex);
+              var score = ds[i.dataIndex].form_score;
+              var grade = ds[i.dataIndex].form_grade || '—';
               return [
-                '  Form: ' + score + '  (Grade ' + grade + ')',
-                '  ' + (m.won ? '✓ WIN' : '✗ LOSS') + ' vs ' + m.opponent + '  ' + m.score,
+                '  Form: ' + (score != null ? score : '—') + '  (Grade ' + grade + ')',
+                p && p.match ? '  ' + (p.won ? '✓ WIN' : '✗ LOSS') + ' vs ' + p.opponent + '  ' + p.score : '  (between matches)',
               ];
             }
           }
         }
       },
       scales: {
-        x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
-        y: {
-          min: 0,
-          max: 100,
-          grid: { color: '#2a2d35' },
+        x: {
+          type: 'category',
           ticks: {
             color: '#7a7f8e',
-            callback: function(v) {
-              var grades = { 85: 'S', 70: 'A', 55: 'B', 40: 'C', 0: 'D' };
-              return grades[v] != null ? grades[v] + ' (' + v + ')' : v;
-            },
-            values: [0, 40, 55, 70, 85, 100],
-          }
+            maxTicksLimit: 10,
+            callback: function(val, idx) { return ds[idx] && ds[idx].match ? ds[idx].date : null; }
+          },
+          grid: { color: '#2a2d35' }
+        },
+        y: {
+          min: 0, max: 100,
+          grid: { color: '#2a2d35' },
+          ticks: { color: '#7a7f8e' }
         }
       }
     }

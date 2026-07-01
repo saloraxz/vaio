@@ -536,7 +536,11 @@ def simulate_elo(
 def get_rankings(
     limit: int = Query(50, ge=1, le=200),
     search: str = Query("", description="Filter by team name"),
+    as_of: str = Query("", description="View rankings as of YYYY-MM-DD. Defaults to today."),
 ):
+    from collections import defaultdict
+    from datetime import timedelta
+
     data = load_data()
     teams: dict = data.get("teams", {})
     peaks: dict = data.get("peaks", {})
@@ -544,36 +548,90 @@ def get_rankings(
     history: list = data.get("history", [])
     best_ever_rank: dict = _compute_best_ever_ranks_cached(history, teams=teams)
 
-    # Build sparkline data from last 30 days of per-team ratings.
-    from collections import defaultdict
-    from datetime import timedelta
-
-    team_spark: dict = defaultdict(list)
-    cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    for entry in history:
-        date_str = entry.get("date", "")
-        if date_str[:10] < cutoff:
-            continue
-        for side in ("t1", "t2"):
-            team_name = entry[side]["name"]
-            team_spark[team_name].append(round(entry[side]["pts_after"], 2))
-
-    # Build date index for O(log n) last-match lookups
-    date_index = _build_match_date_index(history)
     today = datetime.now()
 
-    # Compute depreciated display ratings
-    team_display: dict = {}
-    for name, pts in teams.items():
-        last = _get_last_match_date(name, index=date_index)
-        if last is None:
-            team_display[name] = pts
+    # Parse as_of — default to today (live)
+    if as_of:
+        try:
+            as_of_dt = datetime.strptime(as_of.strip(), "%Y-%m-%d").replace(
+                hour=23, minute=59, second=59
+            )
+        except ValueError:
+            raise HTTPException(status_code=400, detail="as_of must be YYYY-MM-DD")
+    else:
+        as_of_dt = today
+
+    is_historical = as_of_dt.date() < today.date()
+
+    def _parse_entry_dt(date_str):
+        """Parse a history entry date like '2026-03-18 10:00 UTC'."""
+        if not date_str or date_str == "N/A":
+            return None
+        s = date_str.replace(" UTC", "").strip()
+        try:
+            return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
+        try:
+            return datetime.strptime(s, "%Y-%m-%d %H:%M")
+        except ValueError:
+            pass
+        try:
+            return datetime.strptime(s[:10], "%Y-%m-%d")
+        except ValueError:
+            return None
+
+    if is_historical:
+        # Replay history to reconstruct ratings/last-match for every team
+        # as they stood at end-of-day on as_of_dt.
+        ref_teams: dict = {}       # name -> pts_after as of as_of_dt
+        ref_last_match: dict = {}  # name -> most recent match datetime as of as_of_dt
+        ref_peak: dict = {}        # name -> {"points": float, "date": str}
+
+        for entry in history:
+            match_dt = _parse_entry_dt(entry.get("date", ""))
+            if match_dt is None or match_dt > as_of_dt:
+                continue
+            for side in ("t1", "t2"):
+                name = entry[side]["name"]
+                pts_after = entry[side]["pts_after"]
+                prev_last = ref_last_match.get(name)
+                if prev_last is None or match_dt >= prev_last:
+                    ref_teams[name] = pts_after
+                    ref_last_match[name] = match_dt
+                if name not in ref_peak or pts_after > ref_peak[name]["points"]:
+                    ref_peak[name] = {"points": pts_after, "date": entry.get("date", "")}
+
+        ref_today = as_of_dt
+    else:
+        ref_teams = teams
+        date_index = _build_match_date_index(history)
+        ref_last_match = {
+            name: _get_last_match_date(name, index=date_index)
+            for name in teams
+        }
+        ref_peak = peaks
+        ref_today = today
+
+    # Sparkline: ratings over the 30 days leading up to as_of_dt
+    team_spark: dict = defaultdict(list)
+    spark_cutoff = (as_of_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+    as_of_str = as_of_dt.strftime("%Y-%m-%d")
+    for entry in history:
+        d10 = entry.get("date", "")[:10]
+        if d10 < spark_cutoff or d10 > as_of_str:
             continue
-        days_inactive = (today - last).days
+        for side in ("t1", "t2"):
+            team_spark[entry[side]["name"]].append(round(entry[side]["pts_after"], 2))
+
+    # Depreciate ratings relative to ref_today
+    team_display: dict = {}
+    for name, pts in ref_teams.items():
+        last = ref_last_match.get(name)
+        days_inactive = max(0, (ref_today - last).days) if last else 0
         team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
 
-    # Sort by depreciated rating so rank reflects real standing
-    ranked = sorted(teams.items(), key=lambda x: team_display[x[0]], reverse=True)
+    ranked = sorted(ref_teams.items(), key=lambda x: team_display[x[0]], reverse=True)
 
     results = []
     for rank, (name, pts) in enumerate(ranked, 1):
@@ -581,10 +639,9 @@ def get_rankings(
             continue
         dep_pts = team_display[name]
         dep_loss = round(pts - dep_pts, 2)
-        last_match = _get_last_match_date(name, index=date_index)
-        days_inactive = (today - last_match).days if last_match else 0
-        peak_info = peaks.get(name, {})
-        spark = team_spark.get(name, [])
+        last_match = ref_last_match.get(name)
+        days_inactive = max(0, (ref_today - last_match).days) if last_match else 0
+        peak_info = ref_peak.get(name, {})
         results.append({
             "rank": rank,
             "name": name,
@@ -597,10 +654,10 @@ def get_rankings(
             "peak_rank": best_ever_rank.get(name),
             "provisional": name in provisional,
             "matches_until_ranked": provisional.get(name, 0) if name in provisional else None,
-            "sparkline": spark,
+            "sparkline": team_spark.get(name, []),
         })
 
-    return {"total": len(results), "rankings": results[:limit]}
+    return {"total": len(results), "rankings": results[:limit], "as_of": as_of_str}
 
 
 # ---------------------------------------------------------------------------
@@ -751,6 +808,82 @@ def get_team(team_name: str):
     peak_info = dict(peaks.get(matched, {}))
     peak_info["rank"] = _compute_best_ever_ranks_cached(history, teams=teams).get(matched, peak_info.get("rank"))
 
+    # Day-by-day expanded series (90 days) with depreciation between matches
+    daily_series: list = []
+    if timeline_3m:
+        match_lookup: dict = {}
+        form_lookup:  dict = {}
+        for m in timeline_3m:
+            dk = m["date"][:10]
+            match_lookup[dk] = m
+            if m.get("form_score") is not None:
+                form_lookup[dk] = (m["form_score"], m.get("form_grade", ""))
+
+        # Carry rating from the last match before the window
+        carried_rating_val = None
+        for m in timeline:
+            pd_ = parse_date(m["date"])
+            if pd_ and pd_ < cutoff_3m:
+                carried_rating_val = m["pts_after"]
+        if carried_rating_val is None and timeline_3m:
+            carried_rating_val = timeline_3m[0]["pts_before"]
+
+        current_day      = cutoff_3m.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_day          = today.replace(hour=0, minute=0, second=0, microsecond=0)
+        current_rating   = carried_rating_val
+        last_match_day   = cutoff_3m
+
+        # Seed last_match_day to the actual last match before the window
+        for m in reversed(timeline):
+            pd_ = parse_date(m["date"])
+            if pd_ and pd_ < cutoff_3m:
+                last_match_day = pd_
+                break
+
+        current_form = None
+        current_form_grade = None
+
+        while current_day <= end_day:
+            dk = current_day.strftime("%Y-%m-%d")
+            is_match = dk in match_lookup
+            if is_match:
+                m = match_lookup[dk]
+                current_rating = m["pts_after"]
+                last_match_day = current_day
+                if dk in form_lookup:
+                    current_form, current_form_grade = form_lookup[dk]
+
+            days_inactive = (current_day - last_match_day).days
+            display_rating = _calculate_depreciation(
+                current_rating, days_inactive, team_name=matched, history=history
+            )
+
+            daily_series.append({
+                "date":       dk,
+                "pts":        round(display_rating, 2),
+                "match":      is_match,
+                "won":        match_lookup[dk]["won"] if is_match else None,
+                "opponent":   match_lookup[dk]["opponent"] if is_match else None,
+                "score":      match_lookup[dk]["score"] if is_match else None,
+                "pts_delta":  match_lookup[dk]["pts_delta"] if is_match else None,
+                "form_score": current_form,
+                "form_grade": current_form_grade,
+                "deprecated": days_inactive > DEPRECIATION_THRESHOLD,
+                "transition": False,
+            })
+            current_day += timedelta(days=1)
+
+        # Mark transition points (day before each match after a gap > 1 day)
+        for i in range(1, len(daily_series)):
+            if daily_series[i]["match"]:
+                prev_match_i = next(
+                    (j for j in range(i - 1, -1, -1) if daily_series[j]["match"]),
+                    None
+                )
+                gap = (i - prev_match_i) if prev_match_i is not None else i
+                if gap > 1:
+                    daily_series[i - 1]["transition"] = True
+
     return {
         "name": matched,
         "points": round(dep_pts, 2),
@@ -770,6 +903,7 @@ def get_team(team_name: str):
         "pts_delta_3m": pts_delta_3m,
         "timeline": timeline,
         "timeline_3m": timeline_3m,
+        "daily_series": daily_series,
     }
 
 
@@ -1451,13 +1585,224 @@ def list_teams(search: str = Query("")):
 
 
 @app.get("/api/events")
-def list_events(search: str = Query("")):
+def list_events(
+    search: str = Query(""),
+    month: str = Query("", description="Filter to events active in YYYY-MM"),
+):
     data = load_data()
     history: list = data.get("history", [])
+
+    if month:
+        try:
+            y, mo = month.split("-")
+            month_start = datetime(int(y), int(mo), 1)
+            month_end = datetime(int(y) + 1, 1, 1) if int(mo) == 12 else datetime(int(y), int(mo) + 1, 1)
+        except Exception:
+            raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+
+        def _in_month(date_str):
+            if not date_str or date_str == "N/A":
+                return False
+            try:
+                d = _parse_match_date(date_str)
+                return month_start <= d < month_end
+            except Exception:
+                return False
+
+        events_in_month: dict = {}
+        for h in history:
+            ev = h.get("event") or h.get("event_name")
+            if ev and _in_month(h.get("date", "")):
+                events_in_month.setdefault(ev, {"match_count": 0, "tier": h.get("tier", "")})
+                events_in_month[ev]["match_count"] += 1
+        result = [
+            {"name": k, "match_count": v["match_count"], "tier": v["tier"]}
+            for k, v in sorted(events_in_month.items())
+            if not search or search.lower() in k.lower()
+        ]
+        return {"events": result}
+
     events = sorted({h["event"] for h in history if h.get("event")})
     if search:
         events = [e for e in events if search.lower() in e.lower()]
     return {"events": events}
+
+
+@app.get("/api/event-summary")
+def get_event_summary(event: str = Query(..., description="Exact event name")):
+    data = load_data()
+    history: list = data.get("history", [])
+
+    event_matches = [
+        m for m in history
+        if (m.get("event") or m.get("event_name", "")) == event
+    ]
+    if not event_matches:
+        raise HTTPException(status_code=404, detail=f"No matches found for event '{event}'")
+
+    sorted_matches = sorted(event_matches, key=lambda m: m.get("date", ""))
+
+    tier = sorted_matches[0].get("tier", "N/A")
+    env_counts: dict = {}
+    for m in sorted_matches:
+        env_counts[m.get("env", "UNKNOWN")] = env_counts.get(m.get("env", "UNKNOWN"), 0) + 1
+
+    dates = []
+    for m in sorted_matches:
+        ds = m.get("date", "")
+        if ds and ds != "N/A":
+            try:
+                dates.append(datetime.strptime(ds[:10], "%Y-%m-%d").date())
+            except Exception:
+                pass
+
+    start_date = min(dates) if dates else None
+    end_date   = max(dates) if dates else None
+
+    team_stats: dict = {}
+    for m in sorted_matches:
+        for side in ("t1", "t2"):
+            td = m.get(side, {})
+            name = td.get("name")
+            if not name:
+                continue
+            pts_before = td.get("pts_before")
+            pts_after  = td.get("pts_after")
+            if pts_before is None or pts_after is None:
+                continue
+            opp_side = "t2" if side == "t1" else "t1"
+            my_score  = td.get("score", 0)
+            opp_score = m.get(opp_side, {}).get("score", 0)
+            won = my_score > opp_score
+            if name not in team_stats:
+                team_stats[name] = {
+                    "start_rating": float(pts_before),
+                    "end_rating":   float(pts_after),
+                    "wins": 0, "losses": 0,
+                    "maps_won": 0, "maps_lost": 0,
+                    "matches": 0,
+                }
+            s = team_stats[name]
+            s["matches"]    += 1
+            s["end_rating"]  = float(pts_after)
+            s["wins"]       += 1 if won else 0
+            s["losses"]     += 0 if won else 1
+            s["maps_won"]   += my_score
+            s["maps_lost"]  += opp_score
+
+    team_first_gi: dict = {}
+    team_last_gi:  dict = {}
+    for gi, m in enumerate(history):
+        ev = m.get("event") or m.get("event_name", "")
+        if ev != event:
+            continue
+        for side in ("t1", "t2"):
+            name = m.get(side, {}).get("name")
+            if not name:
+                continue
+            if name not in team_first_gi:
+                team_first_gi[name] = gi
+            team_last_gi[name] = gi
+
+    for name in team_stats:
+        first_gi = team_first_gi.get(name)
+        last_gi  = team_last_gi.get(name)
+        form_start = None
+        if first_gi is not None:
+            f = _calculate_form_at_match_index(name, first_gi, history)
+            if f:
+                form_start = {"grade": f[0], "score": f[1]}
+        form_end = None
+        if last_gi is not None:
+            f = _calculate_form_at_match_index(name, last_gi + 1, history)
+            if f:
+                form_end = {"grade": f[0], "score": f[1]}
+        team_stats[name]["form_start"]    = form_start
+        team_stats[name]["form_end"]      = form_end
+        team_stats[name]["rating_change"] = team_stats[name]["end_rating"] - team_stats[name]["start_rating"]
+        team_stats[name]["form_change"]   = (
+            round(form_end["score"] - form_start["score"], 1)
+            if form_start and form_end else None
+        )
+        team_stats[name]["map_diff"] = team_stats[name]["maps_won"] - team_stats[name]["maps_lost"]
+
+    upsets = []
+    for m in sorted_matches:
+        t1, t2 = m.get("t1", {}), m.get("t2", {})
+        pb1, pb2 = t1.get("pts_before", 0), t2.get("pts_before", 0)
+        pa1, pa2 = t1.get("pts_after",  0), t2.get("pts_after",  0)
+        s1, s2   = t1.get("score", 0), t2.get("score", 0)
+        if not (pb1 and pb2):
+            continue
+        if s1 > s2 and pb1 < pb2:
+            upsets.append({"diff": round(pb2 - pb1, 1), "winner": t1.get("name"), "loser": t2.get("name"),
+                           "score": f"{s1}-{s2}", "winner_pts_delta": round(pa1 - pb1, 2), "loser_pts_delta": round(pa2 - pb2, 2)})
+        elif s2 > s1 and pb2 < pb1:
+            upsets.append({"diff": round(pb1 - pb2, 1), "winner": t2.get("name"), "loser": t1.get("name"),
+                           "score": f"{s2}-{s1}", "winner_pts_delta": round(pa2 - pb2, 2), "loser_pts_delta": round(pa1 - pb1, 2)})
+    upsets.sort(key=lambda x: x["diff"], reverse=True)
+
+    grand_final = None
+    for m in sorted_matches:
+        if m.get("grand_final"):
+            t1, t2 = m.get("t1", {}), m.get("t2", {})
+            s1, s2 = t1.get("score", 0), t2.get("score", 0)
+            winner = t1.get("name") if s1 > s2 else t2.get("name")
+            loser  = t2.get("name") if s1 > s2 else t1.get("name")
+            grand_final = {"winner": winner, "loser": loser, "score": f"{max(s1,s2)}-{min(s1,s2)}"}
+            break
+
+    all_changes   = [s["rating_change"] for s in team_stats.values()]
+    avg_rating_change = round(sum(all_changes) / len(all_changes), 1) if all_changes else 0
+    form_changes  = [s["form_change"] for s in team_stats.values() if s["form_change"] is not None]
+    avg_form_change = round(sum(form_changes) / len(form_changes), 1) if form_changes else None
+
+    highest_team   = max(team_stats.items(), key=lambda x: x[1]["end_rating"], default=None)
+    most_maps_team = max(team_stats.items(), key=lambda x: x[1]["maps_won"] + x[1]["maps_lost"], default=None)
+
+    gainers        = sorted([(n, s) for n, s in team_stats.items() if s["rating_change"] > 0],  key=lambda x: x[1]["rating_change"], reverse=True)
+    losers         = sorted([(n, s) for n, s in team_stats.items() if s["rating_change"] < 0],  key=lambda x: x[1]["rating_change"])
+    form_improvers = sorted([(n, s) for n, s in team_stats.items() if (s["form_change"] or 0) > 0], key=lambda x: x[1]["form_change"], reverse=True)
+    form_decliners = sorted([(n, s) for n, s in team_stats.items() if (s["form_change"] or 0) < 0], key=lambda x: x[1]["form_change"])
+
+    def _ts(name, s):
+        return {
+            "name": name,
+            "start_rating": round(s["start_rating"]),
+            "end_rating":   round(s["end_rating"]),
+            "rating_change": round(s["rating_change"], 1),
+            "wins": s["wins"], "losses": s["losses"],
+            "maps_won": s["maps_won"], "maps_lost": s["maps_lost"],
+            "map_diff": s["map_diff"],
+            "form_start": s["form_start"], "form_end": s["form_end"],
+            "form_change": s["form_change"],
+        }
+
+    return {
+        "event": event,
+        "tier": tier,
+        "environments": env_counts,
+        "match_count": len(sorted_matches),
+        "team_count": len(team_stats),
+        "start_date": str(start_date) if start_date else None,
+        "end_date":   str(end_date)   if end_date   else None,
+        "grand_final": grand_final,
+        "gainers":        [_ts(n, s) for n, s in gainers[:5]],
+        "losers":         [_ts(n, s) for n, s in losers[:5]],
+        "form_improvers": [_ts(n, s) for n, s in form_improvers[:5]],
+        "form_decliners": [_ts(n, s) for n, s in form_decliners[:5]],
+        "upsets":         upsets[:3],
+        "all_teams":      [_ts(n, s) for n, s in sorted(team_stats.items(), key=lambda x: x[1]["end_rating"], reverse=True)],
+        "stats": {
+            "highest_rated_team": highest_team[0] if highest_team else None,
+            "highest_rated_pts":  round(highest_team[1]["end_rating"]) if highest_team else None,
+            "most_maps_team":     most_maps_team[0] if most_maps_team else None,
+            "most_maps_count":    (most_maps_team[1]["maps_won"] + most_maps_team[1]["maps_lost"]) if most_maps_team else None,
+            "most_maps_matches":  most_maps_team[1]["matches"] if most_maps_team else None,
+            "avg_rating_change":  avg_rating_change,
+            "avg_form_change":    avg_form_change,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1472,12 +1817,44 @@ def _parse_match_date(date_str: str):
         return datetime.strptime(clean[:10], "%Y-%m-%d")
 
 
+@app.get("/api/home/months")
+def home_months():
+    """
+    Distinct YYYY-MM values for which match history exists, newest first.
+    Powers the Month Summary page's month picker.
+    """
+    data = load_data()
+    history: list = data.get("history", [])
+
+    months: set = set()
+    for m in history:
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        try:
+            d = _parse_match_date(date_str)
+        except Exception:
+            continue
+        months.add(f"{d.year:04d}-{d.month:02d}")
+
+    return {"months": sorted(months, reverse=True)}
+
+
 @app.get("/api/home")
-def home(end: str = Query("", description="Optional YYYY-MM-DD — when set, win/loss streak tiles are computed as of this date instead of live. Every other tile on this endpoint is unaffected and always reflects the current live state.")):
+def home(
+    end: str = Query("", description="Optional YYYY-MM-DD — when set, win/loss streak tiles are computed as of this date instead of live. Every other tile on this endpoint is unaffected and always reflects the current live state."),
+    start: str = Query("", description="Optional YYYY-MM-DD — when set together with `end`, replaces the default rolling 30-day window with the explicit [start, end] range (used by Month Summary). `end` is also treated as the 'as of' point in time for rank/rating snapshots in this case, instead of live `now`."),
+):
     """
     Aggregated data for the Home screen — all tiles below are scoped to the
     last 30 days unless noted otherwise, computed fresh per-request except
     where noted (peak/best-ever-rank reuses the existing cached replay).
+
+    When `start` and `end` are both supplied (Month Summary), the window
+    becomes [start, end] instead of the default rolling 30 days, and `end`
+    is used as the "as of" point in time for current rank / rating
+    snapshots instead of live `now` — so a historical month reflects
+    standings as they actually were at the end of that month.
     """
     from datetime import timedelta
 
@@ -1485,8 +1862,8 @@ def home(end: str = Query("", description="Optional YYYY-MM-DD — when set, win
     history: list = data.get("history", [])
     teams: dict = data.get("teams", {})
 
-    today = datetime.now()
-    cutoff_30d = today - timedelta(days=30)
+    today = _parse_match_date(end + " 23:59") if (start and end) else datetime.now()
+    cutoff_30d = _parse_match_date(start + " 00:00") if (start and end) else today - timedelta(days=30)
     streak_as_of = _parse_match_date(end + " 23:59") if end else None
 
     recent: list = []
@@ -1498,7 +1875,7 @@ def home(end: str = Query("", description="Optional YYYY-MM-DD — when set, win
             d = _parse_match_date(date_str)
         except Exception:
             continue
-        if d >= cutoff_30d:
+        if d >= cutoff_30d and d <= today:
             recent.append((d, m))
     recent.sort(key=lambda x: x[0])  # chronological, oldest first
 
