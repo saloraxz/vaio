@@ -799,7 +799,7 @@ tr:last-child td { border-bottom: none; }
     <a data-page="team-details">Team Details</a>
     <a data-page="h2h">Head to Head</a>
     <a data-page="month-summary">Month Summary</a>
-    <a data-page="" class="wip">Event Summary <span class="wip-tag">WIP</span></a>
+    <a data-page="event-summary">Event Summary</a>
   </nav>
   <div class="sidebar-meta" id="sidebar-meta">
     <span>Loading...</span>
@@ -862,13 +862,13 @@ tr:last-child td { border-bottom: none; }
     </span>
     <span>Form Graph</span>
   </a>
-  <a data-page="" class="more-sheet-item wip">
+  <a data-page="event-summary" class="more-sheet-item">
     <span class="more-sheet-icon">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
     </span>
     <span>Analyse Team Form <span class="wip-tag">WIP</span></span>
   </a>
-  <a data-page="" class="more-sheet-item wip">
+  <a data-page="event-summary" class="more-sheet-item">
     <span class="more-sheet-icon">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.2l1.3 2.8h-2.6z" fill="currentColor"/><path d="M4 7h16M7 7l-3 9M7 7l3 9M17 7l-3 9M17 7l3 9"/><path d="M4 16a3.5 1.6 0 0 0 6 0"/><path d="M14 16a3.5 1.6 0 0 0 6 0"/><path d="M12 7v13M9 20h6"/></svg>
     </span>
@@ -880,11 +880,11 @@ tr:last-child td { border-bottom: none; }
     </span>
     <span>Month Summary</span>
   </a>
-  <a data-page="" class="more-sheet-item wip">
+  <a data-page="event-summary" class="more-sheet-item">
     <span class="more-sheet-icon">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4zM7 6H4a2 2 0 0 0 0 4h1M17 6h3a2 2 0 0 1 0 4h-1"/></svg>
     </span>
-    <span>Event Summary <span class="wip-tag">WIP</span></span>
+    <span>Event Summary</span>
   </a>
 </div>
 
@@ -1182,16 +1182,21 @@ tr:last-child td { border-bottom: none; }
       <div class="analytics-grid" id="ms-cold-teams"><div class="loading"><div class="spinner"></div> Loading…</div></div>
     </div>
 
-    <!-- Event Summary -->
-    <div class="card">
-      <div class="page-header" style="margin-bottom:12px">
-        <h2 style="font-size:1rem">Event Summary</h2>
+  </div>
+
+  <!-- Event Summary -->
+  <div class="page" id="page-event-summary">
+    <div class="page-header">
+      <h2>Event Summary</h2>
+      <div class="controls" style="margin-top:12px;margin-bottom:0;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <div class="search-wrap" style="display:inline-block;width:320px">
+          <input type="text" id="es-search" placeholder="Search event…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="es-dd"></div>
+        </div>
+        <button onclick="esSelectEvent(document.getElementById('es-search').value)">View</button>
       </div>
-      <select id="ms-event-select" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:0.9rem;cursor:pointer;width:100%;margin-bottom:16px">
-        <option value="">Select a month first…</option>
-      </select>
-      <div id="ms-event-summary"><div class="empty-msg" style="padding:12px 0">Select an event above to view its summary.</div></div>
     </div>
+    <div id="es-result"></div>
   </div>
 
   <!-- Team Details -->
@@ -1426,6 +1431,7 @@ document.querySelectorAll('nav a[data-page]').forEach(a => {
     if (page === 'history')       loadHistory(1);
     if (page === 'analytics')     loadAnalytics();
     if (page === 'month-summary') loadMonthSummary();
+    if (page === 'event-summary')  initEventSummaryPage();
     if (page === 'team-details')  { setTimeout(() => document.getElementById('td-input').focus(), 50); }
     if (page === 'rating-graph')  { setTimeout(() => document.getElementById('rg-input').focus(), 50); }
     if (page === 'form-graph')    { setTimeout(() => document.getElementById('fg-input').focus(), 50); }
@@ -1629,37 +1635,27 @@ async function renderMonthSummaryForMonth(ym) {
     ids.forEach(id => setError(id, e.message));
   }
 
-  // Populate event picker for this month
-  try {
-    const evData = await api(`/api/events?month=${ym}`);
-    const evSel = document.getElementById('ms-event-select');
-    if (!evData.events || !evData.events.length) {
-      evSel.innerHTML = '<option value="">No events this month</option>';
-    } else {
-      evSel.innerHTML = '<option value="">— Select event —</option>' +
-        evData.events.map(e => {
-          const tier = e.tier ? ` [${e.tier}]` : '';
-          return `<option value="${e.name.replace(/"/g,'&quot;')}">${e.name}${tier} (${e.match_count} matches)</option>`;
-        }).join('');
-    }
-    evSel.onchange = () => { if (evSel.value) loadEventSummary(evSel.value); else setEl('ms-event-summary','<div class="empty-msg" style="padding:12px 0">Select an event above.</div>'); };
-    setEl('ms-event-summary', '<div class="empty-msg" style="padding:12px 0">Select an event above to view its summary.</div>');
-  } catch(e) {
-    document.getElementById('ms-event-select').innerHTML = '<option value="">Error loading events</option>';
+}
+
+// ── Event Summary page ───────────────────────────────────────────────────────
+function initEventSummaryPage() {
+  if (!document.getElementById('es-result').dataset.ready) {
+    document.getElementById('es-result').dataset.ready = '1';
+    setEl('es-result', '<div class="empty-msg" style="padding:40px 0;text-align:center">Search for an event above to view its summary.</div>');
   }
 }
 
-async function loadEventSummary(eventName) {
-  setEl('ms-event-summary', '<div class="loading"><div class="spinner"></div> Loading event summary…</div>');
-  try {
-    const d = await api(`/api/event-summary?event=${encodeURIComponent(eventName)}`);
-    renderEventSummary(d);
-  } catch(e) {
-    setEl('ms-event-summary', `<div class="empty-msg">Error: ${e.message}</div>`);
-  }
+function esSelectEvent(name) {
+  if (!name) return;
+  document.getElementById('es-search').value = name;
+  document.getElementById('es-dd').style.display = 'none';
+  setEl('es-result', '<div class="loading"><div class="spinner"></div> Loading…</div>');
+  api(`/api/event-summary?event=${encodeURIComponent(name)}`)
+    .then(d => { setEl('es-result', renderEventSummaryHTML(d)); })
+    .catch(e => { setEl('es-result', `<div class="empty-msg">Error: ${e.message}</div>`); });
 }
 
-function renderEventSummary(d) {
+function renderEventSummaryHTML(d) {
   const tierColor = { S: '#f5c518', A: '#4caf82', B: '#5b9cf6', C: '#f5a623', D: '#e05a5a' };
   const sign = v => v >= 0 ? `+${v}` : `${v}`;
   const fmtForm = f => f ? `${f.grade} (${f.score})` : '—';
@@ -1758,7 +1754,7 @@ function renderEventSummary(d) {
       <td style="padding:6px 8px;text-align:right">${fmtForm(t.form_end)}</td>
     </tr>`).join('');
 
-  setEl('ms-event-summary', `
+  return `
     <div style="border-top:1px solid var(--border);padding-top:16px">
       <!-- Header -->
       <div style="margin-bottom:16px">
@@ -1838,7 +1834,7 @@ function renderEventSummary(d) {
         </div>
       </div>
     </div>
-  `);
+  `;
 }
 
 function renderMSTopTeam(team) {
@@ -3171,6 +3167,7 @@ document.querySelectorAll('.more-sheet-item[data-page]').forEach(a => {
     if (page === 'rankings')      loadRankings();
     if (page === 'history')       loadHistory(1);
     if (page === 'month-summary') loadMonthSummary();
+    if (page === 'event-summary')  initEventSummaryPage();
     if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
     if (page === 'rating-graph') { setTimeout(() => document.getElementById('rg-input').focus(), 50); }
     if (page === 'form-graph')   { setTimeout(() => document.getElementById('fg-input').focus(), 50); }
@@ -3311,6 +3308,9 @@ attachAutocomplete('hist-team', 'hist-team-dd', 'team', function(val) {
   loadHistory(1);
 });
 
+attachAutocomplete('es-search', 'es-dd', 'event', function(val) {
+  if (val) esSelectEvent(val);
+});
 attachAutocomplete('hist-event', 'hist-event-dd', 'event', function(val) {
   loadHistory(1);
 });
