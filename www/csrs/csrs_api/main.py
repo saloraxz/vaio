@@ -2388,6 +2388,146 @@ def home(
 
 
 # ---------------------------------------------------------------------------
+# Match page
+# ---------------------------------------------------------------------------
+
+@app.get("/api/match")
+def get_match(url: str = Query(..., description="HLTV match URL")):
+    """Return full details for a single match by its HLTV URL."""
+    data     = load_data()
+    history  = data.get("history", [])
+    teams    = data.get("teams", {})
+
+    # Find the entry
+    entry = next(
+        (m for m in history if m.get("url", "").rstrip("/") == url.rstrip("/")),
+        None,
+    )
+    if not entry:
+        raise HTTPException(status_code=404, detail="Match not found")
+
+    t1d = entry.get("t1", {})
+    t2d = entry.get("t2", {})
+    t1  = t1d.get("name", "")
+    t2  = t2d.get("name", "")
+
+    # Global index — used for form lookups
+    gi = next(
+        (i for i, m in enumerate(history) if m.get("url", "").rstrip("/") == url.rstrip("/")),
+        None,
+    )
+
+    # Form just before this match
+    form_t1_before = _calculate_form_at_match_index(t1, gi, history)     if gi is not None else None
+    form_t2_before = _calculate_form_at_match_index(t2, gi, history)     if gi is not None else None
+    form_t1_after  = _calculate_form_at_match_index(t1, gi + 1, history) if gi is not None else None
+    form_t2_after  = _calculate_form_at_match_index(t2, gi + 1, history) if gi is not None else None
+
+    def fmt_form(f):
+        if not f:
+            return None
+        return {"grade": f[0], "score": round(f[1], 1)}
+
+    # Recent form (last 5 matches before this one for each team)
+    def recent_results(team_name, before_gi, n=5):
+        results = []
+        for m in reversed(history[:before_gi]):
+            for side in ("t1", "t2"):
+                if m.get(side, {}).get("name") == team_name:
+                    opp_side = "t2" if side == "t1" else "t1"
+                    my_score  = m[side].get("score", 0)
+                    opp_score = m[opp_side].get("score", 0)
+                    results.append({
+                        "won":      my_score > opp_score,
+                        "score":    f"{my_score}–{opp_score}",
+                        "opponent": m[opp_side].get("name", ""),
+                        "date":     m.get("date", "")[:10],
+                    })
+                    break
+            if len(results) >= n:
+                break
+        return list(reversed(results))
+
+    # H2H all time
+    h2h = {"t1_wins": 0, "t2_wins": 0, "matches": []}
+    for m in history[:gi] if gi is not None else history:
+        names = {m.get("t1", {}).get("name"), m.get("t2", {}).get("name")}
+        if {t1, t2} != names:
+            continue
+        s1 = m["t1"].get("score", 0)
+        s2 = m["t2"].get("score", 0)
+        t1_won = (m["t1"]["name"] == t1 and s1 > s2) or (m["t2"]["name"] == t1 and s2 > s1)
+        if t1_won:
+            h2h["t1_wins"] += 1
+        else:
+            h2h["t2_wins"] += 1
+        h2h["matches"].append({
+            "date":   m.get("date", "")[:10],
+            "event":  m.get("event", ""),
+            "score":  f"{s1}–{s2}" if m["t1"]["name"] == t1 else f"{s2}–{s1}",
+            "t1_won": t1_won,
+            "url":    m.get("url"),
+        })
+    h2h["matches"] = h2h["matches"][-5:]  # last 5
+
+    # Rank at time of match (approximate from pts_before)
+    def rank_at_match(team_name, pts_before):
+        """Estimate rank just before this match using pts_before snapshot."""
+        if gi is None:
+            return None
+        snap = {}
+        for m in history[:gi]:
+            for side in ("t1", "t2"):
+                snap[m[side]["name"]] = m[side]["pts_after"]
+        snap[team_name] = pts_before
+        ranked = sorted(snap.values(), reverse=True)
+        return sum(1 for p in ranked if p > pts_before) + 1
+
+    t1_rank_before = rank_at_match(t1, t1d.get("pts_before", 0))
+    t2_rank_before = rank_at_match(t2, t2d.get("pts_before", 0))
+
+    s1 = t1d.get("score", 0)
+    s2 = t2d.get("score", 0)
+
+    return {
+        "url":         entry.get("url"),
+        "date":        entry.get("date", ""),
+        "event":       entry.get("event", ""),
+        "tier":        entry.get("tier", ""),
+        "env":         entry.get("env", ""),
+        "grand_final": entry.get("grand_final", False),
+        "match_stage": entry.get("match_stage"),
+        "forfeit":     entry.get("forfeit"),
+        "t1": {
+            "name":        t1,
+            "score":       s1,
+            "pts_before":  round(t1d.get("pts_before", 0), 1),
+            "pts_after":   round(t1d.get("pts_after",  0), 1),
+            "pts_delta":   round(t1d.get("pts_after", 0) - t1d.get("pts_before", 0), 2),
+            "rank_before": t1_rank_before,
+            "rank_shift":  t1d.get("rank_shift", 0),
+            "form_before": fmt_form(form_t1_before),
+            "form_after":  fmt_form(form_t1_after),
+            "recent":      recent_results(t1, gi) if gi is not None else [],
+        },
+        "t2": {
+            "name":        t2,
+            "score":       s2,
+            "pts_before":  round(t2d.get("pts_before", 0), 1),
+            "pts_after":   round(t2d.get("pts_after",  0), 1),
+            "pts_delta":   round(t2d.get("pts_after", 0) - t2d.get("pts_before", 0), 2),
+            "rank_before": t2_rank_before,
+            "rank_shift":  t2d.get("rank_shift", 0),
+            "form_before": fmt_form(form_t2_before),
+            "form_after":  fmt_form(form_t2_after),
+            "recent":      recent_results(t2, gi) if gi is not None else [],
+        },
+        "winner":  t1 if s1 > s2 else t2,
+        "h2h":     h2h,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Meta / health
 # ---------------------------------------------------------------------------
 
