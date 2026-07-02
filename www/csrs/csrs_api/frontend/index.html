@@ -99,7 +99,7 @@ nav > a.active { color: var(--accent); border-left-color: var(--accent); backgro
 }
 .nav-group-toggle:hover { color: var(--text); background: var(--surface2); }
 .nav-group-toggle .chevron {
-  font-size: 0.65rem;
+  font-size: 1rem;
   color: var(--muted);
   transition: transform 0.2s ease;
   display: inline-block;
@@ -390,6 +390,24 @@ button.secondary:hover { background: var(--border); }
   }
   table { font-size: 0.78rem; }
   th, td { padding: 8px 6px; }
+
+  /* Cards — tighter padding on mobile */
+  .card { padding: 14px 12px; }
+
+  /* Charts shorter on mobile */
+  .chart-wrap { height: 200px; }
+
+  /* Page header controls stack vertically */
+  .page-header .controls { flex-direction: column; align-items: stretch !important; }
+  .page-header .controls .search-wrap { width: 100% !important; }
+  .page-header .controls button { width: 100%; }
+
+  /* Event summary side-by-side grids collapse */
+  .es-two-col { grid-template-columns: 1fr !important; }
+
+  /* Tables inside event summary scroll horizontally */
+  .es-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .es-table-wrap table { min-width: 480px; }
 }
 
 /* ── Table ── */
@@ -1656,178 +1674,160 @@ function esSelectEvent(name) {
 }
 
 function renderEventSummaryHTML(d) {
-  const tierColor = { S: '#f5c518', A: '#4caf82', B: '#5b9cf6', C: '#f5a623', D: '#e05a5a' };
   const sign = v => v >= 0 ? `+${v}` : `${v}`;
-  const fmtForm = f => f ? `${f.grade} (${f.score})` : '—';
+  const fmtForm = f => f ? `${f.grade} (${Math.round(f.score)})` : '—';
+  const posColor = v => v > 0 ? '#4caf82' : v < 0 ? '#e05a5a' : 'var(--muted)';
+  const negColor = v => v < 0 ? '#4caf82' : v > 0 ? '#e05a5a' : 'var(--muted)';
+  const esc = s => s.replace(/'/g, "\'");
 
   const envStr = Object.entries(d.environments)
     .sort((a,b) => b[1]-a[1])
     .map(([k,v]) => `${k} (${v})`).join(' · ');
 
   const dateStr = d.start_date === d.end_date
-    ? d.start_date
-    : `${d.start_date} → ${d.end_date}`;
+    ? d.start_date : `${d.start_date} → ${d.end_date}`;
 
   const grandFinalHtml = d.grand_final ? `
-    <div style="background:var(--surface2);border:1px solid var(--accent);border-radius:8px;padding:14px 18px;margin-bottom:20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <span style="font-size:0.72rem;color:var(--accent);text-transform:uppercase;letter-spacing:1px;font-weight:700">🏆 Grand Final</span>
-      <span style="font-weight:700;font-size:1rem">
-        <span class="team-link" onclick="openTeam('${d.grand_final.winner.replace(/'/g,"\'")}'">${d.grand_final.winner}</span>
-        <span style="color:var(--muted);margin:0 8px">def.</span>
-        <span class="team-link" onclick="openTeam('${d.grand_final.loser.replace(/'/g,"\'")}'">${d.grand_final.loser}</span>
-        <span style="color:var(--muted);margin-left:8px">${d.grand_final.score}</span>
-      </span>
+    <div style="background:var(--surface2);border:1px solid var(--accent);border-radius:8px;padding:12px 14px;margin-bottom:16px">
+      <div style="font-size:0.7rem;color:var(--accent);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:6px">🏆 Grand Final</div>
+      <div style="font-weight:700;font-size:0.95rem;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span class="team-link" onclick="openTeam('${esc(d.grand_final.winner)}')">${d.grand_final.winner}</span>
+        <span style="color:var(--muted)">def.</span>
+        <span class="team-link" onclick="openTeam('${esc(d.grand_final.loser)}')">${d.grand_final.loser}</span>
+        <span style="color:var(--muted)">${d.grand_final.score}</span>
+      </div>
     </div>` : '';
 
-  const ratingTable = (teams, colorFn) => teams.length ? `
-    <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
-      <thead><tr style="color:var(--muted);font-size:0.75rem;text-transform:uppercase">
-        <th style="text-align:left;padding:4px 0">#</th>
-        <th style="text-align:left;padding:4px 8px">Team</th>
-        <th style="text-align:right;padding:4px 8px">Before</th>
-        <th style="text-align:right;padding:4px 8px">After</th>
-        <th style="text-align:right;padding:4px 8px">Change</th>
-        <th style="text-align:right;padding:4px 8px">Record</th>
-      </tr></thead>
-      <tbody>${teams.map((t,i) => `
-        <tr style="border-top:1px solid var(--border)">
-          <td style="padding:6px 0;color:var(--muted)">${i+1}</td>
-          <td style="padding:6px 8px"><span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\'")}'">${t.name}</span></td>
-          <td style="padding:6px 8px;text-align:right;color:var(--muted)">${t.start_rating}</td>
-          <td style="padding:6px 8px;text-align:right;font-weight:600">${t.end_rating}</td>
-          <td style="padding:6px 8px;text-align:right;font-weight:700;color:${colorFn(t.rating_change)}">${sign(t.rating_change)}</td>
-          <td style="padding:6px 8px;text-align:right;color:var(--muted)">${t.wins}W-${t.losses}L</td>
-        </tr>`).join('')}
-      </tbody>
-    </table>` : '<div class="empty-msg" style="padding:8px 0">None</div>';
+  const ratingTable = (teams) => teams.length ? `
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem;min-width:300px">
+        <thead><tr style="color:var(--muted);font-size:0.72rem;text-transform:uppercase">
+          <th style="text-align:left;padding:4px 0">Team</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">Before</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">After</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">Δ</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">W-L</th>
+        </tr></thead>
+        <tbody>${teams.map(t => `
+          <tr style="border-top:1px solid var(--border)">
+            <td style="padding:5px 0"><span class="team-link" onclick="openTeam('${esc(t.name)}')">${t.name}</span></td>
+            <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.start_rating}</td>
+            <td style="padding:5px 6px;text-align:right;font-weight:600;white-space:nowrap">${t.end_rating}</td>
+            <td style="padding:5px 6px;text-align:right;font-weight:700;color:${posColor(t.rating_change)};white-space:nowrap">${sign(t.rating_change)}</td>
+            <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.wins}W-${t.losses}L</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : '<div class="empty-msg" style="padding:8px 0">None</div>';
 
-  const formTable = (teams, colorFn) => teams.length ? `
-    <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
-      <thead><tr style="color:var(--muted);font-size:0.75rem;text-transform:uppercase">
-        <th style="text-align:left;padding:4px 0">#</th>
-        <th style="text-align:left;padding:4px 8px">Team</th>
-        <th style="text-align:right;padding:4px 8px">Before</th>
-        <th style="text-align:right;padding:4px 8px">After</th>
-        <th style="text-align:right;padding:4px 8px">Change</th>
-        <th style="text-align:right;padding:4px 8px">Record</th>
-      </tr></thead>
-      <tbody>${teams.map((t,i) => `
-        <tr style="border-top:1px solid var(--border)">
-          <td style="padding:6px 0;color:var(--muted)">${i+1}</td>
-          <td style="padding:6px 8px"><span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\'")}'">${t.name}</span></td>
-          <td style="padding:6px 8px;text-align:right;color:var(--muted)">${fmtForm(t.form_start)}</td>
-          <td style="padding:6px 8px;text-align:right;font-weight:600">${fmtForm(t.form_end)}</td>
-          <td style="padding:6px 8px;text-align:right;font-weight:700;color:${colorFn(t.form_change)}">${sign(t.form_change)}</td>
-          <td style="padding:6px 8px;text-align:right;color:var(--muted)">${t.wins}W-${t.losses}L</td>
-        </tr>`).join('')}
-      </tbody>
-    </table>` : '<div class="empty-msg" style="padding:8px 0">None</div>';
+  const formTable = (teams) => teams.length ? `
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem;min-width:300px">
+        <thead><tr style="color:var(--muted);font-size:0.72rem;text-transform:uppercase">
+          <th style="text-align:left;padding:4px 0">Team</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">Before</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">After</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">Δ</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">W-L</th>
+        </tr></thead>
+        <tbody>${teams.map(t => `
+          <tr style="border-top:1px solid var(--border)">
+            <td style="padding:5px 0"><span class="team-link" onclick="openTeam('${esc(t.name)}')">${t.name}</span></td>
+            <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${fmtForm(t.form_start)}</td>
+            <td style="padding:5px 6px;text-align:right;font-weight:600;white-space:nowrap">${fmtForm(t.form_end)}</td>
+            <td style="padding:5px 6px;text-align:right;font-weight:700;color:${posColor(t.form_change)};white-space:nowrap">${t.form_change != null ? sign(t.form_change) : '—'}</td>
+            <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.wins}W-${t.losses}L</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : '<div class="empty-msg" style="padding:8px 0">None</div>';
 
   const upsetHtml = d.upsets.length ? d.upsets.map((u,i) => `
-    <div style="padding:10px 0;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:12px">
-      <span style="color:var(--muted);font-size:0.8rem;min-width:18px">${i+1}</span>
-      <div>
-        <span class="team-link" onclick="openTeam('${u.winner.replace(/'/g,"\'")}'">${u.winner}</span>
-        <span style="color:var(--muted);margin:0 6px">def.</span>
-        <span class="team-link" onclick="openTeam('${u.loser.replace(/'/g,"\'")}'">${u.loser}</span>
-        <span style="color:var(--muted);margin-left:6px">${u.score}</span>
-        <span style="margin-left:10px;font-size:0.78rem;color:var(--muted)">${u.diff} pt gap</span>
-        <div style="font-size:0.78rem;color:var(--muted);margin-top:2px">
-          ${u.winner}: <span style="color:#4caf82">${sign(u.winner_pts_delta)}</span> &nbsp;
-          ${u.loser}: <span style="color:#e05a5a">${sign(u.loser_pts_delta)}</span>
-        </div>
+    <div style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:3px">
+        <span style="color:var(--muted);font-size:0.78rem">${i+1}</span>
+        <span class="team-link" onclick="openTeam('${esc(u.winner)}')">${u.winner}</span>
+        <span style="color:var(--muted);font-size:0.85rem">def.</span>
+        <span class="team-link" onclick="openTeam('${esc(u.loser)}')">${u.loser}</span>
+        <span style="color:var(--muted);font-size:0.85rem">${u.score}</span>
+        <span style="color:var(--muted);font-size:0.78rem">(${u.diff} pt gap)</span>
+      </div>
+      <div style="font-size:0.78rem;color:var(--muted);padding-left:20px">
+        ${u.winner}: <span style="color:#4caf82">${sign(u.winner_pts_delta)}</span>
+        &nbsp;·&nbsp;
+        ${u.loser}: <span style="color:#e05a5a">${sign(u.loser_pts_delta)}</span>
       </div>
     </div>`).join('') : '<div class="empty-msg" style="padding:8px 0">No upsets recorded</div>';
 
-  const posColor = v => v > 0 ? '#4caf82' : v < 0 ? '#e05a5a' : 'var(--muted)';
-  const negColor = v => v < 0 ? '#4caf82' : v > 0 ? '#e05a5a' : 'var(--muted)';
-
   const allTeamsRows = d.all_teams.map((t,i) => `
     <tr style="border-top:1px solid var(--border)">
-      <td style="padding:6px 4px;color:var(--muted)">${i+1}</td>
-      <td style="padding:6px 8px"><span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\'")}'">${t.name}</span></td>
-      <td style="padding:6px 8px;text-align:right;font-weight:600">${t.end_rating}</td>
-      <td style="padding:6px 8px;text-align:right;font-weight:700;color:${posColor(t.rating_change)}">${sign(t.rating_change)}</td>
-      <td style="padding:6px 8px;text-align:right;color:var(--muted)">${t.wins}W-${t.losses}L</td>
-      <td style="padding:6px 8px;text-align:right;color:var(--muted)">${t.maps_won}-${t.maps_lost} (${t.map_diff >= 0 ? '+' : ''}${t.map_diff})</td>
-      <td style="padding:6px 8px;text-align:right;color:var(--muted)">${fmtForm(t.form_start)}</td>
-      <td style="padding:6px 8px;text-align:right">${fmtForm(t.form_end)}</td>
+      <td style="padding:5px 4px;color:var(--muted)">${i+1}</td>
+      <td style="padding:5px 6px;white-space:nowrap"><span class="team-link" onclick="openTeam('${esc(t.name)}')">${t.name}</span></td>
+      <td style="padding:5px 6px;text-align:right;font-weight:600;white-space:nowrap">${t.end_rating}</td>
+      <td style="padding:5px 6px;text-align:right;font-weight:700;color:${posColor(t.rating_change)};white-space:nowrap">${sign(t.rating_change)}</td>
+      <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.wins}W-${t.losses}L</td>
+      <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.maps_won}-${t.maps_lost}</td>
+      <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${fmtForm(t.form_start)}</td>
+      <td style="padding:5px 6px;text-align:right;white-space:nowrap">${fmtForm(t.form_end)}</td>
     </tr>`).join('');
 
+  const section = (label, html) =>
+    `<div><div style="font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">${label}</div>${html}</div>`;
+
   return `
-    <div style="border-top:1px solid var(--border);padding-top:16px">
-      <!-- Header -->
-      <div style="margin-bottom:16px">
-        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">${dateStr} · ${envStr}</div>
-        <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:0.85rem;color:var(--muted)">
+    <div style="padding-top:16px">
+      <div style="margin-bottom:14px">
+        <div style="font-size:0.72rem;color:var(--muted);margin-bottom:4px">${dateStr} · ${envStr}</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:0.85rem;color:var(--muted)">
           <span>Tier: <strong style="color:var(--text)">${d.tier || '—'}</strong></span>
           <span>Matches: <strong style="color:var(--text)">${d.match_count}</strong></span>
           <span>Teams: <strong style="color:var(--text)">${d.team_count}</strong></span>
-          ${d.stats.avg_rating_change != null ? `<span>Avg Rating Δ: <strong style="color:${posColor(d.stats.avg_rating_change)}">${sign(d.stats.avg_rating_change)}</strong></span>` : ''}
-          ${d.stats.avg_form_change != null ? `<span>Avg Form Δ: <strong style="color:${posColor(d.stats.avg_form_change)}">${sign(d.stats.avg_form_change)}</strong></span>` : ''}
+          ${d.stats.avg_rating_change != null ? `<span>Avg Δ: <strong style="color:${posColor(d.stats.avg_rating_change)}">${sign(d.stats.avg_rating_change)}</strong></span>` : ''}
         </div>
       </div>
 
       ${grandFinalHtml}
 
-      <!-- Quick stats row -->
       <div class="analytics-grid" style="margin-bottom:20px">
-        ${d.stats.highest_rated_team ? `<div style="background:var(--surface2);border-radius:8px;padding:12px 16px">
-          <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Highest Rated</div>
-          <span class="team-link" style="font-weight:700" onclick="openTeam('${d.stats.highest_rated_team.replace(/'/g,"\'")}'">${d.stats.highest_rated_team}</span>
-          <div style="color:var(--accent);font-weight:700">${d.stats.highest_rated_pts} pts</div>
+        ${d.stats.highest_rated_team ? `<div style="background:var(--surface2);border-radius:8px;padding:12px 14px">
+          <div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Highest Rated</div>
+          <span class="team-link" style="font-weight:700" onclick="openTeam('${esc(d.stats.highest_rated_team)}')">${d.stats.highest_rated_team}</span>
+          <div style="color:var(--accent);font-weight:700">${d.stats.highest_rated_pts} pts <span style="color:var(--muted);font-size:0.8rem;font-weight:400">#${d.all_teams.findIndex(t => t.name === d.stats.highest_rated_team) + 1} at event</span></div>
         </div>` : ''}
-        ${d.stats.most_maps_team ? `<div style="background:var(--surface2);border-radius:8px;padding:12px 16px">
-          <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Most Active</div>
-          <span class="team-link" style="font-weight:700" onclick="openTeam('${d.stats.most_maps_team.replace(/'/g,"\'")}'">${d.stats.most_maps_team}</span>
+        ${d.stats.most_maps_team ? `<div style="background:var(--surface2);border-radius:8px;padding:12px 14px">
+          <div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Most Active</div>
+          <span class="team-link" style="font-weight:700" onclick="openTeam('${esc(d.stats.most_maps_team)}')">${d.stats.most_maps_team}</span>
           <div style="color:var(--muted);font-size:0.85rem">${d.stats.most_maps_count} maps · ${d.stats.most_maps_matches} matches</div>
         </div>` : ''}
       </div>
 
-      <!-- Rating changes -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;flex-wrap:wrap">
-        <div>
-          <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top Rating Gainers</div>
-          ${ratingTable(d.gainers, posColor)}
-        </div>
-        <div>
-          <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top Rating Losers</div>
-          ${ratingTable(d.losers, negColor)}
-        </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin-bottom:20px">
+        ${section('Top Rating Gainers', ratingTable(d.gainers))}
+        ${section('Top Rating Losers',  ratingTable(d.losers))}
       </div>
 
-      <!-- Form changes -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;flex-wrap:wrap">
-        <div>
-          <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top Form Improvers</div>
-          ${formTable(d.form_improvers, posColor)}
-        </div>
-        <div>
-          <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top Form Decliners</div>
-          ${formTable(d.form_decliners, negColor)}
-        </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin-bottom:20px">
+        ${section('Top Form Improvers', formTable(d.form_improvers))}
+        ${section('Top Form Decliners', formTable(d.form_decliners))}
       </div>
 
-      <!-- Upsets -->
       <div style="margin-bottom:20px">
-        <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Biggest Upsets</div>
-        ${upsetHtml}
+        ${section('Biggest Upsets', upsetHtml)}
       </div>
 
-      <!-- All teams -->
       <div>
-        <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">All Participants</div>
-        <div style="overflow-x:auto">
-          <table style="width:100%;border-collapse:collapse;font-size:0.82rem;min-width:600px">
-            <thead><tr style="color:var(--muted);font-size:0.72rem;text-transform:uppercase">
+        <div style="font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">All Participants</div>
+        <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+          <table style="width:100%;border-collapse:collapse;font-size:0.8rem;min-width:480px">
+            <thead><tr style="color:var(--muted);font-size:0.7rem;text-transform:uppercase">
               <th style="text-align:left;padding:4px 4px">#</th>
-              <th style="text-align:left;padding:4px 8px">Team</th>
-              <th style="text-align:right;padding:4px 8px">End Pts</th>
-              <th style="text-align:right;padding:4px 8px">Δ Pts</th>
-              <th style="text-align:right;padding:4px 8px">Record</th>
-              <th style="text-align:right;padding:4px 8px">Maps</th>
-              <th style="text-align:right;padding:4px 8px">Form In</th>
-              <th style="text-align:right;padding:4px 8px">Form Out</th>
+              <th style="text-align:left;padding:4px 6px">Team</th>
+              <th style="text-align:right;padding:4px 6px">Pts</th>
+              <th style="text-align:right;padding:4px 6px">Δ</th>
+              <th style="text-align:right;padding:4px 6px">W-L</th>
+              <th style="text-align:right;padding:4px 6px">Maps</th>
+              <th style="text-align:right;padding:4px 6px">Form In</th>
+              <th style="text-align:right;padding:4px 6px">Form Out</th>
             </tr></thead>
             <tbody>${allTeamsRows}</tbody>
           </table>
