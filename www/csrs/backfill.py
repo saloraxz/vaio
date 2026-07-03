@@ -20,6 +20,8 @@ Usage:
   python backfill.py --tag-stages                         # backfill match_stage for existing entries
   python backfill.py --tag-stages --dry-run               # preview without saving
   python backfill.py --tag-stages --limit 10              # test on first 10 untagged entries
+  python backfill.py --live                               # poll HLTV every 30min and import new matches
+  python backfill.py --live --interval 15                 # poll every 15 minutes instead
 """
 
 import json, os, sys, argparse, time
@@ -982,6 +984,90 @@ def run_tag_stages(dry_run: bool = False, limit=None):
         print("Dry run — no changes saved.")
 
 
+def run_live(interval_minutes: int = 30):
+    """
+    Continuously poll HLTV results and import any new matches.
+
+    Each cycle:
+      1. Reload CSRS data to get the current known URL set and most recent match date.
+      2. Walk the /results feed starting from yesterday (catches late-posted results).
+      3. Filter to URLs not already in history.
+      4. Import new matches via the normal _import_with_retry path.
+      5. Sleep for interval_minutes, then repeat.
+
+    Runs until interrupted with Ctrl+C.
+    """
+    import signal
+
+    print(f"[LIVE] Starting live import mode — polling every {interval_minutes} minute(s). Ctrl+C to stop.\n")
+
+    # Graceful shutdown on Ctrl+C
+    _stop = {"flag": False}
+    def _on_sigint(sig, frame):
+        print("\n[LIVE] Interrupt received — finishing current cycle then stopping…")
+        _stop["flag"] = True
+    signal.signal(signal.SIGINT, _on_sigint)
+
+    cycle = 0
+    while not _stop["flag"]:
+        cycle += 1
+        cycle_start = datetime.now()
+        print(f"\n{'═'*60}")
+        print(f"[LIVE] Cycle {cycle} — {cycle_start.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"{'═'*60}")
+
+        # Always reload so we pick up any external changes to data.save
+        CSRS.load_all()
+        known_urls: set[str] = {m.get("url", "") for m in CSRS.history if m.get("url")}
+
+        # Start from yesterday to catch matches that posted slightly late
+        start_date = (date.today() - timedelta(days=1))
+
+        print(f"[LIVE] Checking results from {start_date} onwards ({len(known_urls)} URLs already imported)…\n")
+
+        # Collect new URLs from the results feed (just a few pages — recent results only)
+        try:
+            collected, _, crashed = _walk_results_pages(
+                start_date=start_date,
+                max_pages=5,   # ~500 matches max, plenty for a 30-min window
+            )
+        except Exception as e:
+            print(f"[LIVE] Collection error: {e} — skipping this cycle")
+            collected = []
+            crashed = False
+
+        # Filter to only URLs we haven't seen yet, preserving oldest-first order
+        new_urls = [u for u in reversed(collected) if u not in known_urls]
+
+        if not new_urls:
+            print(f"[LIVE] No new matches found.")
+        else:
+            print(f"[LIVE] Found {len(new_urls)} new match(es) — importing…\n")
+            try:
+                count, still_failed, _ = _import_with_retry(new_urls, None, event_id=0)
+                CSRS._vrs_session_cache.clear()
+                CSRS.save_all(silent=True)
+                CSRS._git_push()
+                print(f"\n[LIVE] Cycle {cycle} done — imported {count}, failed {len(still_failed)}.")
+                if still_failed:
+                    log_failed(still_failed, event_id=0)
+                    print(f"[LIVE] {len(still_failed)} failed URL(s) logged to backfill_failed.log")
+            except Exception as e:
+                print(f"[LIVE] Import error: {e}")
+
+        if _stop["flag"]:
+            break
+
+        # Sleep until next cycle, waking every second to check for Ctrl+C
+        next_run = cycle_start + timedelta(minutes=interval_minutes)
+        print(f"\n[LIVE] Next check at {next_run.strftime('%H:%M:%S')} "
+              f"(in {interval_minutes} minute(s)). Ctrl+C to stop.")
+        while datetime.now() < next_run and not _stop["flag"]:
+            time.sleep(1)
+
+    print("\n[LIVE] Stopped.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CSRS results-page-offset backfill")
     parser.add_argument("--start", default=START_DATE.isoformat(), metavar="YYYY-MM-DD")
@@ -1009,6 +1095,12 @@ if __name__ == "__main__":
                          help="Retroactively scrape match_stage for history entries that have a URL "
                               "but no match_stage field yet. Safe to re-run; already-tagged entries "
                               "are skipped.")
+    parser.add_argument("--live", action="store_true",
+                         help="Continuously poll HLTV results every 30 minutes and import any new "
+                              "matches that haven't been imported yet. Runs indefinitely until "
+                              "interrupted with Ctrl+C.")
+    parser.add_argument("--interval", type=int, default=30, metavar="MINUTES",
+                         help="With --live: polling interval in minutes (default: 30).")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
                          help="With --tag-stages: only process the first N untagged entries (useful for testing).")
     args = parser.parse_args()
@@ -1026,7 +1118,9 @@ if __name__ == "__main__":
                      max_runtime_minutes=args.max_runtime, end_date=end)
     elif args.tag_stages:
         run_tag_stages(dry_run=args.dry_run, limit=args.limit)
+    elif args.live:
+        run_live(interval_minutes=args.interval)
     else:
         print("Nothing to do. Use --test-results-page to diagnose, --import to run the real "
-              "backfill, --retry-failed to retry failed URLs, or --tag-stages to backfill "
-              "match stages. See -h for details.")
+              "backfill, --retry-failed to retry failed URLs, --tag-stages to backfill "
+              "match stages, or --live for continuous polling. See -h for details.")
