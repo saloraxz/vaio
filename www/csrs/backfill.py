@@ -17,10 +17,13 @@ Usage:
   python backfill.py --test-results-page --start 2026-01-01 --end 2026-06-29
   python backfill.py --import --start 2026-01-01          # real backfill, imports matches
   python backfill.py --retry-failed                       # retry URLs in backfill_failed.log
+  python backfill.py --tag-stages                         # backfill match_stage for existing entries
+  python backfill.py --tag-stages --dry-run               # preview without saving
+  python backfill.py --tag-stages --limit 10              # test on first 10 untagged entries
 """
 
 import json, os, sys, argparse, time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import CSRS
@@ -37,23 +40,79 @@ MAX_RETRY_PASSES      = 5
 
 
 # ---------------------------------------------------------------------------
+# Scrape-only timing instrumentation
+# ---------------------------------------------------------------------------
+# CSRS._import_url_list does a lot per match beyond the actual page scrape
+# (team auto-registration, event-tier lookup, rating math, save). To isolate
+# just "page open -> data collected" we monkeypatch CSRS.scrape_match_data
+# with a timing wrapper. This works because CSRS._import_url_list calls
+# scrape_match_data(...) unqualified, which Python resolves from the CSRS
+# module's global namespace at call time — so reassigning CSRS.scrape_match_data
+# here is picked up there without touching CSRS.py at all.
+
+_real_scrape_match_data = CSRS.scrape_match_data
+_last_scrape_duration: dict = {"seconds": None}
+
+
+def _timed_scrape_match_data(url, context=None):
+    t0 = time.monotonic()
+    result = _real_scrape_match_data(url, context=context)
+    _last_scrape_duration["seconds"] = time.monotonic() - t0
+    return result
+
+
+CSRS.scrape_match_data = _timed_scrape_match_data
+
+
+# ---------------------------------------------------------------------------
 # Checkpoint helpers
 # ---------------------------------------------------------------------------
 
 def load_checkpoint():
+    """
+    Returns the active backfill checkpoint, or None if there isn't one.
+    A checkpoint is written right after URL collection finishes for an
+    --import run, and deleted once that run's URL list is fully imported
+    (no failures, nothing left over). Its presence is what --continue
+    looks for.
+    """
     if os.path.exists(CHECKPOINT_FILE):
         try:
             with open(CHECKPOINT_FILE) as f:
                 return json.load(f)
         except Exception:
             pass
-    return {"completed_event_ids": [], "last_run": None}
+    return None
 
 
-def save_checkpoint(state):
-    state["last_run"] = datetime.now().isoformat()
+def save_checkpoint(start_date: date, collected_urls: list[str], phase: str = "importing",
+                     next_offset: int | None = None, hit_boundary: bool = False,
+                     end_date: date | None = None):
+    """
+    phase="collecting": URL collection (the /results page walk) was
+        interrupted. collected_urls is whatever was gathered so far, and
+        next_offset is where to resume paginating from.
+    phase="importing": collection finished; collected_urls is the full,
+        final target list, ready to be filtered against CSRS.history and
+        imported.
+    """
+    os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
+    state = {
+        "phase": phase,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat() if end_date else None,
+        "collected_urls": collected_urls,
+        "next_offset": next_offset,
+        "hit_boundary": hit_boundary,
+        "saved_at": datetime.now().astimezone().isoformat(),
+    }
     with open(CHECKPOINT_FILE, "w") as f:
         json.dump(state, f, indent=2)
+
+
+def clear_checkpoint():
+    if os.path.exists(CHECKPOINT_FILE):
+        os.remove(CHECKPOINT_FILE)
 
 
 def log_failed(urls, event_id):
@@ -99,25 +158,76 @@ def load_failed_urls():
 # Retry loop — keeps retrying a URL list until all succeed or max passes hit
 # ---------------------------------------------------------------------------
 
+def _format_duration(seconds: float) -> str:
+    """Human-readable HhMmSs duration string."""
+    seconds = max(0, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+# How many recent per-match timings to average for the ETA. Kept short
+# because a single new-team-registration or new-event-tier-lookup match
+# can be much slower than a routine repeat-event match, and we want the
+# estimate to track current conditions rather than the whole run's history.
+ETA_ROLLING_WINDOW = 25
+
+# Save progress to disk every N successful imports (mirrors the cadence
+# CSRS._import_url_list normally uses internally for its own batch calls).
+SAVE_EVERY_N_IMPORTS = 5
+
+# Restart the browser (close + relaunch) every N matches to prevent
+# Camoufox/Firefox memory from growing unboundedly on long runs.
+BROWSER_RESTART_EVERY = 50
+
+
 def _import_with_retry(
     urls: list[str],
     sess_context,
     event_id: int,
     max_passes: int = MAX_RETRY_PASSES,
     retry_delay: int = RETRY_DELAY_SECONDS,
-) -> tuple[int, list[str]]:
+    max_runtime_seconds: float | None = None,
+) -> tuple[int, list[str], list[str]]:
     """
-    Wraps CSRS._import_url_list with an automatic retry loop.
+    Wraps CSRS._import_url_list with an automatic retry loop, importing one
+    URL at a time so each match's actual scrape+import time can be measured
+    individually.
+
+    After every match, prints:
+      - that match's scrape-only time vs. rest-of-import time
+      - a rolling average over the last ETA_ROLLING_WINDOW matches
+      - running total elapsed time for the whole call
+      - estimated time remaining and a projected local finish timestamp
+
+    If max_runtime_seconds is set, the loop checks elapsed time before
+    starting each new match (never mid-match) and stops once the budget is
+    exhausted, returning whatever URLs hadn't been attempted yet as a
+    separate "not_attempted" list — distinct from URLs that were attempted
+    and failed, since the latter went through CSRS's own retry/failure path
+    and the former are simply untouched and should be retried fresh.
 
     Keeps retrying failed URLs until either:
-      - all URLs succeed, or
-      - max_passes retry attempts are exhausted.
+      - all URLs succeed,
+      - max_passes retry attempts are exhausted, or
+      - the time budget runs out.
 
-    Returns (total_imported, still_failed_urls).
+    Returns (total_imported, still_failed_urls, not_attempted_urls).
     """
     remaining = list(urls)
     total_imported = 0
     pass_num = 0
+
+    total_to_do = len(urls)
+    done_count = 0
+    durations: list[float] = []
+    run_start = time.monotonic()
+    not_attempted: list[str] = []
+    time_budget_hit = False
 
     while remaining and pass_num < max_passes:
         pass_num += 1
@@ -125,18 +235,93 @@ def _import_with_retry(
             print(f"    [RETRY {pass_num}/{max_passes}] {len(remaining)} URL(s) — waiting {retry_delay}s...")
             time.sleep(retry_delay)
 
-        count, failed = CSRS._import_url_list(remaining, sess_context)
-        total_imported += count
+        still_failed_this_pass: list[str] = []
+        idx = 0
 
-        if not failed:
-            print(f"    All {len(remaining)} URL(s) imported successfully (pass {pass_num}).")
+        while idx < len(remaining):
+            # Slice out the next chunk to run under one browser session
+            chunk = remaining[idx: idx + BROWSER_RESTART_EVERY]
+            if idx > 0:
+                print(f"\n  [BROWSER] Restarting browser after {idx} matches this pass to free memory…\n")
+
+            with CSRS.BrowserSession() as sess:
+                for url in chunk:
+                    if max_runtime_seconds is not None and (time.monotonic() - run_start) >= max_runtime_seconds:
+                        not_attempted.extend(remaining[idx + chunk.index(url):])
+                        time_budget_hit = True
+                        print(
+                            f"\n    [TIME LIMIT] {_format_duration(max_runtime_seconds)} budget reached after "
+                            f"{done_count}/{total_to_do} match(es) — stopping cleanly. "
+                            f"{len(not_attempted)} URL(s) untouched, will be saved for next run.\n"
+                        )
+                        break
+
+                    t0 = time.monotonic()
+                    _last_scrape_duration["seconds"] = None  # reset; set by the monkeypatched scrape_match_data
+                    count, failed = CSRS._import_url_list([url], sess.context)
+                    elapsed = time.monotonic() - t0
+                    scrape_elapsed = _last_scrape_duration["seconds"]
+
+                    total_imported += count
+                    if failed:
+                        still_failed_this_pass.extend(failed)
+
+                    done_count += 1
+                    durations.append(elapsed)
+
+                    window = durations[-ETA_ROLLING_WINDOW:]
+                    avg = sum(window) / len(window)
+                    remaining_count = max(0, total_to_do - done_count)
+                    eta_seconds = avg * remaining_count
+                    total_elapsed = time.monotonic() - run_start
+                    finish_dt = datetime.now().astimezone() + timedelta(seconds=eta_seconds)
+
+                    status = "ok" if count else "FAIL"
+                    if scrape_elapsed is not None:
+                        scrape_part = f"scrape: {scrape_elapsed:.1f}s | rest: {max(0.0, elapsed - scrape_elapsed):.1f}s | total: {elapsed:.1f}s"
+                    else:
+                        scrape_part = f"total: {elapsed:.1f}s (scrape never ran — registration/early failure)"
+
+                    budget_part = ""
+                    if max_runtime_seconds is not None:
+                        time_left = max(0.0, max_runtime_seconds - total_elapsed)
+                        budget_part = f" | time budget left: {_format_duration(time_left)}"
+
+                    print(
+                        f"    [{done_count}/{total_to_do}] {status} | {scrape_part} "
+                        f"| avg(last {len(window)}): {avg:.1f}s "
+                        f"| elapsed: {_format_duration(total_elapsed)} "
+                        f"| remaining: {remaining_count} (~{_format_duration(eta_seconds)}) "
+                        f"| ETA finish: {finish_dt.strftime('%Y-%m-%d %I:%M:%S %p %Z')}"
+                        f"{budget_part}"
+                    )
+
+                    if count and total_imported % SAVE_EVERY_N_IMPORTS == 0:
+                        CSRS.save_all(silent=True)
+
+            # BrowserSession.__exit__ closes browser here — memory freed
+            if time_budget_hit:
+                break
+            idx += len(chunk)
+
+        if not still_failed_this_pass:
+            print(f"    All {total_to_do} URL(s) imported successfully (pass {pass_num}).")
             remaining = []
             break
 
-        print(f"    Pass {pass_num}: {count} imported, {len(failed)} still failed.")
-        remaining = failed
+        print(f"    Pass {pass_num}: {len(still_failed_this_pass)} still failed.")
+        remaining = still_failed_this_pass
 
-    return total_imported, remaining
+    total_run_time = time.monotonic() - run_start
+    print(
+        f"\n    Total scrape+import time: {_format_duration(total_run_time)} "
+        f"for {total_imported} imported / {done_count} attempted "
+        f"({total_run_time / max(done_count, 1):.1f}s/match average)."
+        + (f" {len(not_attempted)} not yet attempted (time budget)." if not_attempted else "")
+        + "\n"
+    )
+
+    return total_imported, remaining, not_attempted
 
 
 # ---------------------------------------------------------------------------
@@ -192,17 +377,38 @@ def _parse_results_page(html: str) -> list[dict]:
     return groups
 
 
-def run_backfill(start_date: date, dry_run: bool = False, max_pages: int = 1000):
+def _walk_results_pages(start_date: date, max_pages: int, start_offset: int = 0,
+                         collected_urls: list[str] | None = None, end_date: date | None = None):
     """
-    Real offset-based backfill: walks the plain /results feed page by page
-    (offset 0, 100, 200, ...), collecting match URLs whose timestamp is
-    >= start_date. Stops as soon as a page's matches drop below start_date,
-    since /results is strictly newest-first.
+    Walks the plain /results feed page by page (offset start_offset, +100,
+    +200, ...), collecting match URLs whose timestamp is >= start_date and,
+    if end_date is given, <= end_date (inclusive of that whole day). Stops
+    paginating as soon as a page's matches drop below start_date, since
+    /results is strictly newest-first — end_date only filters which matches
+    get collected, it never stops pagination early (we may need to page
+    past a bunch of too-new matches before reaching the end_date..start_date
+    window).
+
+    Saves a "collecting"-phase checkpoint after every page, so a crash here
+    (browser/driver crash, network drop, closed terminal) loses at most one
+    page's worth of progress (~100 matches) rather than the whole walk.
+    --continue picks up from the saved next_offset.
+
+    Returns (collected_urls, hit_boundary, crashed: bool). collected_urls is
+    newest-first (not yet reversed) — the caller reverses once collection is
+    fully done.
     """
     import random as _random
 
     start_dt = datetime(start_date.year, start_date.month, start_date.day)
     start_unix_ms = int(start_dt.timestamp() * 1000)
+
+    end_unix_ms = None
+    if end_date is not None:
+        # exclusive upper bound at the start of the day *after* end_date,
+        # so the whole end_date calendar day is included
+        end_dt = datetime(end_date.year, end_date.month, end_date.day) + timedelta(days=1)
+        end_unix_ms = int(end_dt.timestamp() * 1000)
 
     cookies = CSRS._load_hltv_cookies()
     pw_cookies = [
@@ -215,92 +421,136 @@ def run_backfill(start_date: date, dry_run: bool = False, max_pages: int = 1000)
         from camoufox.sync_api import Camoufox
     except ImportError:
         print("ERROR: Camoufox not installed. Run: pip install camoufox && python -m camoufox fetch")
-        return
+        return collected_urls or [], False, True
 
-    print(f"\n{'='*60}")
-    print(f"CSRS Backfill — /results offset walk from {start_date} to today")
-    print(f"{'='*60}\n")
-
-    collected_urls: list[str] = []
-    seen_urls: set[str] = set()
+    collected_urls = list(collected_urls) if collected_urls else []
+    seen_urls: set[str] = set(collected_urls)
     hit_boundary = False
+    crashed = False
 
-    final_offset = 0
-    final_page_num = 0
-
-    with Camoufox(headless=CSRS._CAMOUFOX_HEADLESS, os=("windows", "macos", "linux")) as browser:
-        context = browser.new_context()
-        if pw_cookies:
-            context.add_cookies(pw_cookies)
-        page = context.new_page()
-
-        try:
-            page.goto("https://www.hltv.org", timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
-            print("Session warmed up.\n")
-        except Exception as e:
-            print(f"Warm-up warning: {e}")
-
-        for page_num in range(max_pages):
-            offset = page_num * CSRS.HLTV_RESULTS_PAGE_SIZE
-            final_offset = offset
-            final_page_num = page_num + 1
-            url = "https://www.hltv.org/results" if offset == 0 else f"https://www.hltv.org/results?offset={offset}"
-            print(f"Page {page_num + 1} (offset={offset}): GET {url}")
+    try:
+        with Camoufox(headless=CSRS._CAMOUFOX_HEADLESS, os=("windows", "macos", "linux")) as browser:
+            context = browser.new_context()
+            if pw_cookies:
+                context.add_cookies(pw_cookies)
+            page = context.new_page()
 
             try:
-                page.goto(url, timeout=30000, wait_until="domcontentloaded")
-                page.wait_for_timeout(2000)
+                page.goto("https://www.hltv.org", timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+                print("Session warmed up.\n")
             except Exception as e:
-                print(f"  [FAIL] Navigation error: {e} — stopping pagination\n")
-                break
+                print(f"Warm-up warning: {e}")
 
-            html = page.content()
-            if "Just a moment" in html or "challenge-platform" in html:
-                print(f"  [BLOCKED] Cloudflare challenge — stopping pagination\n")
-                break
+            page_num = start_offset // CSRS.HLTV_RESULTS_PAGE_SIZE
+            pages_walked_this_session = 0
 
-            groups = _parse_results_page(html)
-            if not groups:
-                print(f"  No day-groups found — assuming end of feed\n")
-                break
+            while pages_walked_this_session < max_pages:
+                offset = page_num * CSRS.HLTV_RESULTS_PAGE_SIZE
+                url = "https://www.hltv.org/results" if offset == 0 else f"https://www.hltv.org/results?offset={offset}"
+                print(f"Page {page_num + 1} (offset={offset}): GET {url}")
 
-            page_new = 0
-            for grp in groups:
-                # If every match in this group is older than start_date,
-                # we've crossed the boundary — stop entirely (feed is
-                # newest-first, so nothing after this is in range either).
-                group_unix = [m["unix_ms"] for m in grp["matches"] if m["unix_ms"] is not None]
-                if group_unix and max(group_unix) < start_unix_ms:
-                    print(f"  Boundary hit at '{grp['headline']}' — older than {start_date}, stopping.")
-                    hit_boundary = True
+                try:
+                    page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                    page.wait_for_timeout(2000)
+                except Exception as e:
+                    print(f"  [FAIL] Navigation error: {e} — stopping pagination\n")
                     break
 
-                for m in grp["matches"]:
-                    if m["unix_ms"] is not None and m["unix_ms"] < start_unix_ms:
-                        continue  # this individual match predates the boundary
-                    if m["url"] not in seen_urls:
-                        seen_urls.add(m["url"])
-                        collected_urls.append(m["url"])
-                        page_new += 1
+                html = page.content()
+                if "Just a moment" in html or "challenge-platform" in html:
+                    print(f"  [BLOCKED] Cloudflare challenge — stopping pagination\n")
+                    break
 
-            print(f"  +{page_new} match URL(s) in range (running total: {len(collected_urls)})\n")
+                groups = _parse_results_page(html)
+                if not groups:
+                    print(f"  No day-groups found — assuming end of feed\n")
+                    break
 
-            if hit_boundary:
-                break
+                page_new = 0
+                page_skipped_too_new = 0
+                for grp in groups:
+                    # If every match in this group is older than start_date,
+                    # we've crossed the boundary — stop entirely (feed is
+                    # newest-first, so nothing after this is in range either).
+                    group_unix = [m["unix_ms"] for m in grp["matches"] if m["unix_ms"] is not None]
+                    if group_unix and max(group_unix) < start_unix_ms:
+                        print(f"  Boundary hit at '{grp['headline']}' — older than {start_date}, stopping.")
+                        hit_boundary = True
+                        break
 
-            time.sleep(_random.uniform(1.0, 2.5))
+                    for m in grp["matches"]:
+                        if m["unix_ms"] is not None and m["unix_ms"] < start_unix_ms:
+                            continue  # this individual match predates the boundary
+                        if m["unix_ms"] is not None and end_unix_ms is not None and m["unix_ms"] >= end_unix_ms:
+                            page_skipped_too_new += 1
+                            continue  # newer than --end, skip but keep paginating
+                        if m["url"] not in seen_urls:
+                            seen_urls.add(m["url"])
+                            collected_urls.append(m["url"])
+                            page_new += 1
 
-        page.close()
+                skip_note = f", skipped {page_skipped_too_new} too-new" if page_skipped_too_new else ""
+                print(f"  +{page_new} match URL(s) in range (running total: {len(collected_urls)}){skip_note}\n")
+
+                page_num += 1
+                pages_walked_this_session += 1
+
+                # Checkpoint after every page — at most one page's worth of
+                # progress (~100 matches) is at risk from a crash from here on.
+                save_checkpoint(start_date, collected_urls, phase="collecting",
+                                 next_offset=page_num * CSRS.HLTV_RESULTS_PAGE_SIZE,
+                                 hit_boundary=hit_boundary, end_date=end_date)
+
+                if hit_boundary:
+                    break
+
+                time.sleep(_random.uniform(1.0, 2.5))
+
+            try:
+                page.close()
+            except Exception as e:
+                print(f"  [WARN] page.close() raised: {e} (continuing anyway)")
+
+    except Exception as e:
+        # Covers browser/driver-level crashes, including ones that surface
+        # from Camoufox's own __exit__ (e.g. Browser.close() failing after
+        # the underlying Node/Playwright driver has already died). Whatever
+        # was collected up to the last per-page checkpoint is not lost.
+        print(f"\n  [CRASH] Browser session failed: {e}")
+        print(f"  {len(collected_urls)} URL(s) collected before the crash — already checkpointed.")
+        crashed = True
+
+    return collected_urls, hit_boundary, crashed
+
+
+def run_backfill(start_date: date, dry_run: bool = False, max_pages: int = 1000,
+                  max_runtime_minutes: float | None = None, end_date: date | None = None):
+    """
+    Real offset-based backfill: walks the plain /results feed page by page,
+    collecting match URLs whose timestamp is >= start_date (and <= end_date
+    if given), then imports them. See _walk_results_pages for the collection
+    step.
+    """
+    range_desc = f"{start_date} to {end_date}" if end_date else f"{start_date} to today"
+    print(f"\n{'='*60}")
+    print(f"CSRS Backfill — /results offset walk, {range_desc}")
+    print(f"{'='*60}\n")
+
+    collected_urls, hit_boundary, crashed = _walk_results_pages(start_date, max_pages, end_date=end_date)
+
+    if crashed:
+        print(f"\nCollection crashed but progress is checkpointed. Run `python backfill.py --continue` to resume.")
+        return
 
     # /results is newest-first; reverse so matches are imported oldest -> newest,
     # which matters because pts_before/pts_after are scraped relative to each
     # team's rating at the time of that match's import.
-    collected_urls.reverse()
+    collected_urls = list(reversed(collected_urls))
 
     print(f"{'='*60}")
-    print(f"Stopped at page {final_page_num} (offset={final_offset}), boundary_hit={hit_boundary}")
-    print(f"Collected {len(collected_urls)} match URL(s) from {start_date} to today (oldest -> newest order).")
+    print(f"boundary_hit={hit_boundary}")
+    print(f"Collected {len(collected_urls)} match URL(s), {range_desc} (oldest -> newest order).")
     print(f"{'='*60}\n")
 
     if dry_run:
@@ -313,19 +563,36 @@ def run_backfill(start_date: date, dry_run: bool = False, max_pages: int = 1000)
         print("Nothing to import.")
         return
 
+    save_checkpoint(start_date, collected_urls, phase="importing", end_date=end_date)
+
+    _run_import_session(collected_urls, max_runtime_minutes=max_runtime_minutes)
+
+
+def _run_import_session(collected_urls: list[str], max_runtime_minutes: float | None = None):
+    """
+    Shared by run_backfill (fresh --import) and run_continue (--continue):
+    filters collected_urls against what's already in CSRS.history, imports
+    whatever's left (respecting max_runtime_minutes), saves/pushes, logs any
+    leftover URLs to backfill_failed.log, and either clears the checkpoint
+    (if everything imported cleanly) or leaves it in place for the next
+    --continue / --retry-failed.
+    """
     CSRS.load_all()
     already_imported = CSRS.get_imported_urls(CSRS.history)
     new_urls = [u for u in collected_urls if u not in already_imported]
     print(f"Loaded {len(CSRS.history)} existing matches, {len(already_imported)} unique URLs.")
-    print(f"{len(collected_urls) - len(new_urls)} already imported, {len(new_urls)} new to import.\n")
+    print(f"{len(collected_urls) - len(new_urls)} already imported, {len(new_urls)} left to import.\n")
 
     if not new_urls:
-        print("Nothing new to do.")
+        print("Nothing left to do — backfill complete.")
+        clear_checkpoint()
         return
 
     try:
-        with CSRS.BrowserSession() as sess:
-            count, still_failed = _import_with_retry(new_urls, sess.context, event_id=0)
+        count, still_failed, not_attempted = _import_with_retry(
+            new_urls, None, event_id=0,
+            max_runtime_seconds=(max_runtime_minutes * 60 if max_runtime_minutes else None),
+        )
     except Exception as e:
         print(f"[ERROR] Import session failed: {e}")
         log_failed(new_urls, event_id=0)
@@ -334,10 +601,15 @@ def run_backfill(start_date: date, dry_run: bool = False, max_pages: int = 1000)
     CSRS._vrs_session_cache.clear()
     CSRS.save_all(silent=True)
 
-    print(f"\nImported {count} match(es). {len(still_failed)} still failed.")
-    if still_failed:
-        log_failed(still_failed, event_id=0)
-        print(f"Logged to {FAILED_LOG} — re-run with --retry-failed")
+    print(f"\nImported {count} match(es). {len(still_failed)} failed, {len(not_attempted)} not yet attempted.")
+    leftover = still_failed + not_attempted
+    if leftover:
+        log_failed(leftover, event_id=0)
+        print(f"Logged {len(leftover)} URL(s) to {FAILED_LOG}.")
+        print(f"{len(leftover)} URL(s) still pending — run `python backfill.py --continue` to keep going.")
+    else:
+        print("All URLs in this checkpoint imported successfully.")
+        clear_checkpoint()
 
     CSRS._git_push()
 
@@ -349,7 +621,65 @@ def run_backfill(start_date: date, dry_run: bool = False, max_pages: int = 1000)
     print("Resimulation complete.\n")
 
 
-def run_retry_failed():
+def run_continue(max_runtime_minutes: float | None = None):
+    """
+    Resumes an in-progress backfill from its checkpoint — whichever phase it
+    was in when it stopped:
+      - "collecting": resumes the /results page walk from next_offset
+        (no need to redo pages already walked), then proceeds to import.
+      - "importing": collection was already done; re-filters the saved URL
+        list against CSRS.history and imports whatever's left.
+    """
+    checkpoint = load_checkpoint()
+    if not checkpoint:
+        print("No active backfill checkpoint found. Start one with:")
+        print("  python backfill.py --import --start YYYY-MM-DD")
+        return
+
+    phase = checkpoint.get("phase", "importing")  # old checkpoints had no phase field
+    start_date = date.fromisoformat(checkpoint["start_date"])
+    end_date = date.fromisoformat(checkpoint["end_date"]) if checkpoint.get("end_date") else None
+    collected_urls = checkpoint.get("collected_urls", [])
+    saved_at = checkpoint.get("saved_at", "?")
+
+    if phase == "collecting":
+        next_offset = checkpoint.get("next_offset") or 0
+        range_desc = f"{start_date} to {end_date}" if end_date else f"{start_date} to today"
+        print(f"\n{'='*60}")
+        print(f"Resuming URL collection — {range_desc}, saved at {saved_at}")
+        print(f"{len(collected_urls)} URL(s) already collected; resuming /results walk at offset={next_offset}")
+        print(f"{'='*60}\n")
+
+        collected_urls, hit_boundary, crashed = _walk_results_pages(
+            start_date, max_pages=1000, start_offset=next_offset, collected_urls=collected_urls,
+            end_date=end_date,
+        )
+        if crashed:
+            print("\nCollection crashed again but progress is checkpointed. Run `python backfill.py --continue` to resume.")
+            return
+
+        collected_urls = list(reversed(collected_urls))
+        print(f"{'='*60}")
+        print(f"boundary_hit={hit_boundary}")
+        print(f"Collected {len(collected_urls)} match URL(s) total (oldest -> newest order).")
+        print(f"{'='*60}\n")
+
+        if not collected_urls:
+            print("Nothing to import.")
+            clear_checkpoint()
+            return
+
+        save_checkpoint(start_date, collected_urls, phase="importing", end_date=end_date)
+    else:
+        print(f"\n{'='*60}")
+        print(f"Resuming import — start={start_date}, saved at {saved_at}")
+        print(f"{len(collected_urls)} URL(s) in this checkpoint's full target list.")
+        print(f"{'='*60}\n")
+
+    _run_import_session(collected_urls, max_runtime_minutes=max_runtime_minutes)
+
+
+def run_retry_failed(max_runtime_minutes: float | None = None):
     entries = load_failed_urls()
     if not entries:
         print("No failed URLs in backfill_failed.log")
@@ -360,8 +690,10 @@ def run_retry_failed():
     CSRS.load_all()
 
     try:
-        with CSRS.BrowserSession() as sess:
-            count, still_failed = _import_with_retry(urls, sess.context, event_id=0)
+        count, still_failed, not_attempted = _import_with_retry(
+            urls, None, event_id=0,
+            max_runtime_seconds=(max_runtime_minutes * 60 if max_runtime_minutes else None),
+        )
     except Exception as e:
         print(f"[ERROR] {e}")
         return
@@ -370,10 +702,11 @@ def run_retry_failed():
     CSRS.save_all(silent=True)
     CSRS._git_push()
 
-    print(f"Retry complete: {count} imported, {len(still_failed)} still failing")
-    if still_failed:
+    leftover = still_failed + not_attempted
+    print(f"Retry complete: {count} imported, {len(still_failed)} still failing, {len(not_attempted)} not yet attempted")
+    if leftover:
         with open(FAILED_LOG, "w") as f:
-            for u in still_failed:
+            for u in leftover:
                 f.write(f"retry\t{u}\n")
     elif os.path.exists(FAILED_LOG):
         os.remove(FAILED_LOG)
@@ -550,30 +883,150 @@ def run_test_results_page(start_date: date, end_date: date | None = None, max_pa
 # Entry point
 # ---------------------------------------------------------------------------
 
+STAGE_STRINGS = [
+    "grand final",
+    "upper bracket final",
+    "lower bracket final",
+    "consolidation final",
+    "3rd place decider",
+    "upper bracket semi-final",
+    "lower bracket semi-final",
+    "semi-final",
+    "upper bracket quarter-final",
+    "lower bracket quarter-final",
+    "quarter-final",
+]
+
+_STAGE_JS = """
+() => {
+    const el = document.querySelector(
+        '.matchpage-versus-head-stagename, .stage-name, .match-stage'
+    );
+    const veto = document.querySelector('.veto-box .preformatted-text');
+    return (el ? el.textContent : (veto ? veto.textContent : document.body.textContent)).toLowerCase();
+}
+"""
+
+def _detect_stage(text: str):
+    for s in STAGE_STRINGS:
+        if s in text:
+            return " ".join(w.capitalize() for w in s.split(" "))
+    return None
+
+
+def run_tag_stages(dry_run: bool = False, limit=None):
+    """Retroactively scrape match_stage for entries that have a URL but no stage tag."""
+    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+    # Use CSRS's own history list so save_all() picks up our changes
+    history = CSRS.history
+
+    to_do = [
+        (i, m) for i, m in enumerate(history)
+        if m.get("url") and m.get("match_stage") is None
+    ]
+    if limit:
+        to_do = to_do[:limit]
+
+    print(f"Entries without match_stage: {len(to_do)} (of {len(history)} total)")
+    if dry_run:
+        print("DRY RUN — data.save will not be modified.\n")
+    if not to_do:
+        print("Nothing to do.")
+        return
+
+    updated = tagged = errors = 0
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx     = browser.new_context(user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ))
+        page = ctx.new_page()
+
+        for n, (hi, match) in enumerate(to_do, 1):
+            t1  = match.get("t1", {}).get("name", "?")
+            t2  = match.get("t2", {}).get("name", "?")
+            url = match["url"]
+            print(f"[{n}/{len(to_do)}] {t1} vs {t2}")
+
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+                page.wait_for_timeout(1_500)
+                raw   = page.evaluate(_STAGE_JS)
+                stage = _detect_stage(raw)
+                print(f"  → {stage or 'No stage detected'}")
+                if not dry_run:
+                    history[hi]["match_stage"] = stage if stage is not None else False
+                updated += 1
+                if stage:
+                    tagged += 1
+            except PWTimeout:
+                print("  → TIMEOUT — skipping")
+                errors += 1
+            except Exception as e:
+                print(f"  → ERROR: {e} — skipping")
+                errors += 1
+
+            time.sleep(1.2)
+
+        browser.close()
+
+    print(f"\nDone. Processed: {updated}  Tagged: {tagged}  Errors: {errors}")
+    if not dry_run and updated:
+        CSRS.save_all()
+        print("Saved to data.save")
+    elif dry_run:
+        print("Dry run — no changes saved.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CSRS results-page-offset backfill")
     parser.add_argument("--start", default=START_DATE.isoformat(), metavar="YYYY-MM-DD")
     parser.add_argument("--end", default=None, metavar="YYYY-MM-DD",
-                         help="End date for --test-results-page (defaults to today)")
+                         help="End date (inclusive). With --import, only matches on/before this "
+                              "date are collected (defaults to today). Also used by --test-results-page.")
     parser.add_argument("--test-results-page", action="store_true",
                          help="Diagnostic only: test the date-filtered /results page, no importing")
     parser.add_argument("--import", dest="do_import", action="store_true",
-                         help="Real backfill: walk /results from --start to today and import matches")
+                         help="Real backfill: walk /results from --start to --end (default: today) and import matches")
     parser.add_argument("--dry-run", action="store_true",
                          help="With --import: collect URLs only, skip the actual import")
     parser.add_argument("--max-pages", type=int, default=1000, metavar="N",
                          help="Cap on number of /results pages to walk (default 1000)")
     parser.add_argument("--retry-failed", action="store_true",
                          help="Retry URLs in backfill_failed.log")
+    parser.add_argument("--continue", dest="do_continue", action="store_true",
+                         help="Resume the in-progress --import checkpoint (no need to re-pass --start)")
+    parser.add_argument("--max-runtime", type=float, default=None, metavar="MINUTES",
+                         help="Stop the import session cleanly after this many minutes "
+                              "(checked between matches, never mid-scrape). With --import or "
+                              "--continue, untouched/failed URLs stay in the checkpoint/failed log "
+                              "for the next --continue run.")
+    parser.add_argument("--tag-stages", action="store_true",
+                         help="Retroactively scrape match_stage for history entries that have a URL "
+                              "but no match_stage field yet. Safe to re-run; already-tagged entries "
+                              "are skipped.")
+    parser.add_argument("--limit", type=int, default=None, metavar="N",
+                         help="With --tag-stages: only process the first N untagged entries (useful for testing).")
     args = parser.parse_args()
 
     if args.test_results_page:
         end = date.fromisoformat(args.end) if args.end else None
         run_test_results_page(date.fromisoformat(args.start), end)
+    elif args.do_continue:
+        run_continue(max_runtime_minutes=args.max_runtime)
     elif args.retry_failed:
-        run_retry_failed()
+        run_retry_failed(max_runtime_minutes=args.max_runtime)
     elif args.do_import:
-        run_backfill(date.fromisoformat(args.start), dry_run=args.dry_run, max_pages=args.max_pages)
+        end = date.fromisoformat(args.end) if args.end else None
+        run_backfill(date.fromisoformat(args.start), dry_run=args.dry_run, max_pages=args.max_pages,
+                     max_runtime_minutes=args.max_runtime, end_date=end)
+    elif args.tag_stages:
+        run_tag_stages(dry_run=args.dry_run, limit=args.limit)
     else:
         print("Nothing to do. Use --test-results-page to diagnose, --import to run the real "
-              "backfill, or --retry-failed to retry failed URLs. See -h for details.")
+              "backfill, --retry-failed to retry failed URLs, or --tag-stages to backfill "
+              "match stages. See -h for details.")

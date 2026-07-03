@@ -19,6 +19,7 @@ import subprocess
 import logging
 import bisect
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from tkinter import Tk
 from typing import Dict, List, Tuple, Optional, Any
@@ -175,7 +176,21 @@ DEFAULT_CONFIG = {
     "PITY_MAX_PERCENT": 0.65,
     "PITY_MAX_POINTS": 9,
     "PITY_MIN_POINTS": 6,
+    "MISMATCH_REFERENCE_RATING": 1000,
+    # === SLIDING GAP THRESHOLDS (mirrored between mismatch and pity) ===
+    # At/above SLIDING_THRESHOLD_ANCHOR_HIGH elo, thresholds behave exactly as their normal
+    # values above (MISMATCH_ZERO_POINT_PERCENT=0.70, PITY_THRESHOLD_PERCENT=0.75). At/below
+    # SLIDING_THRESHOLD_ANCHOR_LOW elo, both thresholds ease toward their *_LOW_ELO value —
+    # requiring a bigger relative gap before either the mismatch penalty or the pity bonus
+    # triggers at all. This is mirrored deliberately: at low elo a modest absolute Elo gap is
+    # already a big relative gap (see MISMATCH_REFERENCE_RATING above), so both the
+    # win-punishing and loss-softening mechanisms are dialed down together rather than one
+    # side of the squeeze getting relief while the other doesn't.
+    "SLIDING_THRESHOLD_ANCHOR_LOW": 400,
+    "MISMATCH_ZERO_POINT_PERCENT_LOW_ELO": 0.50,
+    "PITY_THRESHOLD_PERCENT_LOW_ELO": 0.50,
     "DEPRECIATION_THRESHOLD": 14,
+    "INACTIVE_ARCHIVE_DAYS": 180,
 }
 
 # Load Configuration
@@ -237,7 +252,81 @@ PITY_THRESHOLD_PERCENT = CONFIG.get("PITY_THRESHOLD_PERCENT", DEFAULT_CONFIG["PI
 PITY_MAX_PERCENT = CONFIG.get("PITY_MAX_PERCENT", DEFAULT_CONFIG["PITY_MAX_PERCENT"])
 PITY_MAX_POINTS = CONFIG.get("PITY_MAX_POINTS", DEFAULT_CONFIG["PITY_MAX_POINTS"])
 PITY_MIN_POINTS = CONFIG.get("PITY_MIN_POINTS", DEFAULT_CONFIG["PITY_MIN_POINTS"])
+
+# Fixed reference rating used to convert mismatch/pity gaps into a "percent" figure.
+# BUG THIS FIXES: mismatch/pity used to divide by the team's OWN live rating
+# (opponent_points/team_points and team_points/opponent_points). That makes the exact same
+# absolute Elo-point gap look like a much bigger "mismatch" for a low-rated team than for a
+# high-rated one (e.g. a 100pt gap is 20% of a 500-rated team's rating but only ~7% of a
+# 1500-rated team's), which one-sidedly punished wins for low-rated teams (mismatch decay
+# starts at ANY weaker opponent) without giving them equivalent extra protection on losses
+# (pity only starts past a 25% gap) — low-rated clusters drifted downward even at a break-even
+# win rate. Using a single fixed reference rating instead means the same Elo-point gap is
+# treated the same way everywhere on the ladder.
+MISMATCH_REFERENCE_RATING = CONFIG.get("MISMATCH_REFERENCE_RATING", DEFAULT_CONFIG["MISMATCH_REFERENCE_RATING"])
+
+# === SLIDING GAP THRESHOLDS (mirrored between mismatch and pity) ===
+# MISMATCH_ZERO_POINT_PERCENT (0.70) and PITY_THRESHOLD_PERCENT (0.75) are the "how big a
+# relative gap is needed" thresholds. Rather than leaving them fixed, they slide between
+# their normal value (used at/above SLIDING_THRESHOLD_ANCHOR_HIGH, which reuses
+# MISMATCH_REFERENCE_RATING) and a more lenient *_LOW_ELO value (used at/below
+# SLIDING_THRESHOLD_ANCHOR_LOW) — requiring a bigger relative gap before either mechanism
+# triggers at all when the higher-rated team in the match is itself low elo. Both slide the
+# same direction on purpose: at low elo a modest absolute gap already reads as a big relative
+# gap, so both the win-punishing (mismatch) and loss-softening (pity) mechanisms get muted
+# together rather than one easing up while the other stays strict.
+SLIDING_THRESHOLD_ANCHOR_LOW = CONFIG.get("SLIDING_THRESHOLD_ANCHOR_LOW", DEFAULT_CONFIG["SLIDING_THRESHOLD_ANCHOR_LOW"])
+SLIDING_THRESHOLD_ANCHOR_HIGH = MISMATCH_REFERENCE_RATING
+MISMATCH_ZERO_POINT_PERCENT_LOW_ELO = CONFIG.get("MISMATCH_ZERO_POINT_PERCENT_LOW_ELO", DEFAULT_CONFIG["MISMATCH_ZERO_POINT_PERCENT_LOW_ELO"])
+PITY_THRESHOLD_PERCENT_LOW_ELO = CONFIG.get("PITY_THRESHOLD_PERCENT_LOW_ELO", DEFAULT_CONFIG["PITY_THRESHOLD_PERCENT_LOW_ELO"])
+
+def _sliding_threshold(higher_elo: float, strict_value: float, lenient_value: float) -> float:
+    """
+    Interpolate a gap-threshold between its lenient value (at/below
+    SLIDING_THRESHOLD_ANCHOR_LOW elo) and its strict/normal value (at/above
+    SLIDING_THRESHOLD_ANCHOR_HIGH elo), based on the higher-rated team in the match.
+    """
+    span = SLIDING_THRESHOLD_ANCHOR_HIGH - SLIDING_THRESHOLD_ANCHOR_LOW
+    if span <= 0:
+        return strict_value
+    position = (higher_elo - SLIDING_THRESHOLD_ANCHOR_LOW) / span
+    position = max(0.0, min(1.0, position))
+    return lenient_value + position * (strict_value - lenient_value)
+
 DEPRECIATION_THRESHOLD = CONFIG.get("DEPRECIATION_THRESHOLD", DEFAULT_CONFIG.get("DEPRECIATION_THRESHOLD", 14))
+
+# Preserve the original spacing between "where the penalty starts" and "where it caps out"
+# as both thresholds slide together (see _sliding_threshold above).
+_MISMATCH_ZERO_TO_MAXPENALTY_GAP = MISMATCH_ZERO_POINT_PERCENT - MISMATCH_MAX_PENALTY_PERCENT
+_PITY_THRESHOLD_TO_MAX_GAP = PITY_THRESHOLD_PERCENT - PITY_MAX_PERCENT
+
+# === INACTIVE-TEAM ARCHIVING (VRS-style rolling window, layered ON TOP of depreciation) ===
+# Depreciation (above) discounts an inactive team's rating by up to 25%, then holds — it
+# never fully clears them out. INACTIVE_ARCHIVE_DAYS is a separate, much longer threshold
+# (default 180 days, mirroring Valve's own ~6-month VRS window) past which a team is
+# considered "archived": hidden from the default rankings/graphs view so the visible list
+# doesn't grow forever, but never deleted, still fully depreciated as normal, and it
+# automatically reappears the instant it plays a new match. See is_team_archived().
+INACTIVE_ARCHIVE_DAYS = CONFIG.get("INACTIVE_ARCHIVE_DAYS", DEFAULT_CONFIG.get("INACTIVE_ARCHIVE_DAYS", 180))
+
+# Pre-baked lookup table for the base depreciation decay curve. The curve
+# is a pure function of days_inactive (clamped to [0, 75]) and the fixed
+# DEPRECIATION_THRESHOLD/DEPRECIATION_CAP_DAYS constants above, so it's
+# computed once here instead of re-evaluating the quadratic expression on
+# every calculate_depreciation() call (which happens for both teams on
+# every match during resimulation, plus every get_sorted_rankings call).
+_DEPRECIATION_CAP_DAYS = 75
+_BASE_DECAY_TABLE = [0.0] * (_DEPRECIATION_CAP_DAYS + 1)
+for _d in range(_DEPRECIATION_CAP_DAYS + 1):
+    if _d > DEPRECIATION_THRESHOLD:
+        _BASE_DECAY_TABLE[_d] = (((_d - DEPRECIATION_THRESHOLD) / (_DEPRECIATION_CAP_DAYS - DEPRECIATION_THRESHOLD)) ** 2) * 0.25
+del _d
+
+
+def _base_decay_for(days_inactive: int) -> float:
+    """O(1) lookup for the base depreciation decay curve (days_inactive clamped to 75)."""
+    return _BASE_DECAY_TABLE[min(max(days_inactive, 0), _DEPRECIATION_CAP_DAYS)]
+
 
 SAVE_VERSION = 1
 SAVE_FILE = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "main", "data.save")
@@ -254,22 +343,12 @@ _LEGACY_ALIASES  = "aliases.json"
 _LEGACY_HISTORY  = "match_history.json"
 
 # Initial Team Ratings (Starting Points)
-# These are the baseline CSRS Elo ratings for all tracked teams
-teams = {
-    "The MongolZ": 820.5, "Vitality": 1000, "Aurora": 888, "Falcons": 891.5, "Natus Vincere": 903.5,
-    "Mouz": 939.5, "Furia": 917.5, "Spirit": 870.5, "FUT": 819.5, "Astralis": 843.5,
-    "GamerLegion": 773.5, "G2": 786.5, "Parivision": 899.5, "NRG": 688.5, "B8": 696,
-    "FaZe": 744.5, "TYLOO": 488, "Ninjas in Pyjamas": 706, "Liquid": 658.5, "9z": 731
-}
+# Empty — all ratings are established through match history via VRS lookup.
+teams = {}
 
-# Baseline points used for resimulation - mirrors the teams dict above
-# Used when recalculating all ratings from scratch to ensure consistency
-STARTING_TEAMS = {
-    "The MongolZ": 820.5, "Vitality": 1000, "Aurora": 888, "Falcons": 891.5, "Natus Vincere": 903.5,
-    "Mouz": 939.5, "Furia": 917.5, "Spirit": 870.5, "FUT": 819.5, "Astralis": 843.5,
-    "GamerLegion": 773.5, "G2": 786.5, "Parivision": 899.5, "NRG": 688.5, "B8": 696,
-    "FaZe": 744.5, "TYLOO": 488, "Ninjas in Pyjamas": 706, "Liquid": 658.5, "9z": 731
-}
+# Baseline points used for resimulation — built at registration time and
+# persisted in data.save. Empty on a fresh start.
+STARTING_TEAMS = {}
 
 # Dynamic Data Structures (Loaded from save)
 # These are populated when loading save files and updated during runtime
@@ -279,6 +358,19 @@ peak_ratings = {}         # team_name -> {"points": float, "date": str, "rank": 
 event_tiers = {}          # event_name -> tier (S+/S/A/B/C/D) for auto-assignment
 adjustments = []          # List of manual point adjustment records for audit trail
 unsaved_changes = False   # Tracks if data has been modified since last manual save
+total_imports = 0         # Persistent running count of imports (drives tiered backups)
+
+# Tiered backup schedule: maps tier number -> import interval.
+# On each import, only the HIGHEST tier whose interval divides total_imports
+# is written — so import #20 (divisible by 5, 10, and 20) only writes to
+# backup_3 (interval 20), not backup_1 or backup_2.
+BACKUP_TIERS = {
+    1: 5,
+    2: 10,
+    3: 20,
+    4: 50,
+    5: 100,
+}
 
 def mark_unsaved():
     """Flag that data has been modified and needs saving."""
@@ -290,7 +382,7 @@ def error_log(message: str) -> None:
     logger.error(message)
 
 def _build_save_code(t, a, h):
-    """Encode teams, aliases, history, peaks, event_tiers, adjustments, provisional_teams into base64."""
+    """Encode teams, aliases, history, peaks, event_tiers, adjustments, provisional_teams, total_imports into base64."""
     try:
         payload = json.dumps({
             "version": SAVE_VERSION,
@@ -301,6 +393,7 @@ def _build_save_code(t, a, h):
             "event_tiers": event_tiers,
             "adjustments": adjustments,
             "provisional_teams": provisional_teams,
+            "total_imports": total_imports,
         })
         return base64.b64encode(zlib.compress(payload.encode())).decode()
     except Exception as e:
@@ -308,7 +401,7 @@ def _build_save_code(t, a, h):
         return None
 
 def _parse_save_code(raw_code):
-    """Decode a save code. Returns (teams, aliases, history, peaks, event_tiers, adjustments, provisional_teams) or raises."""
+    """Decode a save code. Returns (teams, aliases, history, peaks, event_tiers, adjustments, provisional_teams, total_imports) or raises."""
     try:
         decoded = zlib.decompress(base64.b64decode(raw_code)).decode()
         data = json.loads(decoded)
@@ -317,7 +410,7 @@ def _parse_save_code(raw_code):
             print(f">>> WARNING: Save version mismatch (File: {data.get('version', 0)}, Expected: {SAVE_VERSION})")
         
         if isinstance(data, dict) and "teams" not in data:
-            return data, {}, [], {}, {}, [], {}
+            return data, {}, [], {}, {}, [], {}, 0
         # Migrate legacy 'event_name' key to 'event' on all history records
         history = data.get("history", [])
         for m in history:
@@ -332,66 +425,83 @@ def _parse_save_code(raw_code):
                 data.get("peaks", {}),
                 data.get("event_tiers", {}),
                 data.get("adjustments", []),
-                data.get("provisional_teams", {}))
+                data.get("provisional_teams", {}),
+                data.get("total_imports", 0))
     except Exception as e:
         error_log(f"Failed to parse save code: {e}")
         raise
 
+def _backup_path(tier: int) -> str:
+    _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
+    return os.path.join(_backup_dir, f"backup_{tier}.save")
+
 def _rotate_backups():
     """
-    Rotate backups before saving. backup_1 = most recent.
-    
-    Maintains up to 5 backup files for recovery purposes.
+    Write to the single highest backup tier whose interval divides total_imports.
+
+      backup_1.save — every   5 imports
+      backup_2.save — every  10 imports  (supersedes backup_1 when both qualify)
+      backup_3.save — every  20 imports  (supersedes backup_1 and backup_2)
+      backup_4.save — every  50 imports
+      backup_5.save — every 100 imports  (supersedes all lower tiers)
+
+    Called AFTER data.save has been written so the backup reflects the
+    just-committed state. Does nothing if total_imports is 0 or no tier
+    interval divides it.
     """
+    if total_imports <= 0:
+        return
     _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
     os.makedirs(_backup_dir, exist_ok=True)
     try:
-        for i in range(4, 0, -1):
-            src = os.path.join(_backup_dir, f"backup_{i}.save")
-            dst = os.path.join(_backup_dir, f"backup_{i+1}.save")
-            if os.path.exists(src):
-                os.replace(src, dst)
-        if os.path.exists(SAVE_FILE):
-            import shutil
-            shutil.copy2(SAVE_FILE, os.path.join(_backup_dir, "backup_1.save"))
+        # Find the highest tier (largest interval) that divides total_imports
+        qualifying = [
+            (tier, interval)
+            for tier, interval in BACKUP_TIERS.items()
+            if interval > 0 and total_imports % interval == 0
+        ]
+        if not qualifying:
+            return
+        best_tier, _ = max(qualifying, key=lambda x: x[1])
+        import shutil
+        shutil.copy2(SAVE_FILE, _backup_path(best_tier))
     except Exception as e:
         error_log(f"Backup rotation failed: {e}")
 
 def save_all(silent: bool = False) -> bool:
     """
-    Write all state to data.save with backup rotation and verification.
-    Uses atomic save (temp file + rename) to prevent corruption.
+    Write all state to data.save (atomic), then update the tiered backup
+    if total_imports has reached a tier threshold.
     """
     global unsaved_changes
     os.makedirs(os.path.dirname(SAVE_FILE), exist_ok=True)
     temp_file = SAVE_FILE + ".tmp"
     
     try:
-        # 1. Rotate backups before overwriting
-        _rotate_backups()
-        
-        # 2. Build save code
+        # 1. Build save code
         save_code = _build_save_code(teams, aliases, history)
         if not save_code:
             if not silent:
                 logger.error("Failed to generate save data.")
             return False
         
-        # 3. Write to TEMP file first (atomic save)
+        # 2. Write to TEMP file first (atomic save)
         with open(temp_file, "w", encoding='utf-8') as f:
             f.write(save_code)
             f.flush()
             os.fsync(f.fileno())
         
-        # 4. Verify temp file
+        # 3. Verify temp file
         if os.path.exists(temp_file):
             file_size = os.path.getsize(temp_file)
             if file_size > 100:
-                # 5. Atomic rename (replaces old file safely)
+                # 4. Atomic rename (replaces old file safely)
                 os.replace(temp_file, SAVE_FILE)
                 if not silent:
                     logger.info(f"Save successful! ({file_size} bytes)")
                 unsaved_changes = False
+                # 5. Update tiered backup now that new state is committed
+                _rotate_backups()
                 return True
             else:
                 logger.error(f"Save file too small: {file_size} bytes")
@@ -419,7 +529,7 @@ def save_all(silent: bool = False) -> bool:
 
 def load_all():
     """Load state from data.save. Auto-recovers from backup if corrupted."""
-    global teams, aliases, history, peak_ratings, event_tiers, adjustments, unsaved_changes
+    global teams, aliases, history, peak_ratings, event_tiers, adjustments, unsaved_changes, total_imports
     
     _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
     files_to_try = [SAVE_FILE] + [
@@ -436,7 +546,7 @@ def load_all():
                 if not content:
                     continue
                     
-                t, a, h, pk, et, adj, prov = _parse_save_code(content)
+                t, a, h, pk, et, adj, prov, ti = _parse_save_code(content)
                 
                 teams.clear(); teams.update(t)
                 aliases.clear(); aliases.update(a)
@@ -445,6 +555,7 @@ def load_all():
                 event_tiers.clear(); event_tiers.update(et)
                 adjustments[:] = adj
                 provisional_teams.clear(); provisional_teams.update({k: int(v) for k, v in prov.items()})
+                total_imports = ti
                 
                 if filename == SAVE_FILE:
                     print(f">>> Loaded {len(history)} matches from {filename}")
@@ -465,9 +576,9 @@ def load_logic(raw_code):
     
     Used when importing save codes from other users or backup files.
     """
-    global teams, aliases, history, peak_ratings, event_tiers, adjustments, provisional_teams
+    global teams, aliases, history, peak_ratings, event_tiers, adjustments, provisional_teams, total_imports
     try:
-        t, a, h, pk, et, adj, prov = _parse_save_code(raw_code)
+        t, a, h, pk, et, adj, prov, ti = _parse_save_code(raw_code)
         teams.clear(); teams.update(t)
         aliases.clear(); aliases.update(a)
         history.clear(); history.extend(h)
@@ -475,6 +586,7 @@ def load_logic(raw_code):
         event_tiers.clear(); event_tiers.update(et)
         adjustments[:] = adj
         provisional_teams.clear(); provisional_teams.update({k: int(v) for k, v in prov.items()})
+        total_imports = ti
     except Exception as e:
         error_log(f"Load logic failed: {e}")
         raise
@@ -729,7 +841,7 @@ def update_peak(name, pts, date_str):
     """
     Update peak rating for a team if current points exceed recorded peak.
     """
-    ranked = get_sorted_rankings()
+    ranked = get_sorted_rankings(include_archived=True)
     rank = ranked.index(name) + 1 if name in ranked else 0
     if name not in peak_ratings or pts > peak_ratings[name]["points"]:
         peak_ratings[name] = {"points": pts, "date": date_str, "rank": rank}
@@ -802,8 +914,47 @@ def increment_provisional(team_name: str) -> None:
         print(f"  >>> '{team_name}' has graduated from provisional status and entered the rankings.")
 
 
-def get_sorted_rankings():
-    """Return list of team names sorted by points (High to Low)."""
+def is_team_archived(team_name: str, today=None, index: Optional[Dict[str, List[datetime]]] = None) -> bool:
+    """
+    Return True if a team hasn't played a match in INACTIVE_ARCHIVE_DAYS+ days.
+
+    This sits ON TOP of (not instead of) the existing depreciation curve. Depreciation
+    still discounts an inactive team's rating for match-calculation purposes (capped at
+    ~25% off, held forever after ~75 days — see calculate_depreciation), but that alone
+    never actually clears anyone out: the team stays in `teams` and in every ranking/graph
+    forever. Valve's own VRS avoids this by recomputing each team's score from only a
+    rolling ~6-month window of results, so a team with nothing left in that window just
+    scores ~0 and falls off the list — not deleted, just not shown.
+
+    is_team_archived() reproduces that "falls off the list" behavior on top of CSRS's
+    rating math: past INACTIVE_ARCHIVE_DAYS (default 180, matching VRS's window) a team is
+    treated as archived and excluded from the default rankings/graphs view by
+    get_sorted_rankings()/display_rankings(). It is never deleted, its rating and history
+    are untouched, and it automatically becomes active again the moment it plays a new
+    match (there is no separate "restore" step).
+
+    A team with no match history at all (freshly created, never played) is NOT archived —
+    there's nothing to have gone stale.
+    """
+    if today is None:
+        today = datetime.now().date()
+    last_match = get_team_last_match_date_before(team_name, index=index)
+    if last_match is None:
+        return False
+    return (today - last_match.date()).days > INACTIVE_ARCHIVE_DAYS
+
+
+def get_sorted_rankings(include_archived: bool = False):
+    """
+    Return list of team names sorted by points (High to Low).
+
+    By default, teams archived for long-term inactivity (see is_team_archived) are
+    excluded — mirroring how Valve's VRS drops teams with nothing left in its rolling
+    window instead of listing them forever at a discounted rating. Pass
+    include_archived=True for callers that need a specific team's rank/position
+    regardless of its activity status (e.g. compare_teams, simulate_match), to avoid
+    'team not found in rankings' errors for archived teams.
+    """
     # Consider depreciation for accurate ranking
     today = datetime.now().date()
     team_ratings = []
@@ -815,6 +966,8 @@ def get_sorted_rankings():
         
         if last_match:
             days_inactive = (today - last_match.date()).days
+            if not include_archived and days_inactive > INACTIVE_ARCHIVE_DAYS:
+                continue
             if days_inactive > DEPRECIATION_THRESHOLD:
                 display_rating = calculate_depreciation(points, days_inactive, name)
         
@@ -958,7 +1111,7 @@ def _print_match_entry(index, m):
     """
     fmt_shift = lambda s: f"(+{s})" if s > 0 else (f"({s})" if s < 0 else "(-)")
     fmt_pts = lambda a, b: f"(+{int(round(a-b))})" if a > b else (f"({int(round(a-b))})" if a < b else "(-)")
-    gf_tag = " [GRAND FINAL]" if m.get('grand_final', False) else ""
+    gf_tag = f" [{m.get('match_stage')}]" if m.get('match_stage') else (" [GRAND FINAL]" if m.get('grand_final', False) else "")
     ff_tag = ""
     if m.get('forfeit') == 'team1':
         ff_tag = f" [FORFEIT: {m.get('t1', {}).get('name', '?')}]"
@@ -980,7 +1133,7 @@ def _print_match_entry(index, m):
     else:
         winner = "Draw"
         
-    event_name = m.get('event_name', 'N/A')
+    event_name = m.get('event', 'N/A')
     match_date = m.get('date', 'N/A')
     tier = m.get('tier', '?')
     env = m.get('env', '?')
@@ -1344,7 +1497,7 @@ def calculate_depreciation(current_rating: float, days_inactive: int, team_name:
         return current_rating
 
     # Base decay calculation (quadratic curve, capped at 75 days, max 25% loss)
-    base_decay = (((min(days_inactive, 75) - DEPRECIATION_THRESHOLD) / (75 - DEPRECIATION_THRESHOLD)) ** 2) * 0.25
+    base_decay = _base_decay_for(days_inactive)
 
     # Form modifier (better form = slower depreciation)
     form_modifier = 1.0
@@ -1490,8 +1643,8 @@ def calculate_points(team_points, opponent_points, result, map_diff, tier='A', e
     # === Use effective K based on result ===
     K = k_win if result == 1 else k_loss
     
-    tiers = {'S+': 1.5, 'S': 1.4, 'A': 1.2, 'B': 1.0, 'C': 0.8, 'D': 0.55, 'E': 0.35}
-    maps = {1: 0.8, 2: 1.0, 3: 1.2}
+    tiers = {'S+': 1.5, 'S': 1.4, 'A': 1.2, 'B': 1.0, 'C': 0.85, 'D': 0.7, 'E': 0.55}
+    maps = {1: 0.8, 2: 1.0, 3: 1.4}
     # LAN is the new unified environment (replaces STUDIO/STAGE split).
     # STUDIO/STAGE kept as aliases for backward compatibility with existing history records.
     environments = {'ONLINE': 0.8, 'LAN': 1.1, 'STUDIO': 1.1, 'STAGE': 1.1}
@@ -1525,12 +1678,23 @@ def calculate_points(team_points, opponent_points, result, map_diff, tier='A', e
     # === PITY POINTS: For heavy underdog losses (Option B - Underdog Reward) ===
     pity_bonus = 0.0
     if PITY_POINTS_ENABLED and result == 0:
-        # Calculate THIS team's rating as percentage of opponent's rating
-        team_rating_percent = team_points / opponent_points if opponent_points > 0 else 0
-        
-        if team_rating_percent <= PITY_THRESHOLD_PERCENT:  # This team is <=80% of opponent
+        # This team's rating gap vs opponent, expressed as a percent of a reference rating.
+        # The reference floors at MISMATCH_REFERENCE_RATING (protects low-rated brackets,
+        # same as before) but grows to match whichever team is actually higher-rated once
+        # that clears the floor — so elite matchups, which naturally spread further apart in
+        # raw Elo, need a proportionally bigger gap before pity/mismatch fully kicks in.
+        pity_reference = max(team_points, opponent_points, MISMATCH_REFERENCE_RATING)
+        team_rating_percent = 1.0 - ((opponent_points - team_points) / pity_reference)
+
+        # Sliding threshold: at low elo, require a bigger relative gap before pity triggers
+        # at all (mirrors the mismatch penalty's sliding threshold below).
+        higher_elo = max(team_points, opponent_points)
+        effective_pity_threshold = _sliding_threshold(higher_elo, PITY_THRESHOLD_PERCENT, PITY_THRESHOLD_PERCENT_LOW_ELO)
+        effective_pity_max = effective_pity_threshold - _PITY_THRESHOLD_TO_MAX_GAP
+
+        if team_rating_percent <= effective_pity_threshold:  # This team is far enough below opponent
             # Scale pity points based on gap severity
-            gap_factor = min(1.0, (PITY_THRESHOLD_PERCENT - team_rating_percent) / (PITY_THRESHOLD_PERCENT - PITY_MAX_PERCENT))
+            gap_factor = min(1.0, (effective_pity_threshold - team_rating_percent) / (effective_pity_threshold - effective_pity_max))
             pity_base = {1: 9, 2: 6, 3: 3}.get(map_diff, 3)
             pity_bonus = pity_base * gap_factor * m_tier * m_env * gf_mult
             
@@ -1540,8 +1704,8 @@ def calculate_points(team_points, opponent_points, result, map_diff, tier='A', e
             
             # === NATURAL NET GAIN CURVE: 0 at threshold -> Max at cap ===
             # Calculate position in pity range (0.0 to 1.0)
-            gap_from_threshold = PITY_THRESHOLD_PERCENT - team_rating_percent
-            total_range = PITY_THRESHOLD_PERCENT - PITY_MAX_PERCENT
+            gap_from_threshold = effective_pity_threshold - team_rating_percent
+            total_range = effective_pity_threshold - effective_pity_max
             scale_position = min(1.0, gap_from_threshold / total_range)
             
             # Define net gain bounds
@@ -1558,17 +1722,28 @@ def calculate_points(team_points, opponent_points, result, map_diff, tier='A', e
 
     # === MISMATCH PENALTY: Smooth decay for beating much weaker teams (percentage-based) ===
     mismatch_multiplier = 1.0
-    if MISMATCH_PENALTY_ENABLED and result == 1 and team_points > 0:
-        opponent_percent = opponent_points / team_points
-        
+    if MISMATCH_PENALTY_ENABLED and result == 1:
+        # Opponent's rating relative to this team, as a percent of a reference rating that
+        # floors at MISMATCH_REFERENCE_RATING but scales up with whichever team is actually
+        # higher-rated once that clears the floor — see the matching comment in the pity
+        # block above.
+        mismatch_reference = max(team_points, opponent_points, MISMATCH_REFERENCE_RATING)
+        opponent_percent = 1.0 - ((team_points - opponent_points) / mismatch_reference)
+
+        # Sliding threshold: at low elo, require a bigger relative gap before the mismatch
+        # penalty fully zeroes out (or flips negative), mirroring the pity block above.
+        higher_elo = max(team_points, opponent_points)
+        effective_zero_point = _sliding_threshold(higher_elo, MISMATCH_ZERO_POINT_PERCENT, MISMATCH_ZERO_POINT_PERCENT_LOW_ELO)
+        effective_max_penalty_percent = effective_zero_point - _MISMATCH_ZERO_TO_MAXPENALTY_GAP
+
         if opponent_percent <= MISMATCH_DECAY_PERCENT:
-            if opponent_percent > MISMATCH_ZERO_POINT_PERCENT:
+            if opponent_percent > effective_zero_point:
                 # Decay from 1.0 to 0.0
-                position = (opponent_percent - MISMATCH_DECAY_PERCENT) / (MISMATCH_ZERO_POINT_PERCENT - MISMATCH_DECAY_PERCENT)
+                position = (opponent_percent - MISMATCH_DECAY_PERCENT) / (effective_zero_point - MISMATCH_DECAY_PERCENT)
                 mismatch_multiplier = 1.0 - position
-            elif opponent_percent > MISMATCH_MAX_PENALTY_PERCENT:
+            elif opponent_percent > effective_max_penalty_percent:
                 # Decay from 0.0 to max penalty
-                position = (opponent_percent - MISMATCH_ZERO_POINT_PERCENT) / (MISMATCH_MAX_PENALTY_PERCENT - MISMATCH_ZERO_POINT_PERCENT)
+                position = (opponent_percent - effective_zero_point) / (effective_max_penalty_percent - effective_zero_point)
                 mismatch_multiplier = 0.0 - (position * abs(MISMATCH_MAX_PENALTY_VALUE))
             else:
                 # Cap at maximum penalty
@@ -1587,36 +1762,22 @@ def calculate_points(team_points, opponent_points, result, map_diff, tier='A', e
 # === FORM & STATISTICS (TRENDS, HISTORY) ===
 # =============================================================================
 
-def calculate_form(team_name: str, n: int, history: List[Dict[str, Any]]) -> Optional[Tuple[str, float, str]]:
+def _compute_form_from_recent(recent: List[Tuple[str, Dict[str, Any]]]) -> Optional[Tuple[str, float, str]]:
     """
-    Calculate form rating across last n matches.
-    
+    Core form computation, shared by calculate_form() (which scans full
+    history to build `recent`) and the incremental per-team deque tracker
+    used during resimulation (which already maintains `recent` directly,
+    with no history scan needed).
+
     Parameters:
-    - team_name: The team to calculate form for
-    - n: Number of recent matches to consider
-    - history: List of match records (REQUIRED - no global fallback)
-    
+    - recent: list of (side, match) tuples in chronological order
+      (oldest first), already capped to the desired window size (e.g. 15).
+
     Returns: (grade, score, streak) or None if insufficient data
     """
-    if not history:
+    if len(recent) < 3:
         return None
 
-    team_matches = []
-    for m in history:
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        if t1_name == team_name:
-            team_matches.append(('t1', m))
-        elif t2_name == team_name:
-            team_matches.append(('t2', m))
-
-    if not team_matches:
-        return None
-
-    if len(team_matches) < 3:
-        return None
-
-    recent = team_matches[-n:]
     total_weight = 0.0
     win_weighted = 0.0
     map_wins_weighted = 0.0
@@ -1676,7 +1837,10 @@ def calculate_form(team_name: str, n: int, history: List[Dict[str, Any]]) -> Opt
 
     base_score = win_score + map_score + comp_score
 
-    streak = ''.join(streak_chars[-n:])
+    # streak_chars already has exactly len(recent) entries (recent is
+    # pre-capped to the desired window by the caller), so no further
+    # slicing is needed here.
+    streak = ''.join(streak_chars)
     streak_bonus = 0.0
     consecutive_losses = 0
 
@@ -1707,6 +1871,46 @@ def calculate_form(team_name: str, n: int, history: List[Dict[str, Any]]) -> Opt
     else:                                   grade = 'D'
 
     return grade, round(score, 1), streak
+
+
+def calculate_form(team_name: str, n: int, history: List[Dict[str, Any]]) -> Optional[Tuple[str, float, str]]:
+    """
+    Calculate form rating across last n matches.
+
+    Parameters:
+    - team_name: The team to calculate form for
+    - n: Number of recent matches to consider
+    - history: List of match records (REQUIRED - no global fallback)
+
+    Returns: (grade, score, streak) or None if insufficient data
+
+    NOTE: This scans the full `history` list to find this team's matches,
+    which is O(len(history)) per call. During resimulation (where this
+    would otherwise be called twice per match against an ever-growing,
+    freshly-sliced history — O(N^2) overall), use a FormTracker /
+    _compute_form_from_recent directly against an incrementally
+    maintained per-team deque instead. See _do_resimulation.
+    """
+    if not history:
+        return None
+
+    team_matches = []
+    for m in history:
+        t1_name = m.get('t1', {}).get('name')
+        t2_name = m.get('t2', {}).get('name')
+        if t1_name == team_name:
+            team_matches.append(('t1', m))
+        elif t2_name == team_name:
+            team_matches.append(('t2', m))
+
+    if not team_matches:
+        return None
+
+    if len(team_matches) < 3:
+        return None
+
+    return _compute_form_from_recent(team_matches[-n:])
+
 
 def calculate_form_at_match_index(team_name: str, match_index: int, history: List[Dict[str, Any]]) -> Optional[Tuple[str, float, str]]:
     """
@@ -2329,6 +2533,8 @@ def display_rankings():
     """
     Print current team rankings with 30-day trends and depreciated ratings.
     Teams inactive {DEPRECIATION_THRESHOLD}+ days show their current depreciated rating.
+    Teams inactive {INACTIVE_ARCHIVE_DAYS}+ days are moved to a separate Archived
+    section (see is_team_archived) instead of cluttering the main table forever.
     """
     print("\n=== CURRENT RANKINGS ===")
     print(f"  {'#':<4} {'Team':<26} {'Rating':<10} {'30D Trend':<12} {'Depreciation Punishment'}")
@@ -2339,6 +2545,7 @@ def display_rankings():
     # === FIX: Calculate depreciated ratings FIRST, then sort ===
     team_ratings = []
     provisional_list = []
+    archived_list = []
     date_index = build_match_date_index(history)
     for name, points in teams.items():
         if is_provisional(name):
@@ -2347,6 +2554,7 @@ def display_rankings():
             continue
 
         last_match = get_team_last_match_date_before(name, index=date_index)
+        has_last_match = last_match is not None
         display_rating = int(points)
         dep_loss = 0
         days_inactive = 0
@@ -2357,20 +2565,24 @@ def display_rankings():
                 depreciated = calculate_depreciation(points, days_inactive, name)
                 dep_loss = points - depreciated
                 display_rating = int(depreciated)
+
+            if days_inactive > INACTIVE_ARCHIVE_DAYS:
+                archived_list.append((name, display_rating, days_inactive))
+                continue
         
-        team_ratings.append((name, points, display_rating, dep_loss, days_inactive))
+        team_ratings.append((name, points, display_rating, dep_loss, days_inactive, has_last_match))
     
     # === FIX: Sort by display_rating (depreciated) instead of raw points ===
     team_ratings.sort(key=lambda x: x[2], reverse=True)
     
-    for i, (name, points, display_rating, dep_loss, days_inactive) in enumerate(team_ratings, 1):
+    for i, (name, points, display_rating, dep_loss, days_inactive, has_last_match) in enumerate(team_ratings, 1):
         # Get 30-day trend
         trend, diff = get_team_trend(name, days=30)
         
         # Build depreciation string
         if days_inactive > DEPRECIATION_THRESHOLD:
             dep_str = f"-{int(dep_loss):>3} pts ({days_inactive:>2}d)"
-        elif last_match:
+        elif has_last_match:
             dep_str = f"{'':>8} ({days_inactive:>2}d)"
         else:
             dep_str = f"{'':>8} (--)"
@@ -2386,6 +2598,13 @@ def display_rankings():
         for name, rating, matches_done in sorted(provisional_list, key=lambda x: x[1], reverse=True):
             remaining = PROVISIONAL_MATCH_THRESHOLD - matches_done
             print(f"  {'[P]':<4} {name:<26} {rating:<10} {matches_done}/{PROVISIONAL_MATCH_THRESHOLD} matches  ({remaining} to establish)")
+
+    if archived_list:
+        print(f"\n  --- Archived Teams (inactive {INACTIVE_ARCHIVE_DAYS}+ days, excluded from rankings) ---")
+        for name, rating, days_inactive in sorted(archived_list, key=lambda x: x[2]):
+            print(f"  {'[A]':<4} {name:<26} {rating:<10} {days_inactive}d inactive")
+        print(f"  (Archived teams reappear automatically the moment they play a new match.")
+        print(f"   See Team Management > Archived / Inactive Teams to review or delete them.)")
 
 def display_elite_teams_over_time() -> None:
     """
@@ -2886,7 +3105,7 @@ def _show_elite_teams_graph(team_history: Dict[str, List[Tuple[str, float]]], al
                 elite_split_idx = len(legend_data)
             
             # Build global rank lookup from full rankings (excluding provisional)
-            all_ranked = [t for t in get_sorted_rankings() if not is_provisional(t)]
+            all_ranked = [t for t in get_sorted_rankings(include_archived=True) if not is_provisional(t)]
             global_rank_map = {t: i + 1 for i, t in enumerate(all_ranked)}
 
             rank_colors = {0: '#FFD700', 1: '#C0C0C0', 2: '#CD7F32'}
@@ -3126,6 +3345,106 @@ def manage_aliases_menu() -> None:
             else:
                 print("  [!] No aliases defined.")
 
+def get_archived_teams(today=None) -> List[Tuple[str, int, int]]:
+    """
+    Return [(team_name, depreciated_rating, days_inactive), ...] for every
+    non-provisional team past INACTIVE_ARCHIVE_DAYS, sorted by days inactive
+    (longest-gone first). Shared by manage_archived_teams_menu() and anything
+    else that wants the archived list without re-deriving it.
+    """
+    if today is None:
+        today = datetime.now().date()
+    date_index = build_match_date_index(history)
+    archived = []
+    for name, points in teams.items():
+        if is_provisional(name):
+            continue
+        last_match = get_team_last_match_date_before(name, index=date_index)
+        if last_match is None:
+            continue
+        days_inactive = (today - last_match.date()).days
+        if days_inactive > INACTIVE_ARCHIVE_DAYS:
+            rating = int(calculate_depreciation(points, days_inactive, name)) if days_inactive > DEPRECIATION_THRESHOLD else int(points)
+            archived.append((name, rating, days_inactive))
+    archived.sort(key=lambda x: x[2], reverse=True)
+    return archived
+
+
+def manage_archived_teams_menu() -> None:
+    """
+    View and optionally bulk-delete teams that have been archived for
+    long-term inactivity (INACTIVE_ARCHIVE_DAYS+, see is_team_archived).
+
+    Archiving itself needs no action here — it's automatic and reversible
+    (a team leaves this list the instant it plays a new match). This menu
+    exists purely so the roster doesn't have to grow forever: if you want to
+    actually prune teams that have been gone for a very long time, you can
+    do it here without hunting them down one at a time in Delete Team.
+    """
+    archived = get_archived_teams()
+
+    if not archived:
+        print(f"\n>>> No archived teams. (Teams inactive {INACTIVE_ARCHIVE_DAYS}+ days show up here.)")
+        return
+
+    print(f"\n=== ARCHIVED / INACTIVE TEAMS ({len(archived)}) ===")
+    print(f"  Inactive {INACTIVE_ARCHIVE_DAYS}+ days — hidden from rankings/graphs, but not deleted.")
+    print(f"  They reappear automatically the moment they play a new match.\n")
+    print(f"  {'#':<4} {'Team':<26} {'Rating':<10} {'Days Inactive'}")
+    print(f"  {'-'*55}")
+    for i, (name, rating, days_inactive) in enumerate(archived, 1):
+        print(f"  {i:<4} {name:<26} {rating:<10} {days_inactive}")
+
+    print_menu(
+        "ARCHIVED TEAMS",
+        [
+            ("1", "Delete One (by number)"),
+            ("2", "Delete All Archived Teams"),
+            (None, None),
+            ("0", "Back"),
+        ],
+    )
+    choice = get_cmd(check_cmd(input("Select: ")))
+    if choice in ['0', 'back']:
+        return
+
+    if choice == '1':
+        try:
+            idx_raw = check_cmd(input(f"Enter number to delete (1-{len(archived)}) or '0' to cancel: "))
+            if get_cmd(idx_raw) in ['back', '0']:
+                return
+            idx = int(idx_raw) - 1
+            if not (0 <= idx < len(archived)):
+                print("  [!] Invalid number.")
+                return
+            target_name = archived[idx][0]
+        except ValueError:
+            print("  [!] Invalid input.")
+            return
+
+        confirm = get_cmd(check_cmd(input(f"Confirm delete '{target_name}'? Type 'DELETE' to confirm: ")))
+        if confirm != 'delete':
+            print(">>> Cancelled.")
+            return
+        del teams[target_name]
+        mark_unsaved()
+        print(f">>> Deleted '{target_name}'. Match history is untouched.")
+
+    elif choice == '2':
+        print(f"  [!] WARNING: This will permanently remove all {len(archived)} archived team(s) from the roster.")
+        print("      Match history involving them is NOT removed and will remain in Match History.")
+        confirm = get_cmd(check_cmd(input(f"Type 'DELETE ALL' to confirm: ")))
+        if confirm != 'delete all':
+            print(">>> Cancelled.")
+            return
+        for name, _, _ in archived:
+            teams.pop(name, None)
+        mark_unsaved()
+        print(f">>> Deleted {len(archived)} archived team(s).")
+    else:
+        print("  [!] Invalid option.")
+
+
 # =============================================================================
 # === MENU: TEAM MANAGEMENT ===
 # =============================================================================
@@ -3139,6 +3458,7 @@ def team_management_menu() -> None:
         ('4', 'Manage Aliases', manage_aliases_menu),
         ('5', 'Custom Point Adjustments', custom_point_adjustments),
         ('6', 'Simulate Depreciation', simulate_depreciation_menu),
+        ('7', 'Archived / Inactive Teams', manage_archived_teams_menu),
         ('0', 'Back', None),
     ]
     
@@ -3153,6 +3473,7 @@ def team_management_menu() -> None:
                 (None, None),
                 ("5", "Custom Point Adjustments"),
                 ("6", "Simulate Depreciation"),
+                ("7", "Archived / Inactive Teams"),
                 (None, None),
                 ("0", "Back"),
             ],
@@ -3197,8 +3518,26 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
     """
     Internal: fully resimulate ratings from the given history list.
     DEPRECIATION IS APPLIED BETWEEN MATCHES BASED ON TIME GAPS.
+    PROVISIONAL-TEAM HANDLING IS APPLIED IDENTICALLY TO THE IMPORT-TIME PATH
+    (see _import_url_list): capped rating differential vs provisional
+    opponents, boosted K-factor for a provisional team's own change, and
+    graduation after PROVISIONAL_MATCH_THRESHOLD matches.
+
+    NOTE on provisional inference: provisional registration is normally
+    decided at scrape time by a live VRS lookup (see scrape_vrs_points /
+    "register as provisional" elsewhere in this file), which isn't
+    available during a pure history replay. We instead infer it from data
+    already in the history record: a team is treated as having started
+    provisional if its pts_before on its very first chronological match
+    equals exactly PROVISIONAL_STARTING_RATING (400) — the fixed value
+    only ever assigned when no VRS rating was found at original import
+    time. From there, match counts and graduation are reconstructed
+    chronologically using the same PROVISIONAL_MATCH_THRESHOLD /
+    PROVISIONAL_K_FACTORS as the live importer, so a team's provisional
+    window during resimulation lines up with what actually happened at
+    import time.
     """
-    global teams, peak_ratings
+    global teams, peak_ratings, provisional_teams
     
     if not history_list:
         if verbose:
@@ -3217,11 +3556,41 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
             print(f">>> Last match: {last.get('date')} | {last.get('t1', {}).get('name')} vs {last.get('t2', {}).get('name')}")
 
     sim_teams: Dict[str, float] = dict(STARTING_TEAMS)
-    
+
+    # Local, isolated provisional-status tracker for this resimulation run —
+    # mirrors the global provisional_teams dict's shape (team_name -> matches
+    # played while provisional) but never touches the real global mid-loop,
+    # exactly like sim_teams vs. the real teams dict above. Only written
+    # back to the real global once, at the very end of resimulation.
+    sim_provisional: Dict[str, int] = {}
+
     chronologically_sorted: List[Dict[str, Any]] = sorted(history_list, key=lambda m: (m.get('date') == 'N/A', m.get('date', '')))
-    
+
+    # Pre-parse every match date once up front instead of re-parsing the
+    # same string with datetime.strptime() inside the hot loop below —
+    # strptime is comparatively slow and this ran once per match every
+    # single resimulation.
+    parsed_dates: List[datetime] = []
+    for m in chronologically_sorted:
+        raw = m.get('date', 'N/A')
+        try:
+            parsed_dates.append(datetime.strptime(raw[:10], "%Y-%m-%d"))
+        except Exception:
+            parsed_dates.append(datetime.now())
+
     # Track last match date per team for depreciation calculation
     team_last_match: Dict[str, datetime] = {}
+
+    # Per-team sliding window of (side, match) tuples for incremental form
+    # tracking. Replaces the old approach of calling calculate_form() with
+    # a freshly-sliced history_list[:match_idx] on every single match
+    # (O(N) list copy + O(N) scan, done twice per match => O(N^2) overall).
+    # Since matches are processed strictly in chronological order here, we
+    # can just append each match to the relevant teams' deques right after
+    # it's processed and use the current deque contents (already capped at
+    # the last 15) to compute form directly — O(1) maintenance, O(15) form
+    # calc, so O(N) overall.
+    team_recent_matches: Dict[str, deque] = {}
     
     teams_first_pts_before: Dict[str, float] = {}
     for m in chronologically_sorted:
@@ -3241,6 +3610,10 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
             change = start_pts - old_rating
             change_str = f"{'+' if change >= 0 else ''}{int(change)}"
             print(f"  [OK] {team_name}: Starting at {int(start_pts)} (change: {change_str})")
+        # Infer provisional start: only ever assigned PROVISIONAL_STARTING_RATING
+        # exactly when no VRS rating was found at original import time.
+        if start_pts == PROVISIONAL_STARTING_RATING:
+            sim_provisional[team_name] = 0
     
     for name, pts in teams.items():
         if name not in sim_teams:
@@ -3252,17 +3625,45 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         print(f"\n>>> Total teams in resimulation: {len(sim_teams)}")
         if teams_first_pts_before:
             print(f">>> Teams with starting ratings from history: {len(teams_first_pts_before)}")
+        if sim_provisional:
+            print(f">>> Teams inferred provisional at history start: {len(sim_provisional)}")
 
     if verbose:
         print(f"\n>>> Processing matches...")
     
     peak_ratings.clear()
+
+    # Incremental rank tracker: rank_shift is purely cosmetic (stored in
+    # the history record only, never fed back into rating math), so
+    # instead of doing two full O(K log K) sorts of every team on every
+    # single match, maintain one running sorted list of all current
+    # ratings and use O(log K) bisect lookups to find a team's rank
+    # (count of teams with a strictly higher rating, + 1), with O(K)
+    # insert/remove on rating changes (still cheaper in practice than
+    # re-sorting all K teams from scratch twice per match).
+    sim_points_sorted: List[float] = sorted(sim_teams.values())
+
+    def _rank_of(value: float) -> int:
+        greater = len(sim_points_sorted) - bisect.bisect_right(sim_points_sorted, value)
+        return greater + 1
+
+    def _resort_update(old_value: float, new_value: float) -> None:
+        idx = bisect.bisect_left(sim_points_sorted, old_value)
+        # idx should point at an occurrence of old_value; guard just in
+        # case of float drift so we never desync the tracker.
+        if idx < len(sim_points_sorted) and sim_points_sorted[idx] == old_value:
+            del sim_points_sorted[idx]
+        else:
+            sim_points_sorted.remove(old_value)
+        bisect.insort(sim_points_sorted, new_value)
     
     for match_idx, m in enumerate(chronologically_sorted, 1):
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        t1_score = m.get('t1', {}).get('score', 0)
-        t2_score = m.get('t2', {}).get('score', 0)
+        t1_data = m.get('t1') or {}
+        t2_data = m.get('t2') or {}
+        t1_name = t1_data.get('name')
+        t2_name = t2_data.get('name')
+        t1_score = t1_data.get('score', 0)
+        t2_score = t2_data.get('score', 0)
         tier = m.get('tier', 'A')
         env = m.get('env', 'LAN')
         is_gf = m.get('grand_final', False)
@@ -3273,23 +3674,38 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
                 print_warning(f"Skipping match {match_idx}: Missing team names")
             continue
         
-        # Parse match date
-        try:
-            match_date = datetime.strptime(match_date_str[:10], "%Y-%m-%d")
-        except:
-            match_date = datetime.now()
+        match_date = parsed_dates[match_idx - 1]
         
         # Handle orphaned teams (in history but not in roster)
         if t1_name not in sim_teams:
             logger.warning(f"Team '{t1_name}' in history but not in roster. Assigning 1000 pts.")
             sim_teams[t1_name] = 1000
+            bisect.insort(sim_points_sorted, 1000)
         if t2_name not in sim_teams:
             logger.warning(f"Team '{t2_name}' in history but not in roster. Assigning 1000 pts.")
             sim_teams[t2_name] = 1000
+            bisect.insort(sim_points_sorted, 1000)
         
-        # === FORM (calculated from past-only slice — must be before depreciation) ===
-        form1 = calculate_form(t1_name, n=15, history=history_list[:match_idx])
-        form2 = calculate_form(t2_name, n=15, history=history_list[:match_idx])
+        # === FORM (calculated from a window that INCLUDES this match's own
+        # already-known score) ===
+        # NOTE: the original implementation computed this via
+        # calculate_form(team, n=15, history=history_list[:match_idx]).
+        # Since match_idx is 1-based, that slice's exclusive upper bound
+        # lands one past the current match's own 0-based index — i.e. it
+        # includes the current match itself (its score fields are already
+        # present in the record even though pts_before/pts_after for this
+        # match haven't been computed yet). To reproduce that exactly, the
+        # current match is pushed onto each team's window before form is
+        # computed, not after.
+        if t1_name not in team_recent_matches:
+            team_recent_matches[t1_name] = deque(maxlen=15)
+        team_recent_matches[t1_name].append(('t1', m))
+        if t2_name not in team_recent_matches:
+            team_recent_matches[t2_name] = deque(maxlen=15)
+        team_recent_matches[t2_name].append(('t2', m))
+
+        form1 = _compute_form_from_recent(list(team_recent_matches[t1_name]))
+        form2 = _compute_form_from_recent(list(team_recent_matches[t2_name]))
         form_adj_1 = (form1[1] - 50) if form1 else 0
         form_adj_2 = (form2[1] - 50) if form2 else 0
         form_score_1 = form1[1] if form1 else None
@@ -3319,27 +3735,58 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         t2_won = 1 if t2_score > t1_score else 0
         map_diff = abs(t1_score - t2_score)
 
+        # === PROVISIONAL STATUS (inferred chronologically, see docstring) ===
+        t1_prov = t1_name in sim_provisional
+        t2_prov = t2_name in sim_provisional
+        t1_k = PROVISIONAL_K_FACTORS.get(sim_provisional.get(t1_name, 0) + 1, 1.0) if t1_prov else 1.0
+        t2_k = PROVISIONAL_K_FACTORS.get(sim_provisional.get(t2_name, 0) + 1, 1.0) if t2_prov else 1.0
+
         forfeit = m.get('forfeit')  # 'team1', 'team2', or None
         if forfeit == 'team1':
-            new_p1 = calculate_points(p1_before, p2_before, 0, map_diff or 1, tier, env, is_gf, form_adj_1, form_adj_2)
-            new_p2 = p2_before
+            raw_p1 = calculate_points(p1_before, p2_before, 0, map_diff or 1, tier, env, is_gf, form_adj_1, form_adj_2, opp_is_provisional=t2_prov)
+            raw_p2 = p2_before
         elif forfeit == 'team2':
-            new_p1 = p1_before
-            new_p2 = calculate_points(p2_before, p1_before, 0, map_diff or 1, tier, env, is_gf, form_adj_2, form_adj_1)
+            raw_p1 = p1_before
+            raw_p2 = calculate_points(p2_before, p1_before, 0, map_diff or 1, tier, env, is_gf, form_adj_2, form_adj_1, opp_is_provisional=t1_prov)
         else:
-            new_p1 = calculate_points(p1_before, p2_before, t1_won, map_diff, tier, env, is_gf, form_adj_1, form_adj_2)
-            new_p2 = calculate_points(p2_before, p1_before, t2_won, map_diff, tier, env, is_gf, form_adj_2, form_adj_1)
+            raw_p1 = calculate_points(p1_before, p2_before, t1_won, map_diff, tier, env, is_gf, form_adj_1, form_adj_2, opp_is_provisional=t2_prov)
+            raw_p2 = calculate_points(p2_before, p1_before, t2_won, map_diff, tier, env, is_gf, form_adj_2, form_adj_1, opp_is_provisional=t1_prov)
+
+        # Apply provisional K-multiplier to the team's own rating change
+        # (not the opponent's), clamped to RATING_FLOOR/RATING_CAP — same
+        # math as the live importer.
+        if t1_prov:
+            new_p1 = min(max(RATING_FLOOR, p1_before + (raw_p1 - p1_before) * t1_k), RATING_CAP)
+        else:
+            new_p1 = raw_p1
+        if t2_prov:
+            new_p2 = min(max(RATING_FLOOR, p2_before + (raw_p2 - p2_before) * t2_k), RATING_CAP)
+        else:
+            new_p2 = raw_p2
+
+        # Increment / graduate provisional status — same rule as
+        # increment_provisional(): the forfeiting team doesn't get credit
+        # for a match it forfeited.
+        if t1_prov and (not forfeit or forfeit == 'team1'):
+            sim_provisional[t1_name] = sim_provisional.get(t1_name, 0) + 1
+            if sim_provisional[t1_name] >= PROVISIONAL_MATCH_THRESHOLD:
+                del sim_provisional[t1_name]
+        if t2_prov and (not forfeit or forfeit == 'team2'):
+            sim_provisional[t2_name] = sim_provisional.get(t2_name, 0) + 1
+            if sim_provisional[t2_name] >= PROVISIONAL_MATCH_THRESHOLD:
+                del sim_provisional[t2_name]
         
-        old_order = sorted(sim_teams.keys(), key=lambda x: sim_teams[x], reverse=True)
-        t1_old_rank = old_order.index(t1_name) + 1
-        t2_old_rank = old_order.index(t2_name) + 1
-        
+        t1_old_rank = _rank_of(sim_teams[t1_name])
+        t2_old_rank = _rank_of(sim_teams[t2_name])
+
+        _resort_update(sim_teams[t1_name], new_p1)
+        _resort_update(sim_teams[t2_name], new_p2)
+
         sim_teams[t1_name] = new_p1
         sim_teams[t2_name] = new_p2
-        
-        new_order = sorted(sim_teams.keys(), key=lambda x: sim_teams[x], reverse=True)
-        t1_new_rank = new_order.index(t1_name) + 1
-        t2_new_rank = new_order.index(t2_name) + 1
+
+        t1_new_rank = _rank_of(new_p1)
+        t2_new_rank = _rank_of(new_p2)
         
         t1_rank_shift = t1_old_rank - t1_new_rank
         t2_rank_shift = t2_old_rank - t2_new_rank
@@ -3367,6 +3814,16 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
 
     teams.clear()
     teams.update(sim_teams)
+
+    # Write back inferred provisional state to the real global, same as
+    # teams above — only done once, after the full chronological replay,
+    # so any team still mid-provisional-window at the end of history
+    # correctly stays provisional going forward.
+    provisional_teams.clear()
+    provisional_teams.update(sim_provisional)
+    if verbose and sim_provisional:
+        print(f">>> {len(sim_provisional)} team(s) still provisional at end of resimulation: "
+              f"{', '.join(sorted(sim_provisional.keys()))}")
     
     if verbose:
         print(f"\n>>> Resimulation complete! {len(chronologically_sorted)} matches processed.")
@@ -3408,6 +3865,35 @@ def resimulate():
     
     _do_resimulation(history, verbose=True)
     history = load_history()
+
+def run_resimulate_command(skip_confirm: bool = False) -> None:
+    """
+    CLI entry point for `python CSRS.py --resimulate`.
+    Loads all data, resimulates the full match history from scratch using
+    the current formula/config, and saves. No menu involved.
+    """
+    global history
+    load_all()
+
+    if not history:
+        print("\n>>> No match history to resimulate.")
+        return
+
+    print(f">>> Current history contains {len(history)} matches")
+    if not skip_confirm:
+        confirm = input(
+            f"Resimulate {len(history)} matches with current formula "
+            f"(including form adjustments)? This will overwrite current "
+            f"team points and history. (y/n): "
+        ).strip().lower()
+        if confirm != 'y':
+            print(">>> Cancelled.")
+            return
+
+    mark_unsaved()
+    _do_resimulation(history, verbose=True)
+    history = load_history()
+    print(">>> Resimulation complete.")
 
 def delete_and_resimulate(matches_to_delete):
     """
@@ -3916,9 +4402,9 @@ def edit_match_details():
         s2 = m.get('t2', {}).get('score', 0)
         date = m.get('date', 'N/A')
         env = m.get('env', 'N/A')
-        event = m.get('event_name', 'N/A')
+        event = m.get('event', 'N/A')
         tier = m.get('tier', 'N/A')
-        gf_tag = " [GRAND FINAL]" if m.get('grand_final') else ""
+        gf_tag = f" [{m.get('match_stage')}]" if m.get('match_stage') else (" [GRAND FINAL]" if m.get('grand_final') else "")
         print(f"  {i}. {date}{gf_tag}: {t1_name} {s1} - {s2} {t2_name} | Env: {env} | Tier: {tier} | Event: {event}")
 
     try:
@@ -3940,7 +4426,7 @@ def edit_match_details():
 
         print(f"\nEditing Match #{global_idx + 1}: {match_to_edit.get('t1', {}).get('name')} vs {match_to_edit.get('t2', {}).get('name')} ({match_to_edit.get('date', 'N/A')})")
         print(f"  Current Environment: {match_to_edit.get('env', 'N/A')}")
-        print(f"  Current Event: {match_to_edit.get('event_name', 'N/A')}")
+        print(f"  Current Event: {match_to_edit.get('event', 'N/A')}")
         print(f"  Current Tier: {match_to_edit.get('tier', 'N/A')}")
         print(f"  Current Grand Final: {match_to_edit.get('grand_final', False)}")
 
@@ -3959,8 +4445,8 @@ def edit_match_details():
 
         event_choice = get_cmd(check_cmd(input("New Event Name (skip=unchanged): ")))
         if event_choice not in ['skip', '']:
-            history[global_idx]['event_name'] = event_choice
-            print(f"  [OK] Event updated to {history[global_idx]['event_name']}")
+            history[global_idx]['event'] = event_choice
+            print(f"  [OK] Event updated to {history[global_idx]['event']}")
             changes_made = True
 
         tier_choice = get_cmd(check_cmd(input("New Tier (S+/S/A/B/C/D, skip=unchanged): ")).strip().upper())
@@ -4137,7 +4623,7 @@ def simulate_match() -> None:
     t1_prov = is_provisional(t1)
     t2_prov = is_provisional(t2)
 
-    old_order = [t for t in get_sorted_rankings() if not is_provisional(t)]
+    old_order = [t for t in get_sorted_rankings(include_archived=True) if not is_provisional(t)]
     r1_old = old_order.index(t1) + 1 if t1 in old_order else '?'
     r2_old = old_order.index(t2) + 1 if t2 in old_order else '?'
 
@@ -4162,9 +4648,10 @@ def simulate_match() -> None:
     fmt_pts   = lambda a, b: f"({int(round(a-b)):>+3})" if a != b else "( ─ )"
 
     bo_label = f"Best of {bo}"
+    stage_label = "Grand Final  |  " if is_gf else ""
     print(f"\n{'═'*68}")
     print(f"  SIMULATION: {t1}  vs  {t2}  [{bo_label}]")
-    print(f"  Tier: {tier_raw}  |  Env: {env_raw}  |  {'Grand Final  |  ' if is_gf else ''}Ratings: {int(p1d)} vs {int(p2d)}")
+    print(f"  Tier: {tier_raw}  |  Env: {env_raw}  |  {stage_label}Ratings: {int(p1d)} vs {int(p2d)}")
     if days_inactive > DEPRECIATION_THRESHOLD:
         print(f"  [Depreciation: {t1} {int(p1)}→{int(p1d)}  |  {t2} {int(p2)}→{int(p2d)}]")
     print(f"  Series Win Probability:  {t1} {series_win_prob*100:.1f}%  |  {t2} {(1-series_win_prob)*100:.1f}%")
@@ -4232,7 +4719,7 @@ def compare_teams() -> None:
         print("  [!] Cannot compare a team against itself.")
         return
 
-    ranked = get_sorted_rankings()
+    ranked = get_sorted_rankings(include_archived=True)
     r1 = ranked.index(t1) + 1
     r2 = ranked.index(t2) + 1
     p1, p2 = teams[t1], teams[t2]
@@ -6544,7 +7031,7 @@ def duplicate_match_detection():
         for local_idx, (global_idx, m) in enumerate(matches, 1):
             t1_data = m.get('t1', {})
             t2_data = m.get('t2', {})
-            gf_tag = "[GRAND FINAL]" if m.get('grand_final') else ""
+            gf_tag = f"[{m.get('match_stage')}]" if m.get('match_stage') else ("[GRAND FINAL]" if m.get('grand_final') else "")
             url_tag = f"URL: {m.get('url', 'N/A')}" if m.get('url') else ""
             print(f"    {local_idx}. (Index {global_idx+1}) {t1_data.get('name')} {t1_data.get('score')} - {t2_data.get('score')} {t2_data.get('name')} {gf_tag} {url_tag}")
 
@@ -7855,16 +8342,125 @@ def scrape_vrs_points(team_name, match_date=None, context=None):
         print(f"  [!] VRS scrape error: {e}")
     return None
 
-def auto_register_team(team_name, match_date=None, teams_dict=None, context=None):
+def _scrape_vrs_with_players(match_date=None, context=None):
+    """
+    Fetch the VRS rankings page and return a dict of:
+        { team_name_lower: { 'pts': float, 'players': [nick, ...] } }
+    Used by _find_vrs_team_by_roster for roster-based matching.
+    """
+    from datetime import timedelta, date as date_cls
+    if match_date:
+        day_before = match_date - timedelta(days=1)
+    else:
+        day_before = date_cls.today()
+
+    vrs_url = (f"https://www.hltv.org/valve-ranking/teams/"
+               f"{day_before.year}/{day_before.strftime('%B').lower()}/{day_before.day}")
+
+    owns_browser = context is None
+    _sess = None
+    try:
+        if owns_browser:
+            _sess = BrowserSession()
+            _sess.start()
+            context = _sess.context
+        page = context.new_page()
+        page.goto(vrs_url, timeout=30000, wait_until="domcontentloaded")
+        page.wait_for_selector(".ranked-team", state="attached", timeout=15000)
+        page.wait_for_timeout(2000)
+
+        rankings = page.evaluate("""() => {
+            const results = {};
+            const entries = document.querySelectorAll('.ranked-team');
+            for (const entry of entries) {
+                if (entry.innerHTML.indexOf('old-roster') !== -1) continue;
+                const ptsEl = entry.querySelector('span.points');
+                if (!ptsEl) continue;
+                const ptsMatch = ptsEl.textContent.trim().match(/\\((\\d+)\\s*Valve\\s*points\\)/);
+                if (!ptsMatch) continue;
+                const pts = parseFloat(ptsMatch[1]);
+                const fullText = entry.textContent.trim();
+                const nameMatch = fullText.match(/#\\d+\\s+([^(]+)\\s*\\(/);
+                if (!nameMatch) continue;
+                const name = nameMatch[1].trim().toLowerCase();
+                // Player nicks live in the always-visible summary row
+                // ('.playersLine .rankingNicknames span'). The full lineup
+                // table ('.lineup-con .nick') is present in the DOM for every
+                // team but stays class="lineup-con hidden" and only gets
+                // populated/expanded for whichever single team the page has
+                // currently opened — so relying on '.nick' (or any
+                // '[class*="nick"]' catch-all, which also matches it) only
+                // works for that one team and silently returns nothing for
+                // everyone else.
+                const playerEls = entry.querySelectorAll('.playersLine .rankingNicknames span');
+                const players = Array.from(playerEls)
+                    .map(el => el.textContent.trim().toLowerCase())
+                    .filter(n => n.length > 0)
+                    .slice(0, 5);
+                if (name && pts) results[name] = { pts, players };
+            }
+            return results;
+        }""")
+        return rankings
+    except Exception as e:
+        print(f"  [!] VRS roster scrape error: {e}")
+        return {}
+    finally:
+        try:
+            if page: page.close()
+        except Exception:
+            pass
+        if owns_browser and _sess:
+            _sess.stop()
+
+
+def _find_vrs_team_by_roster(player_nicks, match_date=None, context=None, min_matches=3):
+    """
+    When a team can't be found by name in VRS, scrape the VRS rankings page
+    and compare player rosters. If a VRS team shares >= min_matches players
+    with player_nicks, return (vrs_team_name, vrs_pts). Otherwise None.
+
+    Parameters:
+    - player_nicks: list of lowercase player nick strings scraped from the match page
+    - match_date:   date object for the match (we use the day-before VRS page)
+    - context:      optional BrowserContext to reuse
+    - min_matches:  minimum overlapping players to count as a match (default 3)
+    """
+    if not player_nicks:
+        return None
+
+    player_set = set(player_nicks)
+    vrs_data = _scrape_vrs_with_players(match_date, context)
+    if not vrs_data:
+        return None
+
+    best_name = None
+    best_pts  = None
+    best_count = 0
+
+    for vrs_name, info in vrs_data.items():
+        vrs_players = set(info.get('players', []))
+        overlap = len(player_set & vrs_players)
+        if overlap >= min_matches and overlap > best_count:
+            best_count = overlap
+            best_name  = vrs_name
+            best_pts   = info['pts']
+
+    if best_name is not None:
+        return best_name, best_pts
+    return None
+
+
+def auto_register_team(team_name, match_date=None, teams_dict=None, context=None, player_nicks=None):
     """
     Look up VRS points for a brand‑new team and register it.
     The function now ALWAYS prints the raw VRS points that were used,
     no matter which source supplied the value.
 
     Parameters:
-    - context: optional Playwright BrowserContext to reuse for the VRS lookup
-               (from BrowserSession). If None, scrape_vrs_points
-               launches its own browser as before.
+    - context:      optional Playwright BrowserContext to reuse for the VRS lookup
+    - player_nicks: optional list of player nick strings scraped from the match page,
+                    used as a fallback when name lookup fails (roster matching)
     """
     # ------------------------------------------------------------------
     # 1️⃣  Try the *match‑page forecast* first – this is the most accurate
@@ -7885,13 +8481,25 @@ def auto_register_team(team_name, match_date=None, teams_dict=None, context=None
         vrs = scrape_vrs_points(team_name, match_date, context=context)
         source = "official VRS page"
 
-        # Store the result in the *session* cache so that subsequent teams on
-        # the same day reuse the same HTTP request.
         if vrs is not None:
             _vrs_session_cache.setdefault(cache_key, {})[team_name.lower()] = vrs
 
     # ------------------------------------------------------------------
-    # 3️⃣  No VRS found — register as provisional at 400 CSRS
+    # 3️⃣  Name lookup failed — try roster matching by player nicks
+    # ------------------------------------------------------------------
+    if vrs is None and player_nicks:
+        print(f"  [VRS] Name lookup failed for '{team_name}' — trying roster match ({len(player_nicks)} players)…")
+        result = _find_vrs_team_by_roster(player_nicks, match_date, context)
+        if result:
+            vrs_name, vrs = result
+            source = f"roster match (VRS name: '{vrs_name}')"
+            print(f"  [VRS] Roster match found: '{vrs_name}' → '{team_name}' ({len(player_nicks)} players checked)")
+            _vrs_session_cache.setdefault(cache_key, {})[team_name.lower()] = vrs
+        else:
+            print(f"  [VRS] Roster match failed for '{team_name}' — no VRS team shares ≥3 players")
+
+    # ------------------------------------------------------------------
+    # 4️⃣  No VRS found — register as provisional at 400 CSRS
     # ------------------------------------------------------------------
     if vrs is None:
         csrs = PROVISIONAL_STARTING_RATING
@@ -7905,15 +8513,12 @@ def auto_register_team(team_name, match_date=None, teams_dict=None, context=None
         return True
 
     # ------------------------------------------------------------------
-    # 4️⃣  Convert VRS → CSRS and store the new team
+    # 5️⃣  Convert VRS → CSRS and store the new team
     # ------------------------------------------------------------------
     csrs = vrs / 2
     if teams_dict is not None:
         teams_dict[team_name] = csrs
 
-    # ------------------------------------------------------------------
-    # 5️⃣  **Unified, always‑shown output**
-    # ------------------------------------------------------------------
     print(
         f"  >>> Auto‑registered '{team_name}': "
         f"{int(vrs)} VRS ({source}) → {int(csrs)} CSRS Elo"
@@ -8140,6 +8745,32 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
                 result.is_bo1 = bodyText.includes('best of 1');
             }
 
+            // === MATCH STAGE ===
+            // Try the dedicated stage element first, then fall back to veto text
+            const stageEl = document.querySelector('.matchpage-versus-head-stagename, .stage-name, .match-stage');
+            const stageText = stageEl ? stageEl.textContent.trim() : vetoTextRaw;
+            const stageLower = stageText.toLowerCase();
+            const STAGES = [
+                'grand final',
+                'upper bracket final',
+                'lower bracket final',
+                'consolidation final',
+                '3rd place decider',
+                'upper bracket semi-final',
+                'lower bracket semi-final',
+                'semi-final',
+                'upper bracket quarter-final',
+                'lower bracket quarter-final',
+                'quarter-final',
+            ];
+            result.match_stage = null;
+            for (const s of STAGES) {
+                if (stageLower.includes(s)) {
+                    result.match_stage = s.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                    break;
+                }
+            }
+
             // === ENVIRONMENT DETECTION ===
             // HLTV writes "Best of X (LAN)" or "Best of X (Online)" at the start of the veto text
             const vetoLower = vetoTextRaw.toLowerCase();
@@ -8215,6 +8846,22 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
             const liveEl = document.querySelector('.matchpage-live-bar, .live-match-status, .countdown.live');
             result.is_live = !!liveEl;
 
+            // === PLAYER LINEUPS (for roster-based VRS matching) ===
+            // Scrape up to 5 player nicks per team from the lineup section.
+            // Used as a fallback when a team can't be found by name in VRS.
+            try {
+                result.lineups = [[], []];
+                const lineupBoxes = document.querySelectorAll('.lineup');
+                lineupBoxes.forEach((box, i) => {
+                    if (i >= 2) return;
+                    const nicks = Array.from(box.querySelectorAll('.player-nick, .nick, [class*="nick"]'))
+                        .map(el => el.textContent.trim().toLowerCase())
+                        .filter(n => n.length > 0)
+                        .slice(0, 5);
+                    result.lineups[i] = nicks;
+                });
+            } catch(e) { result.lineups = [[], []]; }
+
             return result;
         }""")
         
@@ -8285,6 +8932,8 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
         vrs_before = data.get('vrs_before', {})
         forfeit_team = data.get('forfeit_team', None)  # 'team1', 'team2', or None
         match_env = data.get('match_env', None)  # 'LAN', 'ONLINE', or None
+        match_stage = data.get('match_stage') or False  # False = scraped but no stage found; None = never attempted
+        lineups = data.get('lineups', [[], []])  # [[t1_player_nicks], [t2_player_nicks]]
         
         print_info(f"Successfully scraped: {t1_name} vs {t2_name}")
         if vrs_before:
@@ -8303,7 +8952,7 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
             f"url={url}"
         )
 
-        return t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env
+        return t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env, match_stage, lineups
         
     except PlaywrightTimeout:
         error_msg = f"Page load timeout for URL: {url}"
@@ -8510,6 +9159,7 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
                each scrape launches and tears down its own browser as before.
     """
     import time
+    global total_imports
 
     while True:
         import_counter = 0
@@ -8549,7 +9199,7 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
             continue
 
         scrape_time_ms = int((time.time() - scrape_start) * 1000)
-        t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env = match_data
+        t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env, match_stage, lineups = match_data
 
         if not match_date or match_date == 'N/A':
             print("  [WARN] Could not automatically determine match date from page.")
@@ -8586,8 +9236,10 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
         print(f"\n  Scraped in {scrape_time_ms}ms:")
         if match_date and match_date != 'N/A':
             print(f"  Date: {match_date}")
-        if is_grand_final:
+        if is_grand_final and not match_stage:
             print("  [GRAND FINAL]")
+        if match_stage:
+            print(f"  [{match_stage}]")
         print(f"  Team 1: {t1_name} ({s1} maps)")
         print(f"  Team 2: {t2_name} ({s2} maps)")
         print(f"  Result: {t1_name} {s1} - {s2} {t2_name}")
@@ -8608,7 +9260,8 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
                     teams_dict[name] = csrs
                     print(f"  >>> Auto-registered '{name}': {int(page_vrs)} VRS (match page) -> {int(csrs)} CSRS Elo")
                 else:
-                    ok = auto_register_team(name, match_dt, teams_dict, context=context)
+                    player_nicks = lineups[0] if name == t1_name else lineups[1]
+                    ok = auto_register_team(name, match_dt, teams_dict, context=context, player_nicks=player_nicks)
                     if not ok:
                         print(f">>> Skipping match - '{name}' could not be registered.")
                         registration_failed = True
@@ -8715,8 +9368,17 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
 
         is_gf = is_grand_final
 
-        # Build depreciated baseline — use match_dt for precise same-day ordering
-        today_date = datetime.now().date()
+        # Build depreciated baseline — use match_dt for precise same-day ordering.
+        # This must use the match's own date as the depreciation reference point,
+        # NOT real wall-clock "now" — otherwise, during a backfill of historical
+        # matches, every team gets depreciated based on (today - their last
+        # historical match date), which is a huge, almost-uniform gap unrelated
+        # to the actual point-in-time standings being reconstructed. That made
+        # this ranking snapshot diverge from the actual stored ratings (which
+        # correctly depreciate relative to match_dt via apply_depreciation_to_rating
+        # below), producing rank orderings that contradicted the printed point
+        # totals.
+        as_of_date = match_dt.date() if match_dt else datetime.now().date()
         dep_base = {}
         date_index = build_match_date_index(history)
         for name, pts in teams_dict.items():
@@ -8724,7 +9386,7 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
                 continue
             last = get_team_last_match_date_before(name, before_date=match_dt, index=date_index) if match_dt else get_team_last_match_date_before(name, index=date_index)
             if last:
-                d = (today_date - last.date()).days
+                d = (as_of_date - last.date()).days
                 dep_base[name] = calculate_depreciation(pts, d, name) if d > DEPRECIATION_THRESHOLD else pts
             else:
                 dep_base[name] = pts
@@ -8809,19 +9471,25 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
         t2_rank_shift = 0
         
         if calculate_points_func is not None:
+            # See matching fix/comment in the batch-import path: dep_base only
+            # contains non-provisional teams, so dep_new must apply that same
+            # rule to t1/t2 instead of force-inserting them unconditionally —
+            # otherwise a still-provisional team gets ranked against the full
+            # established pool while other provisional teams stay excluded,
+            # and old_order.index(t1) raises ValueError outright when t1 was
+            # provisional before this match.
             dep_new = dict(dep_base)
-            dep_new[t1] = new_p1
-            dep_new[t2] = new_p2
+            if t1 in dep_new or not is_provisional(t1):
+                dep_new[t1] = new_p1
+            if t2 in dep_new or not is_provisional(t2):
+                dep_new[t2] = new_p2
             new_order = sorted(dep_new.keys(), key=lambda x: dep_new[x], reverse=True)
-    
-            t1_old_rank = old_order.index(t1) + 1
-            t1_new_rank = new_order.index(t1) + 1
-            t1_rank_shift = t1_old_rank - t1_new_rank
-    
-            t2_old_rank = old_order.index(t2) + 1
-            t2_new_rank = new_order.index(t2) + 1
-            t2_rank_shift = t2_old_rank - t2_new_rank
-    
+
+            if t1 in old_order and t1 in new_order:
+                t1_rank_shift = (old_order.index(t1) + 1) - (new_order.index(t1) + 1)
+            if t2 in old_order and t2 in new_order:
+                t2_rank_shift = (old_order.index(t2) + 1) - (new_order.index(t2) + 1)
+
             for name, pts_before, pts_after, rank_shift in [
                 (t1, p1_before, new_p1, t1_rank_shift),
                 (t2, p2_before, new_p2, t2_rank_shift)
@@ -8833,13 +9501,15 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
                     rank_sign = f"{rank_shift} ↓"
                 else:
                     rank_sign = "─"
-                print(f"  {name}: {int(pts_before)} -> {int(pts_after)} ({pts_sign}{int(pts_after - pts_before)}) | Rank: #{new_order.index(name) + 1} ({rank_sign})")
+                rank_label = f"#{new_order.index(name) + 1}" if name in new_order else "provisional (unranked)"
+                print(f"  {name}: {int(pts_before)} -> {int(pts_after)} ({pts_sign}{int(pts_after - pts_before)}) | Rank: {rank_label} ({rank_sign})")
 
         entry = {
             "date": entry_date,
             "tier": tier_raw,
             "env": env_raw,
             "grand_final": is_gf,
+            "match_stage": match_stage,
             "source": "HLTV Import",
             "url": url_raw,
             "t1": {"name": t1, "score": s1, "pts_before": p1_before, "pts_after": new_p1, "rank_shift": t1_rank_shift},
@@ -8863,6 +9533,7 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
             update_peak_func(t2, teams_dict.get(t2, 1000), entry_date)
 
         mark_unsaved()
+        total_imports += 1
         import_counter += 1
         if import_counter % 5 == 0:
             save_all(silent=True)
@@ -9413,6 +10084,7 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
     auto-backfill-by-date-range flow can share one import loop.
     """
     VALID_TIERS = ['S+', 'S', 'A', 'B', 'C', 'D', 'E']
+    global total_imports
     import_counter = 0
     failed = []
 
@@ -9426,7 +10098,7 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             failed.append(url_raw)
             continue
 
-        t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env = match_data
+        t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env, match_stage, lineups = match_data
 
         # --- Date ---
         if not match_date or match_date == 'N/A':
@@ -9452,7 +10124,8 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
                     teams[name] = csrs
                     _batch_log(f"  Auto-registered '{name}': {int(page_vrs)} VRS -> {int(csrs)} CSRS")
                 else:
-                    ok = auto_register_team(name, match_dt, teams, context=ctx)
+                    player_nicks = lineups[0] if name == t1_name else lineups[1]
+                    ok = auto_register_team(name, match_dt, teams, context=ctx, player_nicks=player_nicks)
                     if not ok:
                         _batch_log(f"  FAIL: could not register '{name}' — skipping match")
                         registration_failed = True
@@ -9524,6 +10197,10 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             _batch_log(f"  Env: LAN (default — no tag found)")
 
         is_gf = is_grand_final
+        if is_gf and not match_stage:
+            _batch_log(f"  [GRAND FINAL]")
+        if match_stage:
+            _batch_log(f"  [{match_stage}]")
 
         # --- Forfeit ---
         forfeiting_team = None
@@ -9535,7 +10212,14 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             _batch_log(f"  [Forfeit] {forfeiting_team}")
 
         # --- Depreciation baseline ---
-        today_date = datetime.now().date()
+        # Use the match's own date as the depreciation reference point, not
+        # real wall-clock "now" — see matching comment/fix in the interactive
+        # import path above. Using real "now" here during a backfill made the
+        # rank-ordering snapshot diverge wildly from the actual point totals
+        # (e.g. a team correctly at 852 pts showing a worse rank than a team
+        # at 839 pts), since it depreciated every team by ~(today - their
+        # historical last-match date) instead of relative to match_dt.
+        as_of_date = match_dt.date() if match_dt else datetime.now().date()
         dep_base = {}
         date_index = build_match_date_index(history)
         for name, pts in teams.items():
@@ -9543,7 +10227,7 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
                 continue
             last = get_team_last_match_date_before(name, before_date=match_dt, index=date_index) if match_dt else get_team_last_match_date_before(name, index=date_index)
             if last:
-                d = (today_date - last.date()).days
+                d = (as_of_date - last.date()).days
                 dep_base[name] = calculate_depreciation(pts, d, name) if d > DEPRECIATION_THRESHOLD else pts
             else:
                 dep_base[name] = pts
@@ -9596,15 +10280,30 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             increment_provisional(t2)
 
         # --- Rank shifts ---
+        # dep_base only contains non-provisional teams (provisional teams were
+        # skipped when it was built above). To keep old_order/new_order
+        # comparable, new_order must apply that same "non-provisional only"
+        # rule to t1/t2 — only insert them if they're established (or just
+        # graduated via increment_provisional above), not simply because they
+        # played this match. Previously t1/t2 were force-inserted into
+        # dep_new unconditionally, so a still-provisional team got ranked
+        # against the full established pool while every other still-
+        # provisional team stayed excluded — producing meaningless rank
+        # numbers/shifts (e.g. a team's very first-ever match showing
+        # "Rank #60" against what was really only ~60 established teams).
         dep_new = dict(dep_base)
-        dep_new[t1] = new_p1
-        dep_new[t2] = new_p2
+        if t1 in dep_new or not is_provisional(t1):
+            dep_new[t1] = new_p1
+        if t2 in dep_new or not is_provisional(t2):
+            dep_new[t2] = new_p2
         new_order = sorted(dep_new.keys(), key=lambda x: dep_new[x], reverse=True)
-        t1_rank_shift = (old_order.index(t1) + 1) - (new_order.index(t1) + 1) if t1 in old_order else 0
-        t2_rank_shift = (old_order.index(t2) + 1) - (new_order.index(t2) + 1) if t2 in old_order else 0
+        t1_rank_shift = (old_order.index(t1) + 1) - (new_order.index(t1) + 1) if (t1 in old_order and t1 in new_order) else 0
+        t2_rank_shift = (old_order.index(t2) + 1) - (new_order.index(t2) + 1) if (t2 in old_order and t2 in new_order) else 0
 
-        _batch_log(f"  {t1}: {int(p1_before)} -> {int(new_p1)} ({'+' if new_p1 >= p1_before else ''}{int(new_p1 - p1_before)}) | Rank #{new_order.index(t1)+1}")
-        _batch_log(f"  {t2}: {int(p2_before)} -> {int(new_p2)} ({'+' if new_p2 >= p2_before else ''}{int(new_p2 - p2_before)}) | Rank #{new_order.index(t2)+1}")
+        t1_rank_str = f"Rank #{new_order.index(t1)+1}" if t1 in new_order else "Rank: provisional (unranked)"
+        t2_rank_str = f"Rank #{new_order.index(t2)+1}" if t2 in new_order else "Rank: provisional (unranked)"
+        _batch_log(f"  {t1}: {int(p1_before)} -> {int(new_p1)} ({'+' if new_p1 >= p1_before else ''}{int(new_p1 - p1_before)}) | {t1_rank_str}")
+        _batch_log(f"  {t2}: {int(p2_before)} -> {int(new_p2)} ({'+' if new_p2 >= p2_before else ''}{int(new_p2 - p2_before)}) | {t2_rank_str}")
 
         # --- Build entry ---
         entry = {
@@ -9612,6 +10311,7 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             "tier": tier_raw,
             "env": env_raw,
             "grand_final": is_gf,
+            "match_stage": match_stage,
             "source": "HLTV Batch Import",
             "url": url_raw,
             "t1": {"name": t1, "score": s1, "pts_before": p1_before, "pts_after": new_p1, "rank_shift": t1_rank_shift},
@@ -9632,6 +10332,7 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
         update_peak(t1, teams.get(t1, 1000), entry_date)
         update_peak(t2, teams.get(t2, 1000), entry_date)
         mark_unsaved()
+        total_imports += 1
         import_counter += 1
         if import_counter % 5 == 0:
             save_all(silent=True)
@@ -10112,22 +10813,34 @@ def _is_protected_path(path: str) -> bool:
         return False
 
 
-def _delete_path_preserving_cookies(path: str) -> tuple[int, int]:
+def _delete_path_preserving_cookies(path: str) -> tuple[int, int, int]:
     """
-    Deletes `path` (file or directory tree), except hltv_cookies.json is
-    never removed under any circumstance — if it lives inside `path`, the
-    rest of the tree is wiped around it and the cookie file (and the
-    directories needed to contain it) are left standing.
+    Deletes the FILES inside `path` (recursively), but never removes any
+    directory — only file contents are wiped, the entire folder skeleton
+    (e.g. save/, save/main/, save/backup/) is always left standing. This
+    matters because CSRS.py assumes save/main and save/backup already
+    exist when writing SAVE_FILE / backups, with no os.makedirs guard
+    before those writes — losing the directories (not just their
+    contents) would silently break the next save/backup write.
 
-    Returns (files_deleted, dirs_deleted).
+    hltv_cookies.json is never removed under any circumstance — if it
+    lives inside `path`, every other file around it is still wiped
+    normally; the cookie file itself is always skipped.
+
+    Every file is deleted individually (no shutil.rmtree) so a single
+    locked/in-use file (e.g. a log file held open by a running daemon)
+    is skipped with a warning instead of aborting the entire operation
+    and leaving everything else undeleted.
+
+    Returns (files_deleted, dirs_deleted, files_locked). dirs_deleted is
+    always 0 now — kept in the return signature for call-site compatibility.
     """
-    import shutil
-
     files_deleted = 0
-    dirs_deleted = 0
+    dirs_deleted = 0  # directories are never removed; kept for compatibility
+    files_locked = 0
 
     if not os.path.exists(path):
-        return (0, 0)
+        return (0, 0, 0)
 
     norm_path = os.path.normcase(os.path.normpath(os.path.abspath(path)))
 
@@ -10135,23 +10848,20 @@ def _delete_path_preserving_cookies(path: str) -> tuple[int, int]:
     # no matter how it was reached.
     if norm_path == _PROTECTED_COOKIE_FILE:
         print(f"  [PROTECTED] Skipping {path} — hltv_cookies.json is never deleted.")
-        return (0, 0)
+        return (0, 0, 0)
 
     if os.path.isfile(path):
-        os.remove(path)
-        return (1, 0)
+        try:
+            os.remove(path)
+            return (1, 0, 0)
+        except OSError as e:
+            print(f"  [WARN] Could not delete {path} (in use?): {e}")
+            return (0, 0, 1)
 
-    # Directory case.
-    if not _is_protected_path(path):
-        # Cookie file is not inside this directory at all — safe to nuke
-        # the whole tree in one go.
-        file_count = sum(len(files) for _, _, files in os.walk(path))
-        shutil.rmtree(path)
-        return (file_count, 1)
-
-    # Cookie file lives somewhere inside this directory tree — walk it
-    # bottom-up, deleting everything except the cookie file and any
-    # directory still needed to contain it.
+    # Directory case — walk every file in the tree and delete it, but
+    # never call os.rmdir on anything. The directory structure itself
+    # (save/, save/main/, save/backup/, logs/normal/, etc.) is always
+    # preserved, even when fully emptied.
     for root, dirs, files in os.walk(path, topdown=False):
         for fname in files:
             fpath = os.path.join(root, fname)
@@ -10162,19 +10872,11 @@ def _delete_path_preserving_cookies(path: str) -> tuple[int, int]:
                 os.remove(fpath)
                 files_deleted += 1
             except OSError as e:
-                print(f"  [WARN] Could not delete {fpath}: {e}")
+                print(f"  [WARN] Could not delete {fpath} (in use?): {e}")
+                files_locked += 1
+        # Intentionally no os.rmdir() here — directories are never removed.
 
-        for dname in dirs:
-            dpath = os.path.join(root, dname)
-            if _is_protected_path(dpath):
-                continue  # cookie file lives in here — leave the dir standing
-            try:
-                os.rmdir(dpath)  # only succeeds if now empty
-                dirs_deleted += 1
-            except OSError:
-                pass  # not empty (still contains the cookie file's directory) — fine, leave it
-
-    return (files_deleted, dirs_deleted)
+    return (files_deleted, dirs_deleted, files_locked)
 
 
 def run_delete_command(target: str, skip_confirm: bool = False) -> None:
@@ -10185,6 +10887,26 @@ def run_delete_command(target: str, skip_confirm: bool = False) -> None:
     including "all" — this is non-negotiable because the scraper cannot
     log in to HLTV without it.
     """
+    # logging.basicConfig() at module load time opens a FileHandler on
+    # logs/normal/csrs.log that stays open for the life of this process —
+    # including right now. If we don't close it first, --delete (and
+    # --delete logs/all in particular) will ALWAYS fail to remove csrs.log
+    # because this same process is holding it open, regardless of whether
+    # any other CSRS process is running. Close and detach every handler
+    # before touching the filesystem.
+    for _h in list(logger.handlers):
+        try:
+            _h.close()
+        except Exception:
+            pass
+        logger.removeHandler(_h)
+    for _h in list(logging.getLogger().handlers):
+        try:
+            _h.close()
+        except Exception:
+            pass
+        logging.getLogger().removeHandler(_h)
+
     data_dir = os.environ.get("CSRS_DATA_DIR", ".")
 
     target = target.strip().lower()
@@ -10219,24 +10941,32 @@ def run_delete_command(target: str, skip_confirm: bool = False) -> None:
 
     if not skip_confirm:
         confirm = input(
-            f"Type 'yes' to permanently delete the contents of {target} "
-            f"(hltv_cookies.json will be preserved): "
+            f"Type 'yes' to permanently delete the FILES inside {target} "
+            f"(folder structure and hltv_cookies.json will be preserved): "
         ).strip().lower()
         if confirm != "yes":
             print("Cancelled — nothing was deleted.")
             return
 
     total_files = 0
-    total_dirs = 0
+    total_locked = 0
     for d in existing_dirs:
-        print(f"Deleting {d} ...")
-        f, dd = _delete_path_preserving_cookies(d)
+        print(f"Deleting files in {d} ...")
+        f, _dd, locked = _delete_path_preserving_cookies(d)
         total_files += f
-        total_dirs += dd
-        print(f"  Removed {f} file(s), {dd} director{'y' if dd == 1 else 'ies'}.")
+        total_locked += locked
+        msg = f"  Removed {f} file(s). Folder structure preserved."
+        if locked:
+            msg += f" ({locked} skipped — in use)"
+        print(msg)
 
     print(f"\n{'='*60}")
-    print(f"Delete complete: {total_files} file(s), {total_dirs} director{'y' if total_dirs == 1 else 'ies'} removed.")
+    print(f"Delete complete: {total_files} file(s) removed. Folder structure (save/, save/main/, "
+          f"save/backup/, logs/normal/, etc.) was preserved — only file contents were wiped.")
+    if total_locked:
+        print(f"[WARN] {total_locked} file(s) could not be deleted because they were in use "
+              f"(likely a running daemon/import holding a log file open). Close any running "
+              f"CSRS processes and re-run --delete to remove them.")
     if os.path.exists(_PROTECTED_COOKIE_FILE):
         print(f"hltv_cookies.json preserved at: {_PROTECTED_COOKIE_FILE}")
     print(f"{'='*60}\n")
@@ -10263,6 +10993,9 @@ if __name__ == "__main__":
                              "interactive y/n confirmation.")
     parser.add_argument("--yes", action="store_true",
                         help="Skip the confirmation prompt for --delete (use with caution)")
+    parser.add_argument("--resimulate", action="store_true",
+                        help="Resimulate all matches in history from scratch using the "
+                             "current formula/config, then save and exit.")
     args, _ = parser.parse_known_args()
 
     if args.delete:
@@ -10271,6 +11004,11 @@ if __name__ == "__main__":
 
     # === DEPENDENCY CHECK & AUTO-INSTALL ===
     if not check_and_install_dependencies():
+        sys.exit(0)
+
+    if args.resimulate:
+        os.environ["NODE_NO_WARNINGS"] = "1"
+        run_resimulate_command(skip_confirm=args.yes)
         sys.exit(0)
 
     os.environ["NODE_NO_WARNINGS"] = "1"
