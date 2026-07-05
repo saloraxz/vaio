@@ -999,6 +999,18 @@ def select_environment():
             return env_map[raw.strip()]
         print("  Invalid choice. Enter 1 or 2.")
 
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds as Xh Ym Zs."""
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m:02d}m {s:02d}s"
+    if m:
+        return f"{m}m {s:02d}s"
+    return f"{s}s"
+
+
 def print_progress(current: int, total: int, prefix: str = '', length: int = 40) -> None:
     """
     Print a text-based progress bar.
@@ -1762,7 +1774,7 @@ def calculate_points(team_points, opponent_points, result, map_diff, tier='A', e
 # === FORM & STATISTICS (TRENDS, HISTORY) ===
 # =============================================================================
 
-def _compute_form_from_recent(recent: List[Tuple[str, Dict[str, Any]]]) -> Optional[Tuple[str, float, str]]:
+def _compute_form_from_recent(recent) -> Optional[Tuple[str, float, str]]:
     """
     Core form computation, shared by calculate_form() (which scans full
     history to build `recent`) and the incremental per-team deque tracker
@@ -3535,7 +3547,7 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
     chronologically using the same PROVISIONAL_MATCH_THRESHOLD /
     PROVISIONAL_K_FACTORS as the live importer, so a team's provisional
     window during resimulation lines up with what actually happened at
-    import time.
+    import time
     """
     global teams, peak_ratings, provisional_teams
     
@@ -3630,7 +3642,10 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
 
     if verbose:
         print(f"\n>>> Processing matches...")
-    
+
+    resim_start = time.monotonic()
+    resim_durations: list = []  # per-match times for rolling average
+
     peak_ratings.clear()
 
     # Incremental rank tracker: rank_shift is purely cosmetic (stored in
@@ -3658,6 +3673,7 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         bisect.insort(sim_points_sorted, new_value)
     
     for match_idx, m in enumerate(chronologically_sorted, 1):
+        _match_t0 = time.monotonic()
         t1_data = m.get('t1') or {}
         t2_data = m.get('t2') or {}
         t1_name = t1_data.get('name')
@@ -3704,8 +3720,8 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
             team_recent_matches[t2_name] = deque(maxlen=15)
         team_recent_matches[t2_name].append(('t2', m))
 
-        form1 = _compute_form_from_recent(list(team_recent_matches[t1_name]))
-        form2 = _compute_form_from_recent(list(team_recent_matches[t2_name]))
+        form1 = _compute_form_from_recent(team_recent_matches[t1_name])
+        form2 = _compute_form_from_recent(team_recent_matches[t2_name])
         form_adj_1 = (form1[1] - 50) if form1 else 0
         form_adj_2 = (form2[1] - 50) if form2 else 0
         form_score_1 = form1[1] if form1 else None
@@ -3806,11 +3822,28 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         team_last_match[t1_name] = match_date
         team_last_match[t2_name] = match_date
         
-        if verbose and match_idx % 20 == 0:
-            print(f"  Processed {match_idx}/{len(chronologically_sorted)} matches...")
-        
-        if match_idx % 10 == 0 or match_idx == len(chronologically_sorted):
-            print_progress(match_idx, len(chronologically_sorted), prefix='  Resimulating')
+        resim_durations.append(time.monotonic() - _match_t0)
+
+        pct = match_idx * 100 // len(chronologically_sorted)
+        prev_pct = (match_idx - 1) * 100 // len(chronologically_sorted)
+        if pct != prev_pct or match_idx == len(chronologically_sorted):
+            total_elapsed = time.monotonic() - resim_start
+            window = resim_durations[-50:]  # rolling average over last 50
+            avg = sum(window) / len(window)
+            remaining = max(0, len(chronologically_sorted) - match_idx)
+            eta_sec = avg * remaining
+            finish_dt = datetime.now().astimezone() + timedelta(seconds=eta_sec)
+            elapsed_str = _format_duration(total_elapsed)
+            eta_str = _format_duration(eta_sec)
+            print(
+                f'\r  Resimulating: {pct:3d}% ({match_idx}/{len(chronologically_sorted)}) | '
+                f'elapsed: {elapsed_str} | '
+                f'remaining: {eta_str} | '
+                f'ETA: {finish_dt.strftime("%H:%M:%S")}',
+                end='', flush=True
+            )
+            if match_idx == len(chronologically_sorted):
+                print()
 
     teams.clear()
     teams.update(sim_teams)
