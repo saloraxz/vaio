@@ -2369,7 +2369,7 @@ async function loadRankings() {
     // Today == live: omit the date param so the backend serves current
     // rankings exactly as before, even though the button always shows an
     // actual date rather than a separate "Live" label.
-    const dateParam = (date && date !== getTodayStr()) ? `&date=${encodeURIComponent(date)}` : '';
+    const dateParam = (date && date !== getTodayStr()) ? `&as_of=${encodeURIComponent(date)}` : '';
     const d = await api(`/api/rankings?limit=200&search=${encodeURIComponent(search)}${dateParam}`);
     rankingsData = d.rankings;
     renderRankings(rankingsData);
