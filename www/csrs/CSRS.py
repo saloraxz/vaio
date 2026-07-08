@@ -45,6 +45,30 @@ def check_and_install_dependencies() -> bool:
     except ImportError:
         missing_deps.append("playwright")
         print("[!] playwright is NOT installed")
+
+    # Check camoufox
+    try:
+        import camoufox
+        print("[OK] camoufox is installed")
+    except ImportError:
+        missing_deps.append("camoufox")
+        print("[!] camoufox is NOT installed")
+
+    # Check beautifulsoup4
+    try:
+        from bs4 import BeautifulSoup
+        print("[OK] beautifulsoup4 is installed")
+    except ImportError:
+        missing_deps.append("beautifulsoup4")
+        print("[!] beautifulsoup4 is NOT installed")
+
+    # Check sortedcontainers
+    try:
+        from sortedcontainers import SortedList
+        print("[OK] sortedcontainers is installed")
+    except ImportError:
+        missing_deps.append("sortedcontainers")
+        print("[!] sortedcontainers is NOT installed")
     
     if not missing_deps:
         return True
@@ -837,12 +861,16 @@ def pick_date_range():
             print("  [!] Invalid option. Select 1-5 or 0.")
 
 
-def update_peak(name, pts, date_str):
+def update_peak(name, pts, date_str, rank: int = 0):
     """
     Update peak rating for a team if current points exceed recorded peak.
+    rank can be passed directly to avoid O(N) get_sorted_rankings() call
+    (e.g. from _do_resimulation which already tracks rank incrementally).
+    If rank is 0 (default), falls back to get_sorted_rankings() as before.
     """
-    ranked = get_sorted_rankings(include_archived=True)
-    rank = ranked.index(name) + 1 if name in ranked else 0
+    if rank == 0:
+        ranked = get_sorted_rankings(include_archived=True)
+        rank = ranked.index(name) + 1 if name in ranked else 0
     if name not in peak_ratings or pts > peak_ratings[name]["points"]:
         peak_ratings[name] = {"points": pts, "date": date_str, "rank": rank}
 
@@ -1000,14 +1028,12 @@ def select_environment():
         print("  Invalid choice. Enter 1 or 2.")
 
 def _format_duration(seconds: float) -> str:
-    """Format a duration in seconds as Xh Ym Zs."""
+    """Format seconds as Xh Ym Zs."""
     seconds = int(seconds)
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
-    if h:
-        return f"{h}h {m:02d}m {s:02d}s"
-    if m:
-        return f"{m}m {s:02d}s"
+    if h: return f"{h}h {m:02d}m {s:02d}s"
+    if m: return f"{m}m {s:02d}s"
     return f"{s}s"
 
 
@@ -3547,7 +3573,7 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
     chronologically using the same PROVISIONAL_MATCH_THRESHOLD /
     PROVISIONAL_K_FACTORS as the live importer, so a team's provisional
     window during resimulation lines up with what actually happened at
-    import time
+    import time.
     """
     global teams, peak_ratings, provisional_teams
     
@@ -3617,21 +3643,12 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
     
     for team_name, start_pts in teams_first_pts_before.items():
         sim_teams[team_name] = start_pts
-        if verbose:
-            old_rating = pre_resim_ratings.get(team_name, 0)
-            change = start_pts - old_rating
-            change_str = f"{'+' if change >= 0 else ''}{int(change)}"
-            print(f"  [OK] {team_name}: Starting at {int(start_pts)} (change: {change_str})")
-        # Infer provisional start: only ever assigned PROVISIONAL_STARTING_RATING
-        # exactly when no VRS rating was found at original import time.
         if start_pts == PROVISIONAL_STARTING_RATING:
             sim_provisional[team_name] = 0
-    
+
     for name, pts in teams.items():
         if name not in sim_teams:
             sim_teams[name] = pts
-            if verbose:
-                print(f"  [!] {name}: Starting at {int(pts)} (current rating - NO HISTORY DATA)")
     
     if verbose:
         print(f"\n>>> Total teams in resimulation: {len(sim_teams)}")
@@ -3644,7 +3661,7 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         print(f"\n>>> Processing matches...")
 
     resim_start = time.monotonic()
-    resim_durations: list = []  # per-match times for rolling average
+    resim_durations: list = []
 
     peak_ratings.clear()
 
@@ -3656,21 +3673,25 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
     # (count of teams with a strictly higher rating, + 1), with O(K)
     # insert/remove on rating changes (still cheaper in practice than
     # re-sorting all K teams from scratch twice per match).
-    sim_points_sorted: List[float] = sorted(sim_teams.values())
-
-    def _rank_of(value: float) -> int:
-        greater = len(sim_points_sorted) - bisect.bisect_right(sim_points_sorted, value)
-        return greater + 1
-
-    def _resort_update(old_value: float, new_value: float) -> None:
-        idx = bisect.bisect_left(sim_points_sorted, old_value)
-        # idx should point at an occurrence of old_value; guard just in
-        # case of float drift so we never desync the tracker.
-        if idx < len(sim_points_sorted) and sim_points_sorted[idx] == old_value:
-            del sim_points_sorted[idx]
-        else:
-            sim_points_sorted.remove(old_value)
-        bisect.insort(sim_points_sorted, new_value)
+    try:
+        from sortedcontainers import SortedList as _SL
+        sim_points_sorted = _SL(sim_teams.values())
+        def _rank_of(value: float) -> int:
+            return len(sim_points_sorted) - sim_points_sorted.bisect_right(value) + 1
+        def _resort_update(old_value: float, new_value: float) -> None:
+            sim_points_sorted.discard(old_value)
+            sim_points_sorted.add(new_value)
+    except ImportError:
+        sim_points_sorted: List[float] = sorted(sim_teams.values())
+        def _rank_of(value: float) -> int:
+            return len(sim_points_sorted) - bisect.bisect_right(sim_points_sorted, value) + 1
+        def _resort_update(old_value: float, new_value: float) -> None:
+            idx = bisect.bisect_left(sim_points_sorted, old_value)
+            if idx < len(sim_points_sorted) and sim_points_sorted[idx] == old_value:
+                del sim_points_sorted[idx]
+            else:
+                sim_points_sorted.remove(old_value)
+            bisect.insort(sim_points_sorted, new_value)
     
     for match_idx, m in enumerate(chronologically_sorted, 1):
         _match_t0 = time.monotonic()
@@ -3735,17 +3756,13 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         if t1_name in team_last_match:
             days_inactive_1 = (match_date - team_last_match[t1_name]).days
             if days_inactive_1 > DEPRECIATION_THRESHOLD:
-                p1_before = calculate_depreciation(p1_before, days_inactive_1, t1_name, form_score=form_score_1)
-                if verbose and match_idx % 20 == 0:
-                    print(f"  [Dep] {t1_name}: -{int(sim_teams[t1_name] - p1_before)} pts ({days_inactive_1}d inactive)")
+                p1_before = calculate_depreciation(p1_before, days_inactive_1, team_name=None, form_score=form_score_1)
 
         # Team 2 depreciation
         if t2_name in team_last_match:
             days_inactive_2 = (match_date - team_last_match[t2_name]).days
             if days_inactive_2 > DEPRECIATION_THRESHOLD:
-                p2_before = calculate_depreciation(p2_before, days_inactive_2, t2_name, form_score=form_score_2)
-                if verbose and match_idx % 20 == 0:
-                    print(f"  [Dep] {t2_name}: -{int(sim_teams[t2_name] - p2_before)} pts ({days_inactive_2}d inactive)")
+                p2_before = calculate_depreciation(p2_before, days_inactive_2, team_name=None, form_score=form_score_2)
         
         t1_won = 1 if t1_score > t2_score else 0
         t2_won = 1 if t2_score > t1_score else 0
@@ -3815,30 +3832,27 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         m['t2']['pts_after'] = new_p2
         m['t2']['rank_shift'] = t2_rank_shift
         
-        update_peak(t1_name, new_p1, match_date_str)
-        update_peak(t2_name, new_p2, match_date_str)
+        update_peak(t1_name, new_p1, match_date_str, rank=t1_new_rank)
+        update_peak(t2_name, new_p2, match_date_str, rank=t2_new_rank)
         
         # Update last match date for depreciation tracking
         team_last_match[t1_name] = match_date
         team_last_match[t2_name] = match_date
         
         resim_durations.append(time.monotonic() - _match_t0)
-
         pct = match_idx * 100 // len(chronologically_sorted)
         prev_pct = (match_idx - 1) * 100 // len(chronologically_sorted)
         if pct != prev_pct or match_idx == len(chronologically_sorted):
             total_elapsed = time.monotonic() - resim_start
-            window = resim_durations[-50:]  # rolling average over last 50
+            window = resim_durations[-50:]
             avg = sum(window) / len(window)
-            remaining = max(0, len(chronologically_sorted) - match_idx)
-            eta_sec = avg * remaining
+            remaining_count = max(0, len(chronologically_sorted) - match_idx)
+            eta_sec = avg * remaining_count
             finish_dt = datetime.now().astimezone() + timedelta(seconds=eta_sec)
-            elapsed_str = _format_duration(total_elapsed)
-            eta_str = _format_duration(eta_sec)
             print(
                 f'\r  Resimulating: {pct:3d}% ({match_idx}/{len(chronologically_sorted)}) | '
-                f'elapsed: {elapsed_str} | '
-                f'remaining: {eta_str} | '
+                f'elapsed: {_format_duration(total_elapsed)} | '
+                f'remaining: {_format_duration(eta_sec)} | '
                 f'ETA: {finish_dt.strftime("%H:%M:%S")}',
                 end='', flush=True
             )
@@ -3874,7 +3888,7 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         
         print(f"  {'Team':<25} {'Before':<10} {'After':<10} {'Change':<10}")
         print(f"  {'-'*55}")
-        for team_name, old_rating, new_rating, change in changes[:15]:
+        for team_name, old_rating, new_rating, change in changes:
             change_str = f"{'+' if change >= 0 else ''}{int(change)}"
             print(f"  {team_name:<25} {int(old_rating):<10} {int(new_rating):<10} {change_str:<10}")
         
@@ -10728,15 +10742,69 @@ def _git_push() -> bool:
 # === AUTO IMPORT (headless daemon mode) ===
 # =============================================================================
 
+def _parse_results_page(html: str) -> list[dict]:
+    """
+    Parse one /results page into day-groups preserving newest-first order:
+
+      [{"headline": "Results for June 23rd 2026",
+        "matches": [{"url": "...", "unix_ms": 1782164735000}, ...]},
+       ...]
+
+    Each match's unix_ms comes from data-zonedgrouping-entry-unix on its
+    .result-con block. Used by both run_auto_import and backfill.py.
+    """
+    import re
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+    results_container = soup.find("div", class_="results")
+    search_root = results_container if results_container is not None else soup
+
+    groups = []
+    for sublist in search_root.find_all("div", class_="results-sublist"):
+        headline_div = sublist.find("div", class_="standard-headline")
+        headline = headline_div.get_text(strip=True) if headline_div else None
+
+        matches = []
+        seen: set[str] = set()
+        for con in sublist.find_all("div", class_="result-con"):
+            a = con.find("a", href=re.compile(r'^/matches/\d+/'))
+            if not a:
+                continue
+            full_url = "https://www.hltv.org" + a["href"]
+            if full_url in seen:
+                continue
+            seen.add(full_url)
+            unix_ms_raw = con.get("data-zonedgrouping-entry-unix")
+            try:
+                unix_ms = int(unix_ms_raw) if unix_ms_raw else None
+            except ValueError:
+                unix_ms = None
+            matches.append({"url": full_url, "unix_ms": unix_ms})
+
+        if matches:
+            groups.append({"headline": headline, "matches": matches})
+
+    return groups
+
+
 def run_auto_import(lookback_hours: int = 48) -> int:
     """
-    Headless single-pass auto-import.
-    Scrapes currently active HLTV events for new matches,
-    imports anything not already in history, saves, then pushes to GitHub.
+    Headless single-pass auto-import using the same offset-based /results
+    walk as backfill.py — walks /results newest-first, collects URLs whose
+    timestamp >= (now - lookback_hours), stops as soon as a day-group falls
+    entirely before that boundary.
+
     Returns number of matches imported (0 if nothing new or error).
     """
+    import random as _random
+
     now = datetime.now()
     start_dt = now - timedelta(hours=lookback_hours)
+    start_unix_ms = int(start_dt.timestamp() * 1000)
     start_date = start_dt.strftime("%Y-%m-%d")
     end_date = now.strftime("%Y-%m-%d")
 
@@ -10744,40 +10812,92 @@ def run_auto_import(lookback_hours: int = 48) -> int:
                f"(lookback {lookback_hours}h: {start_date} -> {end_date}) ===")
 
     cookies = _load_hltv_cookies()
+    pw_cookies = [
+        {"name": c.get("name", ""), "value": c.get("value", ""),
+         "domain": c.get("domain", ".hltv.org"), "path": c.get("path", "/")}
+        for c in cookies if c.get("name") and c.get("value")
+    ]
 
-    # --- Scrape phase: get active events then scrape each ---
+    # --- Scrape phase: walk /results offset pages until boundary ---
+    collected_urls: list[str] = []
+    seen_urls: set[str] = set()
+
     try:
-        _batch_log("  Fetching active events from HLTV...")
-        active_events = scrape_active_events(cookies=cookies)
-        if not active_events:
-            _batch_log("  No active events found — nothing to import.")
-            return 0
-        _batch_log(f"  Found {len(active_events)} active events")
+        from camoufox.sync_api import Camoufox
+    except ImportError:
+        _batch_log("  [ERROR] Camoufox not installed — cannot scrape.")
+        return 0
 
-        scraped_urls = []
-        seen: set[str] = set()
-        for evt in active_events:
-            _batch_log(f"  Scraping event {evt['id']}: {evt['name'][:50]}")
-            urls = scrape_hltv_results_by_event(evt["id"], cookies=cookies)
-            for u in urls:
-                if u not in seen:
-                    seen.add(u)
-                    scraped_urls.append(u)
-            _batch_log(f"    -> {len(urls)} match URLs")
+    try:
+        with Camoufox(headless=_CAMOUFOX_HEADLESS, os=("windows", "macos", "linux")) as browser:
+            context = browser.new_context()
+            if pw_cookies:
+                context.add_cookies(pw_cookies)
+            page = context.new_page()
+
+            try:
+                page.goto("https://www.hltv.org", timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+            except Exception as e:
+                _batch_log(f"  [WARN] Warm-up failed: {e}")
+
+            hit_boundary = False
+            for page_num in range(HLTV_RESULTS_MAX_PAGES):
+                offset = page_num * HLTV_RESULTS_PAGE_SIZE
+                url = ("https://www.hltv.org/results" if offset == 0
+                       else f"https://www.hltv.org/results?offset={offset}")
+
+                try:
+                    page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                    page.wait_for_timeout(2000)
+                except Exception as e:
+                    _batch_log(f"  [WARN] Page {page_num+1} navigation failed: {e}")
+                    break
+
+                html = page.content()
+                if "Just a moment" in html or "challenge-platform" in html:
+                    _batch_log("  [BLOCKED] Cloudflare challenge — stopping scrape.")
+                    break
+
+                groups = _parse_results_page(html)
+                if not groups:
+                    break
+
+                for grp in groups:
+                    group_unix = [m["unix_ms"] for m in grp["matches"] if m["unix_ms"] is not None]
+                    if group_unix and max(group_unix) < start_unix_ms:
+                        hit_boundary = True
+                        break
+                    for m in grp["matches"]:
+                        if m["unix_ms"] is not None and m["unix_ms"] < start_unix_ms:
+                            continue
+                        if m["url"] not in seen_urls:
+                            seen_urls.add(m["url"])
+                            collected_urls.append(m["url"])
+
+                if hit_boundary:
+                    break
+
+                time.sleep(_random.uniform(1.0, 2.5))
+
+            page.close()
 
     except Exception as e:
         _batch_log(f"  [ERROR] Scrape phase failed: {e}")
         return 0
 
-    if not scraped_urls:
-        _batch_log("  No match URLs found — nothing to import.")
+    if not collected_urls:
+        _batch_log("  No match URLs found in lookback window — nothing to import.")
         return 0
+
+    # Reverse to oldest-first for correct import order
+    collected_urls.reverse()
 
     # --- Filter already-imported ---
     imported_urls = get_imported_urls(history)
-    urls_to_do = [u for u in scraped_urls if u not in imported_urls]
-    already_done = len(scraped_urls) - len(urls_to_do)
-    _batch_log(f"  Found {len(scraped_urls)} matches scraped, "
+    urls_to_do = [u for u in collected_urls if u not in imported_urls]
+    already_done = len(collected_urls) - len(urls_to_do)
+    _batch_log(f"  Found {len(collected_urls)} matches in window, "
                f"{already_done} already imported, "
                f"{len(urls_to_do)} new to import.")
 
@@ -10785,25 +10905,38 @@ def run_auto_import(lookback_hours: int = 48) -> int:
         _batch_log("  Nothing new to import.")
         return 0
 
-    # --- Import phase ---
-    try:
-        with BrowserSession() as session:
-            import_counter, failed = _import_url_list(urls_to_do, session.context)
-    except Exception as e:
-        _batch_log(f"  [ERROR] Import phase failed: {e}")
-        return 0
+    # --- Import phase with auto-retry ---
+    import_counter = 0
+    still_failed: list[str] = []
+    remaining = list(urls_to_do)
+    for attempt in range(1, 6):
+        if attempt > 1:
+            _batch_log(f"  [RETRY {attempt}/5] {len(remaining)} URL(s) — waiting 30s...")
+            time.sleep(30)
+        try:
+            with BrowserSession() as session:
+                count, failed = _import_url_list(remaining, session.context)
+            import_counter += count
+            if not failed:
+                break
+            _batch_log(f"  Pass {attempt}: {count} imported, {len(failed)} still failed.")
+            remaining = failed
+            still_failed = failed
+        except Exception as e:
+            _batch_log(f"  [ERROR] Import pass {attempt} failed: {e}")
+            break
 
     # --- Save ---
     _vrs_session_cache.clear()
     save_all(silent=True)
 
-    if failed:
-        _batch_log(f"  [WARN] {len(failed)} match(es) failed to import:")
-        for u in failed:
+    if still_failed:
+        _batch_log(f"  [WARN] {len(still_failed)} match(es) still failed after all retries:")
+        for u in still_failed:
             _batch_log(f"    FAILED: {u}")
 
     _batch_log(f"=== Auto-import complete: "
-               f"{import_counter} imported, {len(failed)} failed ===")
+               f"{import_counter} imported, {len(still_failed)} failed ===")
 
     # --- Git push (only if something was imported) ---
     if import_counter > 0:
@@ -11010,7 +11143,8 @@ if __name__ == "__main__":
     # CLI argument handling
     # --auto          : single headless pass (last 2 hours), then exit
     # --daemon        : loop every 30 minutes indefinitely (Ctrl+C to stop)
-    # --lookback N    : override lookback window in hours (default: 2)
+    # --lookback N     : override lookback window in hours (default: 2)
+    # --lookback-days N: same but in days (multiplied to hours internally)
     # -------------------------------------------------------------------------
     import argparse
     parser = argparse.ArgumentParser(add_help=False)
@@ -11020,6 +11154,8 @@ if __name__ == "__main__":
                         help="Loop auto-import every 30 minutes until Ctrl+C")
     parser.add_argument("--lookback", type=int, default=2, metavar="HOURS",
                         help="How many hours back to scrape (default: 2)")
+    parser.add_argument("--lookback-days", type=int, default=None, metavar="DAYS",
+                        help="How many days back to scrape — overrides --lookback if supplied")
     parser.add_argument("--delete", type=str, default=None, metavar="data|save|logs|all",
                         help="Wipe the given data directory/directories under CSRS_DATA_DIR. "
                              "hltv_cookies.json is NEVER deleted, no matter what. Requires "
@@ -11075,10 +11211,13 @@ if __name__ == "__main__":
                 elapsed += checked_every
 
         if args.daemon:
+            # Resolve final lookback in hours — days flag takes precedence
+            lookback_hours = args.lookback_days * 24 if args.lookback_days is not None else args.lookback
+            lookback_label = f"{args.lookback_days}d ({lookback_hours}h)" if args.lookback_days is not None else f"{lookback_hours}h"
             _batch_log(
                 f"=== CSRS Daemon started — "
                 f"checking every {DAEMON_INTERVAL_MINUTES} min, "
-                f"lookback {args.lookback}h ==="
+                f"lookback {lookback_label} ==="
             )
             print(f"CSRS daemon running. Ctrl+C to stop.")
             # Clear any stale trigger file from a previous run on startup
@@ -11089,7 +11228,7 @@ if __name__ == "__main__":
                     pass
             try:
                 while True:
-                    run_auto_import(lookback_hours=args.lookback)
+                    run_auto_import(lookback_hours=lookback_hours)
                     next_run = datetime.now() + timedelta(minutes=DAEMON_INTERVAL_MINUTES)
                     _batch_log(
                         f"  Next check at "
@@ -11104,7 +11243,8 @@ if __name__ == "__main__":
                 sys.exit(0)
         else:
             # --auto: single pass then exit
-            run_auto_import(lookback_hours=args.lookback)
+            lookback_hours = args.lookback_days * 24 if args.lookback_days is not None else args.lookback
+            run_auto_import(lookback_hours=lookback_hours)
             sys.exit(0)
     
     def confirm_exit() -> bool:

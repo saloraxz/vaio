@@ -1047,12 +1047,12 @@ tr:last-child td { border-bottom: none; }
         <div>
           <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">Tier</div>
           <select id="sim-tier">
-            <option value="S+">S+ — Elite Major</option>
-            <option value="S">S — Major</option>
-            <option value="A" selected>A — Premier</option>
-            <option value="B">B — A-tier</option>
-            <option value="C">C — B-tier</option>
-            <option value="D">D — Lower</option>
+            <option value="S+">S+</option>
+            <option value="S">S</option>
+            <option value="A" selected>A</option>
+            <option value="B">B</option>
+            <option value="C">C</option>
+            <option value="D">D</option>
           </select>
         </div>
         <div>
@@ -1557,18 +1557,30 @@ function setError(id, msg) {
 // ---------------------------------------------------------------------------
 let earliestDataDate = null; // set once meta loads; used to clamp graph start dates
 
+// Single shared promise for the meta fetch — created once on page load so
+// both loadMeta() and setElitePreset('all') await the SAME request rather
+// than racing against each other. setElitePreset('all') can await this
+// directly, guaranteeing earliestDataDate is populated before dpSet runs.
+let _metaPromise = null;
+
+function _ensureMetaLoaded() {
+  if (!_metaPromise) {
+    _metaPromise = api('/api/meta').then(d => {
+      if (d.earliest_match) earliestDataDate = d.earliest_match;
+      return d;
+    }).catch(() => ({}));
+  }
+  return _metaPromise;
+}
+
 async function loadMeta() {
   try {
     const [d, versionRes] = await Promise.all([
-      api('/api/meta'),
+      _ensureMetaLoaded(),
       fetch('/version.txt'),
     ]);
     const version = versionRes.ok ? (await versionRes.text()).trim() : 'unknown';
-    if (d.earliest_match) {
-      earliestDataDate = d.earliest_match;
-      // If elite-start is blank (set by "All Time" before meta loaded), fill it in now
-      if (!dpGet('elite-start')) dpSet('elite-start', earliestDataDate);
-    }
+    // earliestDataDate already set inside _ensureMetaLoaded()
     const el = document.getElementById('sidebar-meta');
     el.innerHTML = `
       <span>${d.total_teams} teams</span>
@@ -1664,7 +1676,7 @@ async function renderMonthSummaryForMonth(ym) {
 
 // ── Match Page ────────────────────────────────────────────────────────────────
 function openMatch(url) {
-  navigateTo('match');
+  showPage('match');
   document.getElementById('match-page-title').textContent = 'Match';
   setEl('match-result', '<div class="loading"><div class="spinner"></div> Loading…</div>');
   api('/api/match?url=' + encodeURIComponent(url))
@@ -2393,7 +2405,7 @@ function renderRankings(rows) {
             </td>
             <td class="pts">${r.points.toFixed(2)}</td>
             <td class="pts" style="color:var(--muted)">${r.peak_points.toFixed(2)}</td>
-            <td style="color:var(--muted)">${(r.peak_rank !== null && r.peak_rank !== undefined && r.peak_rank > 0) ? '#' + r.peak_rank : '—'}</td>
+            <td style="color:var(--muted)">${(r.peak_rank != null && r.peak_rank > 0) ? '#' + r.peak_rank : '—'}</td>
             <td>${sparklineSVG(r.sparkline)}</td>
           </tr>
         `).join('')}
@@ -2557,7 +2569,12 @@ function renderTeamDetail(d) {
       <div class="stat-card">
         <div class="label">Peak Rating</div>
         <div class="value">${d.peak.points ? d.peak.points.toFixed(1) : '—'}</div>
-        <div class="sub">${d.peak.date ? d.peak.date.split(' ')[0] + ' · #' + d.peak.rank : ''}</div>
+        <div class="sub">${d.peak.date ? d.peak.date.split(' ')[0] + (d.peak.rank ? ' · #' + d.peak.rank : '') : ''}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Peak Rank</div>
+        <div class="value">${d.peak.rank ? '#' + d.peak.rank : '—'}</div>
+        <div class="sub">${d.peak.date ? d.peak.date.split(' ')[0] : ''}</div>
       </div>
     </div>
     <div class="card">
@@ -2905,12 +2922,10 @@ async function setElitePreset(preset) {
   dpSet('elite-end', today);
 
   if (preset === 'all') {
-    if (!earliestDataDate) {
-      try {
-        const meta = await api('/api/meta');
-        if (meta.earliest_match) earliestDataDate = meta.earliest_match;
-      } catch(e) {}
-    }
+    // Always await the shared meta promise — guarantees earliestDataDate is
+    // populated before we call dpSet, even if the user clicks All Time
+    // before the initial loadMeta() call has resolved.
+    await _ensureMetaLoaded();
     dpSet('elite-start', earliestDataDate || '');
   } else if (preset === '3m') {
     const d = new Date(now); d.setMonth(d.getMonth() - 3);
@@ -3527,7 +3542,10 @@ function renderTeamDetails(d) {
       '</div>' +
       '<div class="stat-card"><div class="label">Global Rank</div><div class="value">#' + d.rank + '</div></div>' +
       '<div class="stat-card"><div class="label">Peak Rating</div><div class="value">' + (d.peak && d.peak.points ? d.peak.points.toFixed(1) : '\u2014') + '</div>' +
-        '<div class="sub">' + (d.peak && d.peak.date ? d.peak.date.split(' ')[0] + ' \u00b7 #' + d.peak.rank : '') + '</div>' +
+        '<div class="sub">' + (d.peak && d.peak.date ? d.peak.date.split(' ')[0] + (d.peak.rank ? ' \u00b7 #' + d.peak.rank : '') : '') + '</div>' +
+      '</div>' +
+      '<div class="stat-card"><div class="label">Peak Rank</div><div class="value">' + (d.peak && d.peak.rank ? '#' + d.peak.rank : '\u2014') + '</div>' +
+        '<div class="sub">' + (d.peak && d.peak.date ? d.peak.date.split(' ')[0] : '') + '</div>' +
       '</div>' +
       '<div class="stat-card"><div class="label">Record (3 months)</div><div class="value" style="font-size:1rem;padding-top:4px">' + wl_3m + '</div></div>' +
       '<div class="stat-card"><div class="label">Rating Change (3 months)</div>' +

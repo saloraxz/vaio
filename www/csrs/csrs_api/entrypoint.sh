@@ -9,16 +9,18 @@ echo "=== CSRS Entrypoint: starting ==="
 echo "    Working dir: $(pwd)"
 echo "    Data dir:    ${CSRS_DATA_DIR:-/data}"
 
-# backfill.py sits next to CSRS.py in /app
+# CSRS.py and backfill.py are always at /app (set by Dockerfile.daemon WORKDIR)
+cd /app
+
 BACKFILL="/app/backfill.py"
 
 if [ -f "$BACKFILL" ]; then
     echo ""
     echo "=== Running backfill (Jan 1 2026 → today) ==="
-    echo "    Checkpoint file: ${CSRS_DATA_DIR:-/data}/backfill_progress.json"
+    echo "    Checkpoint file: ${CSRS_DATA_DIR:-/data}/data/backfill_progress.json"
     echo "    Completed windows will be skipped automatically."
     echo ""
-    python "$BACKFILL" --start 2026-01-01
+    python "$BACKFILL" --import --start 2026-01-01
     echo ""
     echo "=== Backfill complete — starting daemon ==="
 else
@@ -26,4 +28,4 @@ else
 fi
 
 echo ""
-exec python CSRS.py --daemon --lookback 48
+exec python CSRS.py --daemon --lookback-days 2

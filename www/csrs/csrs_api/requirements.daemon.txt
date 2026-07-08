@@ -1,2 +1,27 @@
+# Core scraping runtime
 playwright==1.44.0
 requests==2.32.3
+
+# Camoufox: stealth browser used by BrowserSession and all scrape functions
+# (hard required — CSRS.py falls back to playwright only if camoufox fails to launch)
+camoufox[geoip]
+
+# beautifulsoup4: HTML parsing in scrape_hltv_results_by_event,
+# scrape_events_archive, scrape_match_data, scrape_vrs_points
+beautifulsoup4
+
+# sortedcontainers: SortedList used in _do_resimulation for O(log n)
+# date-indexed last-match lookups during rating replay
+sortedcontainers
+
+# curl_cffi: impersonates Chrome TLS fingerprint for scrape_vrs_points
+# (optional — CSRS.py logs an error and skips VRS if not installed,
+# but VRS data is needed for provisional-team registration so install it)
+curl_cffi
+
+# playwright-stealth: applied to Playwright fallback pages when Camoufox
+# is unavailable (optional — graceful ImportError fallback in BrowserSession)
+playwright-stealth
+
+# psutil: used by backfill.py to monitor Camoufox RAM and trigger browser restarts
+psutil

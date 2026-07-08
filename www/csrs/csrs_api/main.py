@@ -1886,15 +1886,56 @@ def home(
     total_teams = len(teams)
 
     # --- #1 ranked team + 30d rating sparkline + form ---
-    team_display: dict = {}
-    for name, pts in teams.items():
-        last = _get_last_match_date(name, index=date_index)
-        if last is None:
-            team_display[name] = pts
-            continue
-        days_inactive = (today - last).days
-        team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
-    ranked_now = sorted(teams.items(), key=lambda x: team_display[x[0]], reverse=True)
+    # Build team_display and current_rank relative to `today` (end-of-month
+    # when viewing a past month, or now for live/current month).
+    #
+    # IMPORTANT: for a historical month we must use the ratings teams actually
+    # held at the end of that month — not their live current ratings — otherwise
+    # current_rank will reflect today's standings, not end-of-month standings.
+    # We replay history up to `today` to get the correct pts_after per team,
+    # then depreciate relative to `today` using only their last match before
+    # `today` (capped), matching exactly how /api/rankings handles historical
+    # date snapshots.
+    is_historical_month = bool(start and end) and today.date() < datetime.now().date()
+
+    if is_historical_month:
+        # Reconstruct ratings and last-match dates as they stood at end of month
+        hist_pts: dict = {}
+        hist_last: dict = {}
+        for m in history:
+            date_str = m.get("date", "")
+            if not date_str or date_str == "N/A":
+                continue
+            try:
+                d = _parse_match_date(date_str)
+            except Exception:
+                continue
+            if d > today:
+                continue
+            for side in ("t1", "t2"):
+                name = m[side]["name"]
+                pts_after = m[side]["pts_after"]
+                prev = hist_last.get(name)
+                if prev is None or d >= prev:
+                    hist_pts[name] = pts_after
+                    hist_last[name] = d
+        team_display = {}
+        for name, pts in hist_pts.items():
+            last = hist_last.get(name)
+            days_inactive = max(0, (today - last).days) if last else 0
+            team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
+        ranked_now = sorted(hist_pts.items(), key=lambda x: team_display.get(x[0], x[1]), reverse=True)
+    else:
+        team_display = {}
+        for name, pts in teams.items():
+            last = _get_last_match_date(name, index=date_index)
+            if last is None:
+                team_display[name] = pts
+                continue
+            days_inactive = (today - last).days
+            team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
+        ranked_now = sorted(teams.items(), key=lambda x: team_display[x[0]], reverse=True)
+
     current_rank = {name: i + 1 for i, (name, _pts) in enumerate(ranked_now)}
 
     top_team = None

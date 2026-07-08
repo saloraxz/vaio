@@ -180,11 +180,28 @@ ETA_ROLLING_WINDOW = 25
 
 # Save progress to disk every N successful imports (mirrors the cadence
 # CSRS._import_url_list normally uses internally for its own batch calls).
-SAVE_EVERY_N_IMPORTS = 5
+SAVE_EVERY_N_IMPORTS      = 5
+BROWSER_RAM_LIMIT_MB      = 500   # restart BrowserSession when Camoufox RSS exceeds this
 
-# Restart the browser (close + relaunch) every N matches to prevent
-# Camoufox/Firefox memory from growing unboundedly on long runs.
-BROWSER_RESTART_EVERY = 50
+
+def _camoufox_ram_mb() -> float:
+    """
+    Returns the total RSS (MB) of all running firefox/camoufox processes.
+    Uses psutil — returns 0.0 if psutil is not installed or no process found.
+    """
+    try:
+        import psutil
+        total = 0
+        for proc in psutil.process_iter(['name', 'memory_info']):
+            try:
+                name = (proc.info['name'] or '').lower()
+                if 'firefox' in name or 'camoufox' in name or 'geckodriver' in name:
+                    total += proc.info['memory_info'].rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        return total / (1024 * 1024)
+    except ImportError:
+        return 0.0
 
 
 def _import_with_retry(
@@ -238,18 +255,21 @@ def _import_with_retry(
             time.sleep(retry_delay)
 
         still_failed_this_pass: list[str] = []
-        idx = 0
+        url_iter = list(remaining)
+        i = 0
 
-        while idx < len(remaining):
-            # Slice out the next chunk to run under one browser session
-            chunk = remaining[idx: idx + BROWSER_RESTART_EVERY]
-            if idx > 0:
-                print(f"\n  [BROWSER] Restarting browser after {idx} matches this pass to free memory…\n")
-
+        while i < len(url_iter):
+            # Open a fresh BrowserSession — either first time or after a
+            # RAM-triggered restart. We check memory after each match and
+            # break out of the inner loop when it exceeds BROWSER_RAM_LIMIT_MB,
+            # which closes the browser via __exit__ and loops back here to
+            # open a clean one for the remaining URLs.
             with CSRS.BrowserSession() as sess:
-                for url in chunk:
+                while i < len(url_iter):
+                    url = url_iter[i]
+
                     if max_runtime_seconds is not None and (time.monotonic() - run_start) >= max_runtime_seconds:
-                        not_attempted.extend(remaining[idx + chunk.index(url):])
+                        not_attempted.extend(url_iter[i:])
                         time_budget_hit = True
                         print(
                             f"\n    [TIME LIMIT] {_format_duration(max_runtime_seconds)} budget reached after "
@@ -259,7 +279,7 @@ def _import_with_retry(
                         break
 
                     t0 = time.monotonic()
-                    _last_scrape_duration["seconds"] = None  # reset; set by the monkeypatched scrape_match_data
+                    _last_scrape_duration["seconds"] = None
                     count, failed = CSRS._import_url_list([url], sess.context)
                     elapsed = time.monotonic() - t0
                     scrape_elapsed = _last_scrape_duration["seconds"]
@@ -269,6 +289,7 @@ def _import_with_retry(
                         still_failed_this_pass.extend(failed)
 
                     done_count += 1
+                    i += 1
                     durations.append(elapsed)
 
                     window = durations[-ETA_ROLLING_WINDOW:]
@@ -289,6 +310,10 @@ def _import_with_retry(
                         time_left = max(0.0, max_runtime_seconds - total_elapsed)
                         budget_part = f" | time budget left: {_format_duration(time_left)}"
 
+                    # RAM check — silently restart browser if over limit
+                    ram_mb = _camoufox_ram_mb()
+                    needs_restart = ram_mb > 0 and ram_mb >= BROWSER_RAM_LIMIT_MB
+
                     print(
                         f"    [{done_count}/{total_to_do}] {status} | {scrape_part} "
                         f"| avg(last {len(window)}): {avg:.1f}s "
@@ -301,10 +326,11 @@ def _import_with_retry(
                     if count and total_imported % SAVE_EVERY_N_IMPORTS == 0:
                         CSRS.save_all(silent=True)
 
-            # BrowserSession.__exit__ closes browser here — memory freed
+                    if needs_restart:
+                        break  # exits inner while → exits `with` → browser closed → outer while reopens
+
             if time_budget_hit:
                 break
-            idx += len(chunk)
 
         if not still_failed_this_pass:
             print(f"    All {total_to_do} URL(s) imported successfully (pass {pass_num}).")
@@ -984,22 +1010,122 @@ def run_tag_stages(dry_run: bool = False, limit=None):
         print("Dry run — no changes saved.")
 
 
-def run_live(interval_minutes: int = 30):
+def _walk_until_known(known_urls: set[str], max_pages: int = 20) -> list[str]:
+    """
+    Walks /results newest-first, collecting URLs until it hits one that's
+    already in known_urls (i.e. the last imported match). Returns the
+    collected URLs in newest-first order — caller reverses to oldest-first
+    before importing.
+
+    This is more reliable than a fixed date lookback for live mode: it
+    always catches everything since the last import, regardless of how
+    long the daemon was down, and stops exactly at the right place without
+    fetching unnecessary pages.
+    """
+    import random as _random
+
+    cookies = CSRS._load_hltv_cookies()
+    pw_cookies = [
+        {"name": c.get("name", ""), "value": c.get("value", ""),
+         "domain": c.get("domain", ".hltv.org"), "path": c.get("path", "/")}
+        for c in cookies if c.get("name") and c.get("value")
+    ]
+
+    try:
+        from camoufox.sync_api import Camoufox
+    except ImportError:
+        print("[LIVE] ERROR: Camoufox not installed.")
+        return []
+
+    collected: list[str] = []
+    seen: set[str] = set()
+    hit_known = False
+
+    try:
+        with Camoufox(headless=CSRS._CAMOUFOX_HEADLESS, os=("windows", "macos", "linux")) as browser:
+            context = browser.new_context()
+            if pw_cookies:
+                context.add_cookies(pw_cookies)
+            page = context.new_page()
+
+            try:
+                page.goto("https://www.hltv.org", timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+            except Exception as e:
+                print(f"[LIVE] Warm-up warning: {e}")
+
+            for page_num in range(max_pages):
+                offset = page_num * CSRS.HLTV_RESULTS_PAGE_SIZE
+                url = ("https://www.hltv.org/results" if offset == 0
+                       else f"https://www.hltv.org/results?offset={offset}")
+                print(f"[LIVE] Page {page_num + 1} (offset={offset})")
+
+                try:
+                    page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                    page.wait_for_timeout(2000)
+                except Exception as e:
+                    print(f"[LIVE] Navigation error: {e} — stopping")
+                    break
+
+                html = page.content()
+                if "Just a moment" in html or "challenge-platform" in html:
+                    print("[LIVE] Cloudflare block — stopping")
+                    break
+
+                groups = _parse_results_page(html)
+                if not groups:
+                    print("[LIVE] No day-groups found — end of feed")
+                    break
+
+                page_new = 0
+                for grp in groups:
+                    for m in grp["matches"]:
+                        if m["url"] in known_urls:
+                            # Hit a URL we already have — everything older is also known
+                            print(f"[LIVE] Hit known URL after {len(collected)} new — stopping.")
+                            hit_known = True
+                            break
+                        if m["url"] not in seen:
+                            seen.add(m["url"])
+                            collected.append(m["url"])
+                            page_new += 1
+                    if hit_known:
+                        break
+                if hit_known:
+                    break
+
+                print(f"[LIVE]   +{page_new} new URL(s) (running total: {len(collected)})")
+                time.sleep(_random.uniform(1.0, 2.0))
+
+            try:
+                page.close()
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"[LIVE] Browser error: {e}")
+
+    return collected
+
+
+def run_live(interval_minutes: int = 30, lookback_days: int = 2, smart_lookback: bool = False):
     """
     Continuously poll HLTV results and import any new matches.
 
-    Each cycle:
-      1. Reload CSRS data to get the current known URL set and most recent match date.
-      2. Walk the /results feed starting from yesterday (catches late-posted results).
-      3. Filter to URLs not already in history.
-      4. Import new matches via the normal _import_with_retry path.
-      5. Sleep for interval_minutes, then repeat.
+    Two collection modes:
+      Default (--lookback-days N): walks /results back N days each cycle.
+      Smart (--smart-lookback):    walks /results until it hits the last
+          already-imported URL — catches everything since the previous
+          import with no fixed time window.
 
     Runs until interrupted with Ctrl+C.
     """
     import signal
 
-    print(f"[LIVE] Starting live import mode — polling every {interval_minutes} minute(s). Ctrl+C to stop.\n")
+    mode_desc = ("smart lookback (stop at last known URL)"
+                 if smart_lookback else f"lookback {lookback_days} day(s)")
+    print(f"[LIVE] Starting live import mode — polling every {interval_minutes} minute(s), "
+          f"{mode_desc}. Ctrl+C to stop.\n")
 
     # Graceful shutdown on Ctrl+C
     _stop = {"flag": False}
@@ -1020,23 +1146,24 @@ def run_live(interval_minutes: int = 30):
         CSRS.load_all()
         known_urls: set[str] = {m.get("url", "") for m in CSRS.history if m.get("url")}
 
-        # Start from yesterday to catch matches that posted slightly late
-        start_date = (date.today() - timedelta(days=1))
+        print(f"[LIVE] {len(known_urls)} URLs already imported.\n")
 
-        print(f"[LIVE] Checking results from {start_date} onwards ({len(known_urls)} URLs already imported)…\n")
-
-        # Collect new URLs from the results feed (just a few pages — recent results only)
+        # Collect new URLs
         try:
-            collected, _, crashed = _walk_results_pages(
-                start_date=start_date,
-                max_pages=5,   # ~500 matches max, plenty for a 30-min window
-            )
+            if smart_lookback:
+                collected = _walk_until_known(known_urls)
+            else:
+                start_date = date.today() - timedelta(days=lookback_days)
+                print(f"[LIVE] Checking results from {start_date} onwards…\n")
+                collected, _, _ = _walk_results_pages(
+                    start_date=start_date,
+                    max_pages=5,
+                )
         except Exception as e:
             print(f"[LIVE] Collection error: {e} — skipping this cycle")
             collected = []
-            crashed = False
 
-        # Filter to only URLs we haven't seen yet, preserving oldest-first order
+        # Filter and reverse to oldest-first
         new_urls = [u for u in reversed(collected) if u not in known_urls]
 
         if not new_urls:
@@ -1101,6 +1228,12 @@ if __name__ == "__main__":
                               "interrupted with Ctrl+C.")
     parser.add_argument("--interval", type=int, default=30, metavar="MINUTES",
                          help="With --live: polling interval in minutes (default: 30).")
+    parser.add_argument("--lookback-days", type=int, default=2, metavar="DAYS",
+                         help="With --live: how many days back to check for new results each cycle (default: 2).")
+    parser.add_argument("--smart-lookback", action="store_true",
+                         help="With --live: instead of a fixed date window, walk /results until "
+                              "the last already-imported URL is found — always catches everything "
+                              "since the previous import with no over-fetching.")
     parser.add_argument("--limit", type=int, default=None, metavar="N",
                          help="With --tag-stages: only process the first N untagged entries (useful for testing).")
     args = parser.parse_args()
@@ -1119,7 +1252,8 @@ if __name__ == "__main__":
     elif args.tag_stages:
         run_tag_stages(dry_run=args.dry_run, limit=args.limit)
     elif args.live:
-        run_live(interval_minutes=args.interval)
+        run_live(interval_minutes=args.interval, lookback_days=args.lookback_days,
+                 smart_lookback=args.smart_lookback)
     else:
         print("Nothing to do. Use --test-results-page to diagnose, --import to run the real "
               "backfill, --retry-failed to retry failed URLs, --tag-stages to backfill "
