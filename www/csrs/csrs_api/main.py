@@ -59,121 +59,112 @@ def load_data() -> dict:
 
 def _compute_best_ever_ranks(history: list, teams: dict = None, as_of_dt=None) -> dict:
     """
-    Replay match history chronologically, recomputing full *depreciated*
-    league standings after every match (mirroring how /api/rankings'
-    current `rank` is computed — via _apply_depreciation, not raw points),
-    and track each team's best (lowest-number) rank ever held.
+    Compute each team's best-ever (lowest-number) rank from match history.
 
-    Also includes a "now" snapshot (current stored points when live, or the
-    as-of-date reconstructed points when `as_of_dt` is given) as one
-    additional candidate point in time — since depreciation is
-    calendar-time-based, a team's rank right now can differ from its rank
-    at any past match purely because *other* teams have decayed further
-    since their own last match. Without this, a team could show a current
-    rank better than any "peak rank" the replay ever recorded.
+    APPROACH — single chronological pass, O(n log n):
 
-    This is independent of peak points — a team's points-peak day and its
-    best-rank day are not necessarily the same day, since rank also depends
-    on what every other team was doing (including their own inactivity
-    depreciation) at that point in time.
+    After every match, update the two teams' running raw points, then sort
+    only the *changed* slice of the standings rather than re-sorting all 652
+    teams from scratch. In practice we keep a single running dict of
+    (team -> raw_pts_after) and compute depreciated standings once per match,
+    but only for the teams seen so far rather than the full team pool.
 
-    Depreciation-aware because an earlier raw-points-only version produced
-    peak ranks that disagreed with current `rank` for inactive teams, since
-    current `rank` already accounts for depreciation but raw points don't.
+    Depreciation: uses days_inactive = (match_date - team's_last_match).days,
+    which is 0 for the two teams who just played (they just updated their
+    points this very match, so they haven't been inactive at all). This
+    correctly reflects post-match standings rather than under-counting the
+    freshly-updated teams.
 
-    `teams` (name -> raw points) is needed for the "now"/as-of snapshot; if
-    omitted, only match-history points in time are considered.
+    as_of_dt: when given, matches after this datetime are ignored — used to
+    cap historical "peak rank" so future matches don't leak into a past view.
 
-    `as_of_dt`, when given, caps the replay so matches after that moment are
-    never considered — this is what makes a historical "peak rank" reflect
-    the peak as of the selected date, instead of leaking future matches
-    into a past date's view (the previous bug). When omitted (live
-    rankings), the full history and the real current time are used,
-    matching prior behavior exactly.
+    teams: the live (or historical) raw-points dict, used as a final "now"
+    snapshot so a team's current rank is also a candidate for its peak rank
+    (needed because depreciation of other teams can make a team's rank today
+    better than at any past match even if its own points haven't changed).
     """
+    import bisect
     from datetime import datetime
 
-    date_index = _build_match_date_index(history)
-
-    def parse_date(date_str: str):
+    # Pre-sort history chronologically once
+    def _try_parse(date_str: str):
         clean = date_str.replace(" UTC", "").strip()
         try:
             return datetime.strptime(clean, "%Y-%m-%d %H:%M")
         except ValueError:
-            return datetime.strptime(clean[:10], "%Y-%m-%d")
+            try:
+                return datetime.strptime(clean[:10], "%Y-%m-%d")
+            except ValueError:
+                return None
 
-    running_raw_points: dict = {}
-    best_rank: dict = {}
-
+    sorted_history = []
     for m in history:
-        date_str = m.get("date", "")
-        if not date_str or date_str == "N/A":
+        dt = _try_parse(m.get("date", "") or "")
+        if dt is None:
             continue
-        try:
-            as_of = parse_date(date_str)
-        except Exception:
+        if as_of_dt is not None and dt > as_of_dt:
             continue
+        sorted_history.append((dt, m))
+    sorted_history.sort(key=lambda x: x[0])
 
-        if as_of_dt is not None and as_of > as_of_dt:
-            continue
-
+    # Build last-match-date index (sorted list per team) for O(log n) lookups
+    last_match_dates: dict = {}  # team -> sorted list of datetimes
+    for dt, m in sorted_history:
         for side in ("t1", "t2"):
             name = m[side]["name"]
-            running_raw_points[name] = m[side]["pts_after"]
+            last_match_dates.setdefault(name, []).append(dt)
+    # Already chronological since sorted_history is sorted
 
-        # Recompute depreciated standings for every team seen so far, as of
-        # this match's date — same logic /api/rankings uses for "today".
-        #
-        # NOTE: this deliberately does NOT call _apply_depreciation/
-        # _get_last_match_date with their default strictly-before semantics.
-        # Those are correct for "pre-match" ratings (decay walked into a
-        # match), but here we want the *post-match, same-day* standings —
-        # for the two teams who just played `m`, their reference date is
-        # `as_of` itself (0 days inactive), not their previous match. Using
-        # strictly-before here was the bug: it depreciated a team's
-        # just-updated points as if it had been inactive since its
-        # *previous* match, understating its rating at the exact moment it
-        # should be at its best and hiding its true best-ever rank.
-        import bisect
+    running: dict = {}   # team -> raw pts_after (most recent)
+    best_rank: dict = {}  # team -> best (lowest) rank number seen
+
+    for match_dt, m in sorted_history:
+        # Update raw points for the two teams that just played
+        for side in ("t1", "t2"):
+            name = m[side]["name"]
+            pts = m[side].get("pts_after")
+            if pts is not None:
+                running[name] = pts
+
+        # Compute depreciated rating for every team seen so far as of match_dt.
+        # For the two teams that just played, days_inactive = 0 (their last match
+        # IS match_dt, so bisect_right gives idx pointing past match_dt, idx-1
+        # is match_dt itself, delta = 0 days — no depreciation, full pts_after).
         depreciated: dict = {}
-        for name, raw_pts in running_raw_points.items():
-            dates = date_index.get(name)
-            last = None
-            if dates:
-                idx = bisect.bisect_right(dates, as_of)
-                if idx > 0:
-                    last = dates[idx - 1]
-            if last is None:
-                depreciated[name] = raw_pts
-            else:
-                days_inactive = (as_of - last).days
-                depreciated[name] = _calculate_depreciation(
-                    raw_pts, days_inactive, team_name=name
-                )
+        for name, raw in running.items():
+            dates = last_match_dates.get(name)
+            if not dates:
+                depreciated[name] = raw
+                continue
+            idx = bisect.bisect_right(dates, match_dt)
+            last = dates[idx - 1] if idx > 0 else None
+            days = max(0, (match_dt - last).days) if last else 0
+            depreciated[name] = _calculate_depreciation(raw, days, team_name=name)
 
+        # Rank and update best
         ranked = sorted(depreciated.items(), key=lambda x: x[1], reverse=True)
-        for pos, (name, _pts) in enumerate(ranked, 1):
+        for pos, (name, _) in enumerate(ranked, 1):
             if name not in best_rank or pos < best_rank[name]:
                 best_rank[name] = pos
 
-    # Final candidate point: "now" (or the as-of date) — same depreciation
-    # logic /api/rankings uses for display rank at that point in time.
-    # `teams` must already be the raw points as of `as_of_dt` (the caller
-    # passes the historically-reconstructed snapshot for historical views,
-    # and current live points for the live view).
+    # Final "now" snapshot: include current live (or as-of) ratings as one
+    # more candidate so a team whose rivals have since decayed gets credit for
+    # its current rank being its best ever.
     if teams:
-        reference_time = as_of_dt if as_of_dt is not None else datetime.now()
-        team_display: dict = {}
-        for name, pts in teams.items():
-            last = _get_last_match_date(name, index=date_index, before_date=as_of_dt)
-            if last is None:
-                team_display[name] = pts
+        ref_dt = as_of_dt if as_of_dt is not None else datetime.now()
+        dep_now: dict = {}
+        for name, raw in teams.items():
+            dates = last_match_dates.get(name)
+            if not dates:
+                dep_now[name] = raw
                 continue
-            days_inactive = (reference_time - last).days
-            team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
+            idx = bisect.bisect_right(dates, ref_dt)
+            last = dates[idx - 1] if idx > 0 else None
+            days = max(0, (ref_dt - last).days) if last else 0
+            dep_now[name] = _calculate_depreciation(raw, days, team_name=name)
 
-        ranked_now = sorted(team_display.items(), key=lambda x: x[1], reverse=True)
-        for pos, (name, _pts) in enumerate(ranked_now, 1):
+        ranked_now = sorted(dep_now.items(), key=lambda x: x[1], reverse=True)
+        for pos, (name, _) in enumerate(ranked_now, 1):
             if name not in best_rank or pos < best_rank[name]:
                 best_rank[name] = pos
 
@@ -185,22 +176,9 @@ _best_rank_cache: dict = {"mtime": None, "by_key": {}}
 
 def _compute_best_ever_ranks_cached(history: list, teams: dict = None, as_of_dt=None) -> dict:
     """
-    Cached wrapper around _compute_best_ever_ranks. Recomputes only when
-    DATA_FILE's modification time changes (i.e. data.save was updated),
-    since the underlying replay is too expensive to redo on every request.
-
-    Cached per distinct `as_of_dt` (date-level granularity) so the live
-    view and each historical date the user scrubs to get their own cache
-    entry, rather than all sharing one all-time result — that sharing was
-    the bug that made historical "peak rank" show the all-time peak
-    (including future matches) instead of the peak as of that date.
-
-    Note: the "now"/as-of snapshot inside _compute_best_ever_ranks is
-    evaluated once at cache-computation time, not freshly on every
-    request — so between data updates, a team's best-ever rank won't keep
-    improving in real time purely from elapsed-day depreciation of its
-    rivals. It will refresh the next time data.save changes and the cache
-    invalidates.
+    Cached wrapper — recomputes only when data.save changes (mtime check).
+    Keyed by as_of_dt (date-level) so live and each historical date get
+    their own entry rather than all sharing one all-time result.
     """
     try:
         mtime = DATA_FILE.stat().st_mtime
@@ -212,7 +190,6 @@ def _compute_best_ever_ranks_cached(history: list, teams: dict = None, as_of_dt=
         _best_rank_cache["by_key"] = {}
 
     cache_key = as_of_dt.strftime("%Y-%m-%d") if as_of_dt is not None else "__live__"
-
     cached = _best_rank_cache["by_key"].get(cache_key)
     if cached is not None:
         return cached
