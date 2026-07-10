@@ -57,128 +57,181 @@ def load_data() -> dict:
         raise HTTPException(status_code=500, detail=f"Failed to read data.save: {e}")
 
 
-def _compute_best_ever_ranks(history: list, teams: dict = None, as_of_dt=None) -> dict:
+def _compute_best_ever_ranks(history: list, teams: dict = None, as_of_dt=None) -> tuple:
     """
-    Compute each team's best-ever (lowest-number) rank from match history.
+    Replay match history chronologically, recomputing full *depreciated*
+    league standings after every match (mirroring how /api/rankings'
+    current `rank` is computed — via _apply_depreciation, not raw points),
+    and track each team's best (lowest-number) rank ever held.
 
-    APPROACH — single chronological pass, O(n log n):
+    Also includes a "now" snapshot (current stored points when live, or the
+    as-of-date reconstructed points when `as_of_dt` is given) as one
+    additional candidate point in time — since depreciation is
+    calendar-time-based, a team's rank right now can differ from its rank
+    at any past match purely because *other* teams have decayed further
+    since their own last match. Without this, a team could show a current
+    rank better than any "peak rank" the replay ever recorded.
 
-    After every match, update the two teams' running raw points, then sort
-    only the *changed* slice of the standings rather than re-sorting all 652
-    teams from scratch. In practice we keep a single running dict of
-    (team -> raw_pts_after) and compute depreciated standings once per match,
-    but only for the teams seen so far rather than the full team pool.
+    This is independent of peak points — a team's points-peak day and its
+    best-rank day are not necessarily the same day, since rank also depends
+    on what every other team was doing (including their own inactivity
+    depreciation) at that point in time.
 
-    Depreciation: uses days_inactive = (match_date - team's_last_match).days,
-    which is 0 for the two teams who just played (they just updated their
-    points this very match, so they haven't been inactive at all). This
-    correctly reflects post-match standings rather than under-counting the
-    freshly-updated teams.
+    Depreciation-aware because an earlier raw-points-only version produced
+    peak ranks that disagreed with current `rank` for inactive teams, since
+    current `rank` already accounts for depreciation but raw points don't.
 
-    as_of_dt: when given, matches after this datetime are ignored — used to
-    cap historical "peak rank" so future matches don't leak into a past view.
+    Evaluated once per calendar day (at end-of-day), not after every
+    individual match. Multiple matches often land on the same day, and a
+    team can briefly touch a high rank early in the day only to be passed
+    by other teams' results later that same day — an earlier version
+    treated that brief intraday high as the "peak", which produced a peak
+    rank whose date, when checked against that day's actual end-of-day
+    standings, showed a worse rank than the one being claimed. End-of-day
+    evaluation matches what a person actually checking "the rankings on
+    that date" would see.
 
-    teams: the live (or historical) raw-points dict, used as a final "now"
-    snapshot so a team's current rank is also a candidate for its peak rank
-    (needed because depreciation of other teams can make a team's rank today
-    better than at any past match even if its own points haven't changed).
+    `teams` (name -> raw points) is needed for the "now"/as-of snapshot; if
+    omitted, only match-history points in time are considered.
+
+    `as_of_dt`, when given, caps the replay so matches after that moment are
+    never considered — this is what makes a historical "peak rank" reflect
+    the peak as of the selected date, instead of leaking future matches
+    into a past date's view (the previous bug). When omitted (live
+    rankings), the full history and the real current time are used,
+    matching prior behavior exactly.
+
+    Returns a (best_rank, best_rank_date, rank_series) triple: best_rank
+    maps team name -> lowest (best) rank number ever held; best_rank_date
+    maps that same name -> the date string on which that best rank
+    occurred; rank_series maps team name -> a chronological list of
+    {"date": day_key, "rank": pos} points, one per day that had any match
+    activity anywhere in the league — this is the full day-by-day "position
+    history" a team occupied over time (powers a position-history chart),
+    not just its single best-ever point. This date is tracked independently
+    of `peaks[name]["date"]` (the points-peak date) since the two can and
+    often do differ — a team's best rank can occur on a day it didn't even
+    play, purely because a rival decayed past it.
     """
-    import bisect
     from datetime import datetime
 
-    # Pre-sort history chronologically once
-    def _try_parse(date_str: str):
+    date_index = _build_match_date_index(history)
+
+    def parse_date(date_str: str):
         clean = date_str.replace(" UTC", "").strip()
         try:
             return datetime.strptime(clean, "%Y-%m-%d %H:%M")
         except ValueError:
-            try:
-                return datetime.strptime(clean[:10], "%Y-%m-%d")
-            except ValueError:
-                return None
+            return datetime.strptime(clean[:10], "%Y-%m-%d")
 
-    sorted_history = []
-    for m in history:
-        dt = _try_parse(m.get("date", "") or "")
-        if dt is None:
-            continue
-        if as_of_dt is not None and dt > as_of_dt:
-            continue
-        sorted_history.append((dt, m))
-    sorted_history.sort(key=lambda x: x[0])
+    running_raw_points: dict = {}
+    best_rank: dict = {}
+    best_rank_date: dict = {}
+    rank_series: dict = {}
 
-    # Build last-match-date index (sorted list per team) for O(log n) lookups
-    last_match_dates: dict = {}  # team -> sorted list of datetimes
-    for dt, m in sorted_history:
-        for side in ("t1", "t2"):
-            name = m[side]["name"]
-            last_match_dates.setdefault(name, []).append(dt)
-    # Already chronological since sorted_history is sorted
-
-    running: dict = {}   # team -> raw pts_after (most recent)
-    best_rank: dict = {}  # team -> best (lowest) rank number seen
-
-    for match_dt, m in sorted_history:
-        # Update raw points for the two teams that just played
-        for side in ("t1", "t2"):
-            name = m[side]["name"]
-            pts = m[side].get("pts_after")
-            if pts is not None:
-                running[name] = pts
-
-        # Compute depreciated rating for every team seen so far as of match_dt.
-        # For the two teams that just played, days_inactive = 0 (their last match
-        # IS match_dt, so bisect_right gives idx pointing past match_dt, idx-1
-        # is match_dt itself, delta = 0 days — no depreciation, full pts_after).
+    def _evaluate_day_end(day_key: str):
+        """Rank every team seen so far as of 23:59:59 on day_key, record a
+        new best rank for anyone who improves on it, and append today's
+        rank to every team's position-history series."""
+        if not running_raw_points:
+            return
+        day_end = datetime.strptime(day_key, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
         depreciated: dict = {}
-        for name, raw in running.items():
-            dates = last_match_dates.get(name)
-            if not dates:
-                depreciated[name] = raw
-                continue
-            idx = bisect.bisect_right(dates, match_dt)
-            last = dates[idx - 1] if idx > 0 else None
-            days = max(0, (match_dt - last).days) if last else 0
-            depreciated[name] = _calculate_depreciation(raw, days, team_name=name)
-
-        # Rank and update best
+        for name, raw_pts in running_raw_points.items():
+            depreciated[name] = _apply_depreciation(
+                name, raw_pts, match_date=day_end, index=date_index
+            )
         ranked = sorted(depreciated.items(), key=lambda x: x[1], reverse=True)
-        for pos, (name, _) in enumerate(ranked, 1):
+        for pos, (name, _pts) in enumerate(ranked, 1):
             if name not in best_rank or pos < best_rank[name]:
                 best_rank[name] = pos
+                best_rank_date[name] = day_key
+            rank_series.setdefault(name, []).append({"date": day_key, "rank": pos})
 
-    # Final "now" snapshot: include current live (or as-of) ratings as one
-    # more candidate so a team whose rivals have since decayed gets credit for
-    # its current rank being its best ever.
+    current_day_key = None
+
+    for m in history:
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        try:
+            as_of = parse_date(date_str)
+        except Exception:
+            continue
+
+        if as_of_dt is not None and as_of > as_of_dt:
+            continue
+
+        day_key = as_of.strftime("%Y-%m-%d")
+
+        # New day started — evaluate the day that just ended before moving on.
+        if current_day_key is not None and day_key != current_day_key:
+            _evaluate_day_end(current_day_key)
+        current_day_key = day_key
+
+        for side in ("t1", "t2"):
+            name = m[side]["name"]
+            running_raw_points[name] = m[side]["pts_after"]
+
+    # Evaluate whichever day the loop ended on (no "next day" ever arrived
+    # to trigger it above).
+    if current_day_key is not None:
+        _evaluate_day_end(current_day_key)
+
+    # Final candidate point: "now" (or the as-of date) — same depreciation
+    # logic /api/rankings uses for display rank at that point in time.
+    # `teams` must already be the raw points as of `as_of_dt` (the caller
+    # passes the historically-reconstructed snapshot for historical views,
+    # and current live points for the live view).
     if teams:
-        ref_dt = as_of_dt if as_of_dt is not None else datetime.now()
-        dep_now: dict = {}
-        for name, raw in teams.items():
-            dates = last_match_dates.get(name)
-            if not dates:
-                dep_now[name] = raw
+        reference_time = as_of_dt if as_of_dt is not None else datetime.now()
+        team_display: dict = {}
+        for name, pts in teams.items():
+            last = _get_last_match_date(name, index=date_index, before_date=as_of_dt)
+            if last is None:
+                team_display[name] = pts
                 continue
-            idx = bisect.bisect_right(dates, ref_dt)
-            last = dates[idx - 1] if idx > 0 else None
-            days = max(0, (ref_dt - last).days) if last else 0
-            dep_now[name] = _calculate_depreciation(raw, days, team_name=name)
+            days_inactive = (reference_time - last).days
+            team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
 
-        ranked_now = sorted(dep_now.items(), key=lambda x: x[1], reverse=True)
-        for pos, (name, _) in enumerate(ranked_now, 1):
+        ranked_now = sorted(team_display.items(), key=lambda x: x[1], reverse=True)
+        now_date_str = reference_time.strftime("%Y-%m-%d")
+        for pos, (name, _pts) in enumerate(ranked_now, 1):
             if name not in best_rank or pos < best_rank[name]:
                 best_rank[name] = pos
+                best_rank_date[name] = now_date_str
+            series = rank_series.setdefault(name, [])
+            # Avoid a duplicate point if the day-end replay above already
+            # recorded this same day (e.g. a match happened today).
+            if not series or series[-1]["date"] != now_date_str:
+                series.append({"date": now_date_str, "rank": pos})
+            else:
+                series[-1]["rank"] = pos
 
-    return best_rank
+    return best_rank, best_rank_date, rank_series
 
 
 _best_rank_cache: dict = {"mtime": None, "by_key": {}}
 
 
-def _compute_best_ever_ranks_cached(history: list, teams: dict = None, as_of_dt=None) -> dict:
+def _compute_best_ever_ranks_cached(history: list, teams: dict = None, as_of_dt=None) -> tuple:
     """
-    Cached wrapper — recomputes only when data.save changes (mtime check).
-    Keyed by as_of_dt (date-level) so live and each historical date get
-    their own entry rather than all sharing one all-time result.
+    Cached wrapper around _compute_best_ever_ranks. Recomputes only when
+    DATA_FILE's modification time changes (i.e. data.save was updated),
+    since the underlying replay is too expensive to redo on every request.
+
+    Cached per distinct `as_of_dt` (date-level granularity) so the live
+    view and each historical date the user scrubs to get their own cache
+    entry, rather than all sharing one all-time result — that sharing was
+    the bug that made historical "peak rank" show the all-time peak
+    (including future matches) instead of the peak as of that date.
+
+    Note: the "now"/as-of snapshot inside _compute_best_ever_ranks is
+    evaluated once at cache-computation time, not freshly on every
+    request — so between data updates, a team's best-ever rank won't keep
+    improving in real time purely from elapsed-day depreciation of its
+    rivals. It will refresh the next time data.save changes and the cache
+    invalidates.
     """
     try:
         mtime = DATA_FILE.stat().st_mtime
@@ -190,6 +243,7 @@ def _compute_best_ever_ranks_cached(history: list, teams: dict = None, as_of_dt=
         _best_rank_cache["by_key"] = {}
 
     cache_key = as_of_dt.strftime("%Y-%m-%d") if as_of_dt is not None else "__live__"
+
     cached = _best_rank_cache["by_key"].get(cache_key)
     if cached is not None:
         return cached
@@ -640,7 +694,7 @@ def get_rankings(
     # Peak rank: capped at as_of_dt for historical views (None/live otherwise)
     # so a past date's "peak rank" reflects the peak as of that date, not the
     # all-time peak including matches that hadn't happened yet.
-    best_ever_rank: dict = _compute_best_ever_ranks_cached(
+    best_ever_rank, best_ever_rank_date, _rank_series = _compute_best_ever_ranks_cached(
         history,
         teams=ref_teams,
         as_of_dt=as_of_dt if is_historical else None,
@@ -685,6 +739,7 @@ def get_rankings(
             "peak_points": round(peak_info.get("points", pts), 2),
             "peak_date": peak_info.get("date"),
             "peak_rank": best_ever_rank.get(name),
+            "peak_rank_date": best_ever_rank_date.get(name),
             "provisional": name in provisional,
             "matches_until_ranked": provisional.get(name, 0) if name in provisional else None,
             "sparkline": team_spark.get(name, []),
@@ -834,12 +889,38 @@ def get_team(team_name: str):
                 entry["form_score"] = round(f[1], 1)
                 entry["form_grade"] = f[0]
 
+    # Attach a standard (fixed n=15, CSRS.py-default) form score/grade to
+    # EVERY timeline entry — not just the 3-month window above — so an
+    # "All Time" form chart has a full series to plot. Deliberately a
+    # separate field (form_score_all/form_grade_all) rather than reusing
+    # form_score/form_grade: those use a variable window sized to the
+    # 3-month match count (to match the "Form (3 months)" stat card), while
+    # this uses the fixed n=15 convention used everywhere else in the app,
+    # so the two are not directly comparable and shouldn't be conflated.
+    for entry in timeline:
+        gi = entry["_gi"]
+        f = _calculate_form_at_match_index(matched, gi + 1, history)
+        if f:
+            entry["form_score_all"] = round(f[1], 1)
+            entry["form_grade_all"] = f[0]
+
     # Strip the internal global-index marker before it ever reaches the response
     for entry in timeline:
         entry.pop("_gi", None)
 
     peak_info = dict(peaks.get(matched, {}))
-    peak_info["rank"] = _compute_best_ever_ranks_cached(history, teams=teams).get(matched, peak_info.get("rank"))
+    _best_rank_map, _best_rank_date_map, _rank_series_map = _compute_best_ever_ranks_cached(history, teams=teams)
+    peak_info["rank"] = _best_rank_map.get(matched, peak_info.get("rank"))
+    # Own date field for the rank peak — this is NOT the same day as
+    # peak_info["date"] (the rating/points peak), since best-ever rank can
+    # occur on a different day, including one this team didn't even play.
+    peak_info["rank_date"] = _best_rank_date_map.get(matched)
+
+    # Full day-by-day position (rank) history for this team, one point per
+    # day that had any league match activity — powers the "Position
+    # History" chart (both its 3-month and all-time views; the 3-month
+    # slice is taken client-side from this same series).
+    rank_history = _rank_series_map.get(matched, [])
 
     # Day-by-day expanded series (90 days) with depreciation between matches
     daily_series: list = []
@@ -926,6 +1007,7 @@ def get_team(team_name: str):
         "rank": rank,
         "peak": peak_info,
         "form": form_data,
+        "rank_history": rank_history,
         # All-time
         "total_matches": total_matches,
         "wins": wins_all,
@@ -938,6 +1020,27 @@ def get_team(team_name: str):
         "timeline_3m": timeline_3m,
         "daily_series": daily_series,
     }
+
+
+@app.get("/api/team/{team_name}/form-analysis")
+def get_team_form_analysis(team_name: str, n: int = Query(15, ge=3, le=50)):
+    data = load_data()
+    teams: dict = data.get("teams", {})
+    history: list = data.get("history", [])
+    aliases: dict = data.get("aliases", {})
+
+    resolved = aliases.get(team_name.lower(), team_name)
+    matched = next((t for t in teams if t.lower() == resolved.lower()), None)
+    if not matched:
+        raise HTTPException(status_code=404, detail=f"Team '{team_name}' not found")
+
+    result = _analyze_team_form(matched, history, teams, n=n)
+    if result is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough match history for {matched} (minimum 3 matches required).",
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1327,6 +1430,268 @@ def _calculate_form_at_match_index(team_name: str, match_index: int, history: li
     else:                                   grade = 'D'
 
     return grade, round(score, 1), streak
+
+
+def _analyze_team_form(team_name: str, history: list, teams: dict, n: int = 15):
+    """
+    Full form breakdown for a team: component scores (win/map/competition),
+    per-match contributions, a short-window trend, and plain-language
+    insights. This mirrors CSRS.py's analyze_team_form() CLI feature, with
+    the same fix already applied there: Competition Strength uses the flat
+    `opp_pts / DIMINISHING_MAX` formula (matching _calculate_form_at_match_index,
+    the function that actually produces the team's real displayed form
+    score), not a team-rating-relative threshold/buffer — using the latter
+    made the three component scores fail to sum to the real "base" score.
+
+    Returns a dict, or None if the team doesn't have enough match history
+    (minimum 3 matches).
+    """
+    team_matches = []
+    for m in history:
+        t1_name = m.get('t1', {}).get('name')
+        t2_name = m.get('t2', {}).get('name')
+        if t1_name == team_name:
+            team_matches.append(('t1', m))
+        elif t2_name == team_name:
+            team_matches.append(('t2', m))
+
+    if len(team_matches) < 3:
+        return None
+
+    recent = team_matches[-n:]
+
+    form = _calculate_form_at_match_index(team_name, len(history), history, n=n)
+    if not form:
+        return None
+    grade, score, streak = form
+
+    # Streak bonus / win-loss tally over the same window
+    streak_chars = []
+    for side, m in recent:
+        t = m.get(side, {})
+        opp = m.get('t2' if side == 't1' else 't1', {})
+        won = t.get('score', 0) > opp.get('score', 0)
+        streak_chars.append('W' if won else 'L')
+    streak_full = ''.join(streak_chars)
+
+    streak_bonus = 0.0
+    consecutive_losses = 0
+    total_wins = 0
+    total_losses = 0
+    if FORM_STREAK_BONUS_ENABLED:
+        for result in streak_full:
+            if result == 'W':
+                streak_bonus += FORM_STREAK_BONUS_PER_WIN
+                streak_bonus = min(FORM_STREAK_BONUS_MAX, streak_bonus)
+                total_wins += 1
+                consecutive_losses = 0
+            else:
+                consecutive_losses += 1
+                total_losses += 1
+                if consecutive_losses >= FORM_STREAK_LOSS_RESET_COUNT:
+                    streak_bonus = 0.0
+                    consecutive_losses = 0
+                else:
+                    streak_bonus *= 0.5
+        streak_bonus = min(FORM_STREAK_BONUS_MAX, streak_bonus)
+
+    base_score = round(score - streak_bonus, 1)
+
+    # Component breakdown (win rate / map win rate / competition strength)
+    total_weight = 0.0
+    win_weighted = 0.0
+    map_wins_weighted = 0.0
+    map_total_weighted = 0.0
+    comp_weighted = 0.0
+    raw_match_data = []
+
+    for idx, (side, m) in enumerate(recent):
+        t = m.get(side, {})
+        opp_side = 't2' if side == 't1' else 't1'
+        opp = m.get(opp_side, {})
+
+        t_score = t.get('score', 0)
+        opp_score = opp.get('score', 0)
+        opp_pts = opp.get('pts_before', 500)
+        won = t_score > opp_score
+
+        matches_ago = len(recent) - 1 - idx
+        normalized = matches_ago / max(1, len(recent) - 1)
+        recency = 1.0 - (normalized ** 2.0) * 0.85
+        recency = max(0.15, recency)
+
+        win_weighted += (1.0 if won else 0.0) * recency
+        map_wins_weighted += t_score * recency
+        map_total_weighted += (t_score + opp_score) * recency
+
+        comp_value = opp_pts / DIMINISHING_MAX
+        comp_weighted += comp_value * recency
+        total_weight += recency
+
+        raw_match_data.append({
+            'date': m.get('date', 'N/A')[:10],
+            'opponent': opp.get('name', 'Unknown'),
+            'score': f"{t_score}-{opp_score}",
+            'result': 'W' if won else 'L',
+            'won': won,
+            't_score': t_score,
+            'opp_score': opp_score,
+            'opp_rating': round(opp_pts, 1),
+            'recency': recency,
+            'comp_value': comp_value,
+        })
+
+    win_rate = win_weighted / total_weight if total_weight else 0.0
+    map_win_rate = map_wins_weighted / map_total_weighted if map_total_weighted else 0.0
+    comp_rate = comp_weighted / total_weight if total_weight else 0.0
+
+    def apply_form_compression(value, threshold=FORM_DIMINISHING_THRESHOLD,
+                                compression=FORM_DIMINISHING_COMPRESSION):
+        if not FORM_DIMINISHING_ENABLED or value <= threshold:
+            return value
+        gain = value - threshold
+        compressed_gain = gain * (1.0 - compression)
+        result = threshold + compressed_gain
+        return min(1.0, max(threshold, result))
+
+    win_rate_c = apply_form_compression(win_rate)
+    map_rate_c = apply_form_compression(map_win_rate)
+    comp_rate_c = apply_form_compression(comp_rate)
+
+    win_score = round(win_rate_c * FORM_WIN_WEIGHT, 1)
+    map_score = round(map_rate_c * FORM_MAP_WEIGHT, 1)
+    comp_score = round(comp_rate_c * FORM_COMP_WEIGHT, 1)
+
+    def _bar_pct(rate_compressed, weight):
+        return round(rate_compressed * 100, 0) if weight > 0 else 0
+
+    components = {
+        "win": {
+            "label": "Win Rate", "score": win_score, "weight": FORM_WIN_WEIGHT,
+            "pct": round(win_rate * 100, 0), "pct_compressed": round(win_rate_c * 100, 0),
+            "bar_pct": _bar_pct(win_rate_c, FORM_WIN_WEIGHT),
+            "compressed": FORM_DIMINISHING_ENABLED and win_rate > FORM_DIMINISHING_THRESHOLD,
+        },
+        "map": {
+            "label": "Map Win Rate", "score": map_score, "weight": FORM_MAP_WEIGHT,
+            "pct": round(map_win_rate * 100, 0), "pct_compressed": round(map_rate_c * 100, 0),
+            "bar_pct": _bar_pct(map_rate_c, FORM_MAP_WEIGHT),
+            "compressed": FORM_DIMINISHING_ENABLED and map_win_rate > FORM_DIMINISHING_THRESHOLD,
+        },
+        "comp": {
+            "label": "Competition Strength", "score": comp_score, "weight": FORM_COMP_WEIGHT,
+            "pct": round(comp_rate * 100, 0), "pct_compressed": round(comp_rate_c * 100, 0),
+            "bar_pct": _bar_pct(comp_rate_c, FORM_COMP_WEIGHT),
+            "compressed": FORM_DIMINISHING_ENABLED and comp_rate > FORM_DIMINISHING_THRESHOLD,
+        },
+    }
+
+    # Per-match form-point contribution
+    matches_out = []
+    for raw in raw_match_data:
+        win_contrib = (1.0 if raw['won'] else 0.0) * raw['recency'] * FORM_WIN_WEIGHT / total_weight if total_weight else 0
+        denom = raw['t_score'] + raw['opp_score']
+        map_contrib = (raw['t_score'] / denom if denom > 0 else 0) * raw['recency'] * FORM_MAP_WEIGHT / total_weight if total_weight else 0
+        comp_contrib = raw['comp_value'] * raw['recency'] * FORM_COMP_WEIGHT / total_weight if total_weight else 0
+        matches_out.append({
+            'date': raw['date'],
+            'opponent': raw['opponent'],
+            'score': raw['score'],
+            'result': raw['result'],
+            'recency': round(raw['recency'], 2),
+            'match_form': round(win_contrib + map_contrib + comp_contrib, 1),
+        })
+
+    # Trend: base-only (no streak bonus) score over the last 5/10/15 matches,
+    # same as CSRS.py — so `diff`/`arrow` reflect win/map/comp shifts, not
+    # streak-bonus timing.
+    trend = []
+    for window in (5, 10, 15):
+        if len(recent) >= window:
+            window_matches = recent[-window:]
+            w_w = w_mw = w_mt = w_c = w_t = 0.0
+            for idx, (side, m) in enumerate(window_matches):
+                t = m.get(side, {})
+                opp = m.get('t2' if side == 't1' else 't1', {})
+                matches_ago = len(window_matches) - 1 - idx
+                normalized = matches_ago / max(1, len(window_matches) - 1)
+                r = 1.0 - (normalized ** 2.0) * 0.85
+                r = max(0.15, r)
+                won = t.get('score', 0) > opp.get('score', 0)
+                w_w += (1.0 if won else 0.0) * r
+                w_mw += t.get('score', 0) * r
+                w_mt += (t.get('score', 0) + opp.get('score', 0)) * r
+                opp_pts = opp.get('pts_before', 500)
+                w_c += (opp_pts / DIMINISHING_MAX) * r
+                w_t += r
+            w_rate = w_w / w_t if w_t else 0
+            w_map = w_mw / w_mt if w_mt else 0
+            w_comp = w_c / w_t if w_t else 0
+            w_score = round(
+                apply_form_compression(w_rate) * FORM_WIN_WEIGHT +
+                apply_form_compression(w_map) * FORM_MAP_WEIGHT +
+                apply_form_compression(w_comp) * FORM_COMP_WEIGHT, 1
+            )
+            arrow = 'up' if w_score > base_score else ('down' if w_score < base_score else 'flat')
+            trend.append({'window': window, 'score': w_score, 'arrow': arrow, 'diff': round(w_score - base_score, 1)})
+
+    # Plain-language insights
+    insights = []
+    win_pct = win_rate * 100
+    if win_pct >= 80:   insights.append(f"Dominating matches ({win_pct:.0f}%)")
+    elif win_pct >= 60: insights.append(f"Consistent in matches ({win_pct:.0f}%)")
+    elif win_pct >= 40: insights.append(f"Inconsistent in matches ({win_pct:.0f}%)")
+    else:               insights.append(f"Poor performance in matches ({win_pct:.0f}%)")
+
+    map_pct = map_win_rate * 100
+    if map_pct >= 70:   insights.append(f"Dominating maps ({map_pct:.0f}%)")
+    elif map_pct >= 55: insights.append(f"Highly competitive on maps ({map_pct:.0f}%)")
+    elif map_pct >= 45: insights.append(f"Competitive on maps ({map_pct:.0f}%)")
+    else:               insights.append(f"Poor performance on maps ({map_pct:.0f}%)")
+
+    if comp_rate >= 0.90:   insights.append("Great competition")
+    elif comp_rate >= 0.75: insights.append("Okay competition")
+    else:                   insights.append("Farming bad teams")
+
+    consecutive = 1
+    for i in range(len(streak) - 2, -1, -1):
+        if streak[i] == streak[-1]:
+            consecutive += 1
+        else:
+            break
+    if streak.endswith('W'):
+        if consecutive >= 10:   insights.append(f"{consecutive}-Match legendary win streak")
+        elif consecutive >= 5:  insights.append(f"{consecutive}-Match hot win streak")
+        elif consecutive >= 3:  insights.append(f"{consecutive}-Match small win streak")
+    elif streak.endswith('L'):
+        if consecutive >= 10:   insights.append(f"{consecutive}-Match rebuild needed")
+        elif consecutive >= 5:  insights.append(f"{consecutive}-Match crisis mode")
+        elif consecutive >= 3:  insights.append(f"{consecutive}-Match skid")
+
+    total_form_points = FORM_WIN_WEIGHT + FORM_MAP_WEIGHT + FORM_COMP_WEIGHT
+
+    return {
+        "team": team_name,
+        "grade": grade,
+        "score": score,
+        "total_form_points": total_form_points,
+        "streak": streak,
+        "matches_in_window": len(recent),
+        "base_score": base_score,
+        "streak_bonus": round(streak_bonus, 1),
+        "streak_bonus_active": streak_bonus > 0,
+        "streak_wiped": (
+            streak_bonus == 0
+            and total_losses >= FORM_STREAK_LOSS_RESET_COUNT
+            and consecutive_losses >= FORM_STREAK_LOSS_RESET_COUNT
+        ),
+        "wins_in_window": total_wins,
+        "losses_in_window": total_losses,
+        "components": components,
+        "matches": matches_out,
+        "trend": trend,
+        "insights": insights,
+    }
 
 
 def _calculate_depreciation(current_rating: float, days_inactive: int,
@@ -1959,20 +2324,13 @@ def home(
             team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
         ranked_now = sorted(hist_pts.items(), key=lambda x: team_display.get(x[0], x[1]), reverse=True)
     else:
-        # Live snapshot (true "now", or the current/ongoing month in Month
-        # Summary — NOT a completed historical month). `today` here can be
-        # a future end-of-month date (e.g. viewing July while it's still
-        # July 8th), so depreciation must always be computed against the
-        # real current time, not `today`, or teams get over-depreciated
-        # against days that haven't happened yet.
-        live_now = datetime.now()
         team_display = {}
         for name, pts in teams.items():
             last = _get_last_match_date(name, index=date_index)
             if last is None:
                 team_display[name] = pts
                 continue
-            days_inactive = (live_now - last).days
+            days_inactive = (today - last).days
             team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
         ranked_now = sorted(teams.items(), key=lambda x: team_display[x[0]], reverse=True)
 

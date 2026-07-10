@@ -2270,10 +2270,6 @@ def analyze_team_form() -> None:
     map_total_weighted = 0.0
     comp_weighted = 0.0
     
-    team_rating = teams.get(team, 1000)
-    threshold = team_rating * 0.90
-    buffer = team_rating * 0.10
-    
     raw_match_data = []
     
     for idx, (side, m) in enumerate(recent):
@@ -2296,11 +2292,12 @@ def analyze_team_form() -> None:
         map_wins_weighted += t_score * recency
         map_total_weighted += (t_score + opp_score) * recency
         
-        if opp_pts >= threshold:
-            comp_value = 1.0
-        else:
-            buffered_rating = opp_pts + buffer
-            comp_value = min(1.0, max(0.0, buffered_rating / DIMINISHING_MAX))
+        # Same flat linear formula as _compute_form_from_recent (the function
+        # that actually produces the team's real, displayed form score) —
+        # previously this used a team-rating-relative threshold/buffer that
+        # didn't match, so this breakdown's numbers didn't sum to the real
+        # score shown above them.
+        comp_value = opp_pts / DIMINISHING_MAX
         
         comp_weighted += comp_value * recency
         total_weight += recency
@@ -2417,11 +2414,7 @@ def analyze_team_form() -> None:
                 w_mt += (t.get('score', 0) + opp.get('score', 0)) * r
                 
                 opp_pts = opp.get('pts_before', 500)
-                if opp_pts >= threshold:
-                    comp_value = 1.0
-                else:
-                    buffered_rating = opp_pts + buffer
-                    comp_value = min(1.0, max(0.0, buffered_rating / DIMINISHING_MAX))
+                comp_value = opp_pts / DIMINISHING_MAX
                 
                 w_c += comp_value * r
                 w_t += r

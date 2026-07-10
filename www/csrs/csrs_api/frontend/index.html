@@ -570,6 +570,10 @@ tr:last-child td { border-bottom: none; }
   justify-content: center;
   padding: 60px;
   color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
 }
 .spinner {
   width: 28px; height: 28px;
@@ -809,7 +813,7 @@ tr:last-child td { border-bottom: none; }
         <a data-page="rating-graph">Rating Graph</a>
         <a data-page="form-graph">Form Graph</a>
         <a data-page="elite">Elite Teams Over Time</a>
-        <a data-page="" class="wip">Analyse Team Form <span class="wip-tag">WIP</span></a>
+        <a data-page="form-analysis">Analyse Team Form</a>
         <a data-page="compare">Compare Teams</a>
       </div>
     </div>
@@ -880,11 +884,11 @@ tr:last-child td { border-bottom: none; }
     </span>
     <span>Form Graph</span>
   </a>
-  <a data-page="event-summary" class="more-sheet-item">
+  <a data-page="form-analysis" class="more-sheet-item">
     <span class="more-sheet-icon">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
     </span>
-    <span>Analyse Team Form <span class="wip-tag">WIP</span></span>
+    <span>Analyse Team Form</span>
   </a>
   <a data-page="compare" class="more-sheet-item">
     <span class="more-sheet-icon">
@@ -1290,6 +1294,21 @@ tr:last-child td { border-bottom: none; }
     <div id="cmp-result"></div>
   </div>
 
+  <!-- Analyse Team Form -->
+  <div class="page" id="page-form-analysis">
+    <div class="page-header"><h2>Analyse Team Form</h2></div>
+    <div class="card">
+      <div class="controls" style="margin-bottom:0">
+        <div class="search-wrap" style="display:inline-block;width:300px">
+          <input type="text" id="fa-input" placeholder="Search team…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="fa-dd"></div>
+        </div>
+        <button onclick="loadFormAnalysis()">Analyse</button>
+      </div>
+    </div>
+    <div id="fa-result"></div>
+  </div>
+
 </main>
 
 <script>
@@ -1474,6 +1493,7 @@ document.querySelectorAll('nav a[data-page]').forEach(a => {
     if (page === 'rating-graph')  { setTimeout(() => document.getElementById('rg-input').focus(), 50); }
     if (page === 'form-graph')    { setTimeout(() => document.getElementById('fg-input').focus(), 50); }
     if (page === 'compare')       { setTimeout(() => document.getElementById('cmp-t1').focus(), 50); }
+    if (page === 'form-analysis') { setTimeout(() => document.getElementById('fa-input').focus(), 50); }
   });
 });
 
@@ -2420,8 +2440,8 @@ function renderRankings(rows) {
               ${r.provisional ? `<span class="prov-badge">PROV</span>` : ''}
             </td>
             <td class="pts">${r.points.toFixed(2)}</td>
-            <td class="pts" style="color:var(--muted)">${r.peak_points.toFixed(2)}</td>
-            <td style="color:var(--muted)">${(r.peak_rank != null && r.peak_rank > 0) ? '#' + r.peak_rank : '—'}</td>
+            <td class="pts" style="color:var(--muted)" title="${r.peak_date ? 'Rating peak: ' + r.peak_date.split(' ')[0] : ''}">${r.peak_points.toFixed(2)}</td>
+            <td style="color:var(--muted)" title="${r.peak_rank_date ? 'Rank peak: ' + r.peak_rank_date.split(' ')[0] : ''}">${(r.peak_rank != null && r.peak_rank > 0) ? '#' + r.peak_rank : '—'}</td>
             <td>${sparklineSVG(r.sparkline)}</td>
           </tr>
         `).join('')}
@@ -2551,6 +2571,13 @@ function clearHistoryFilters() {
 // paths land here and render identically.
 // ---------------------------------------------------------------------------
 let ratingChart = null;
+let ratingChartRange = '3m'; // '3m' | 'all' — which view Rating History defaults to
+let positionChart = null;
+let positionChartRange = '3m'; // '3m' | 'all' — which view Position History defaults to
+let formChart = null;
+let formChartRange = '3m'; // '3m' | 'all' — which view Form History defaults to
+let recordRange = '3m'; // '3m' | 'all' — which view the Record tile defaults to
+let currentTeamDetail = null; // last-loaded team API response, so toggling range doesn't refetch
 
 async function openTeam(name) {
   showPage('team-details');
@@ -2566,7 +2593,9 @@ function goToTeamResults(name) {
 }
 
 function renderTeamDetail(d) {
-  const wl = d.total_matches > 0 ? `${d.wins}W ${d.losses}L (${(d.wins/d.total_matches*100).toFixed(0)}%)` : '—';
+  const wlAll = d.total_matches > 0 ? `${d.wins}W ${d.losses}L (${(d.wins/d.total_matches*100).toFixed(0)}%)` : '—';
+  const m3m = d.wins_3m + d.losses_3m;
+  const wl3m = m3m > 0 ? `${d.wins_3m}W ${d.losses_3m}L (${(d.wins_3m/m3m*100).toFixed(0)}%)` : '—';
   const recentResults = [...d.timeline].reverse().slice(0, 5);
   const html = `
     <div class="team-detail-header" style="margin-top:16px">
@@ -2585,23 +2614,73 @@ function renderTeamDetail(d) {
         <div class="value">#${d.rank}</div>
       </div>
       <div class="stat-card">
-        <div class="label">Record</div>
-        <div class="value" style="font-size:1.1rem;padding-top:8px">${wl}</div>
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div class="label">Record</div>
+          <div style="display:flex;gap:4px" id="record-range-toggle">
+            <button class="${recordRange === '3m' ? '' : 'secondary'}" style="padding:2px 7px;font-size:0.65rem" onclick="setRecordRange('3m')">3M</button>
+            <button class="${recordRange === 'all' ? '' : 'secondary'}" style="padding:2px 7px;font-size:0.65rem" onclick="setRecordRange('all')">All</button>
+          </div>
+        </div>
+        <div class="value" id="record-value" style="font-size:1.1rem;padding-top:8px">${recordRange === '3m' ? wl3m : wlAll}</div>
       </div>
       <div class="stat-card">
         <div class="label">Peak Rating</div>
         <div class="value">${d.peak.points ? d.peak.points.toFixed(1) : '—'}</div>
-        <div class="sub">${d.peak.date ? d.peak.date.split(' ')[0] + (d.peak.rank ? ' · #' + d.peak.rank : '') : ''}</div>
+        <div class="sub">${d.peak.date ? d.peak.date.split(' ')[0] : ''}</div>
       </div>
       <div class="stat-card">
         <div class="label">Peak Rank</div>
         <div class="value">${d.peak.rank ? '#' + d.peak.rank : '—'}</div>
-        <div class="sub">${d.peak.date ? d.peak.date.split(' ')[0] : ''}</div>
+        <div class="sub">${d.peak.rank_date ? d.peak.rank_date.split(' ')[0] : ''}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Form (3 months)</div>
+        ${d.form ? `
+          <div style="display:flex;align-items:center;gap:10px;padding-top:6px">
+            <span style="font-size:1.6rem;font-weight:700;color:${tdFormColor(d.form.grade)}">${d.form.grade}</span>
+            <span style="font-size:0.95rem;color:var(--muted)">${d.form.score.toFixed(1)}</span>
+            <div style="display:flex;gap:4px;margin-left:4px">
+              ${d.form.recent.split('').map(c => `<span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:${c === 'W' ? 'var(--green)' : 'var(--red)'};font-size:0.55rem;font-weight:700;color:#fff;line-height:18px;text-align:center">${c}</span>`).join('')}
+            </div>
+          </div>
+        ` : `<div class="value" style="font-size:0.85rem;color:var(--muted);padding-top:8px">—</div>`}
       </div>
     </div>
     <div class="card">
-      <h3 style="margin-bottom:12px;font-size:1rem">Rating History</h3>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+        <h3 style="font-size:1rem">Rating History</h3>
+        <div style="display:flex;gap:6px" id="rating-range-toggle">
+          <button class="${ratingChartRange === '3m' ? '' : 'secondary'}" style="padding:5px 12px;font-size:0.78rem" onclick="setRatingRange('3m')">3 Months</button>
+          <button class="${ratingChartRange === 'all' ? '' : 'secondary'}" style="padding:5px 12px;font-size:0.78rem" onclick="setRatingRange('all')">All Time</button>
+        </div>
+      </div>
       <div class="chart-wrap"><canvas id="rating-chart"></canvas></div>
+      <div id="rating-chart-note" style="color:var(--muted);font-size:0.8rem;margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:2px">
+        <h3 style="font-size:1rem">Position History</h3>
+        <div style="display:flex;gap:6px" id="position-range-toggle">
+          <button class="${positionChartRange === '3m' ? '' : 'secondary'}" style="padding:5px 12px;font-size:0.78rem" onclick="setPositionRange('3m')">3 Months</button>
+          <button class="${positionChartRange === 'all' ? '' : 'secondary'}" style="padding:5px 12px;font-size:0.78rem" onclick="setPositionRange('all')">All Time</button>
+        </div>
+      </div>
+      <div style="color:var(--muted);font-size:0.8rem;margin-bottom:10px">
+        Current #${d.rank}${d.peak.rank ? ` · Peak #${d.peak.rank}${d.peak.rank_date ? ' (' + d.peak.rank_date.split(' ')[0] + ')' : ''}` : ''}
+      </div>
+      <div class="chart-wrap"><canvas id="position-chart"></canvas></div>
+      <div id="position-chart-note" style="color:var(--muted);font-size:0.8rem;margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+        <h3 style="font-size:1rem">Form History</h3>
+        <div style="display:flex;gap:6px" id="form-range-toggle">
+          <button class="${formChartRange === '3m' ? '' : 'secondary'}" style="padding:5px 12px;font-size:0.78rem" onclick="setFormRange('3m')">3 Months</button>
+          <button class="${formChartRange === 'all' ? '' : 'secondary'}" style="padding:5px 12px;font-size:0.78rem" onclick="setFormRange('all')">All Time</button>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="form-chart"></canvas></div>
+      <div id="form-chart-note" style="color:var(--muted);font-size:0.8rem;margin-top:8px"></div>
     </div>
     <div class="card" style="padding:0">
       <div style="padding:16px 20px 0;font-size:1rem;font-weight:600">Results</div>
@@ -2634,50 +2713,346 @@ function renderTeamDetail(d) {
   `;
   document.getElementById('td-result').innerHTML = html;
 
-  // Draw chart (all-time rating history from the full match timeline)
+  currentTeamDetail = d;
+  drawRatingChart(d, ratingChartRange);
+  drawPositionChart(d, positionChartRange);
+  drawFormChart(d, formChartRange);
+}
+
+function setRecordRange(range) {
+  recordRange = range;
+  const btns = document.querySelectorAll('#record-range-toggle button');
+  btns.forEach(b => {
+    const is3m = b.textContent.trim() === '3M';
+    const isActive = (range === '3m' && is3m) || (range === 'all' && !is3m);
+    b.classList.toggle('secondary', !isActive);
+  });
+  if (!currentTeamDetail) return;
+  const d = currentTeamDetail;
+  const m3m = d.wins_3m + d.losses_3m;
+  const wl3m = m3m > 0 ? `${d.wins_3m}W ${d.losses_3m}L (${(d.wins_3m/m3m*100).toFixed(0)}%)` : '—';
+  const wlAll = d.total_matches > 0 ? `${d.wins}W ${d.losses}L (${(d.wins/d.total_matches*100).toFixed(0)}%)` : '—';
+  document.getElementById('record-value').textContent = range === '3m' ? wl3m : wlAll;
+}
+
+function setPositionRange(range) {
+  positionChartRange = range;
+  const btns = document.querySelectorAll('#position-range-toggle button');
+  btns.forEach(b => {
+    const is3m = b.textContent.trim() === '3 Months';
+    const isActive = (range === '3m' && is3m) || (range === 'all' && !is3m);
+    b.classList.toggle('secondary', !isActive);
+  });
+  if (currentTeamDetail) drawPositionChart(currentTeamDetail, range);
+}
+
+function setRatingRange(range) {
+  ratingChartRange = range;
+  const btns = document.querySelectorAll('#rating-range-toggle button');
+  btns.forEach(b => {
+    const is3m = b.textContent.trim() === '3 Months';
+    const isActive = (range === '3m' && is3m) || (range === 'all' && !is3m);
+    b.classList.toggle('secondary', !isActive);
+  });
+  if (currentTeamDetail) drawRatingChart(currentTeamDetail, range);
+}
+
+function setFormRange(range) {
+  formChartRange = range;
+  const btns = document.querySelectorAll('#form-range-toggle button');
+  btns.forEach(b => {
+    const is3m = b.textContent.trim() === '3 Months';
+    const isActive = (range === '3m' && is3m) || (range === 'all' && !is3m);
+    b.classList.toggle('secondary', !isActive);
+  });
+  if (currentTeamDetail) drawFormChart(currentTeamDetail, range);
+}
+
+function drawRatingChart(d, range) {
   if (ratingChart) { ratingChart.destroy(); ratingChart = null; }
-  const labels = d.timeline.map(m => m.date.split(' ')[0]);
-  const values = d.timeline.map(m => m.pts_after);
-  const ctx = document.getElementById('rating-chart').getContext('2d');
-  ratingChart = new Chart(ctx, {
+  const noteEl = document.getElementById('rating-chart-note');
+  if (noteEl) noteEl.textContent = '';
+
+  if (range === '3m') {
+    const ds = d.daily_series || [];
+    if (!ds.length) {
+      if (noteEl) noteEl.textContent = 'Not enough recent (3-month) match data to chart.';
+      return;
+    }
+    const labels = ds.map(p => p.date);
+    const values = ds.map(p => p.pts);
+    const ctx = document.getElementById('rating-chart').getContext('2d');
+    ratingChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Rating',
+          data: values,
+          borderColor: '#f5a623',
+          backgroundColor: 'rgba(245,166,35,0.08)',
+          borderWidth: 2,
+          pointRadius: ds.map(p => p.match ? 4 : 0),
+          pointBackgroundColor: ds.map(p => p.match ? (p.won ? '#4caf82' : '#e05a5a') : 'transparent'),
+          pointBorderColor: '#f5a623',
+          tension: 0,
+          fill: true,
+          spanGaps: false,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: i => ds[i[0].dataIndex].date,
+              afterLabel: i => ds[i.dataIndex].match ? `${ds[i.dataIndex].opponent} (${ds[i.dataIndex].score})` : '',
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: '#7a7f8e', maxTicksLimit: 8,
+              callback: (val, idx) => ds[idx] && ds[idx].match ? labels[idx] : null,
+            },
+            grid: { color: '#2a2d35' }
+          },
+          y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
+        }
+      }
+    });
+  } else {
+    // All-time: raw match-by-match points (no day-by-day depreciation interpolation)
+    const labels = d.timeline.map(m => m.date.split(' ')[0]);
+    const values = d.timeline.map(m => m.pts_after);
+    const ctx = document.getElementById('rating-chart').getContext('2d');
+    ratingChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Rating',
+          data: values,
+          borderColor: '#f5a623',
+          backgroundColor: 'rgba(245,166,35,0.08)',
+          borderWidth: 2,
+          pointRadius: 3,
+          pointBackgroundColor: '#f5a623',
+          tension: 0.3,
+          fill: true,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: i => d.timeline[i[0].dataIndex].date,
+              afterLabel: i => d.timeline[i.dataIndex].event,
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
+          y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
+        }
+      }
+    });
+  }
+}
+
+function drawPositionChart(d, range) {
+  if (positionChart) { positionChart.destroy(); positionChart = null; }
+  const noteEl = document.getElementById('position-chart-note');
+  if (noteEl) noteEl.textContent = '';
+
+  const full = d.rank_history || [];
+  if (!full.length) {
+    if (noteEl) noteEl.textContent = 'Not enough history to chart position.';
+    return;
+  }
+
+  let points = full;
+  if (range === '3m') {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 90);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    points = full.filter(p => p.date >= cutoffStr);
+    if (!points.length) {
+      if (noteEl) noteEl.textContent = 'Not enough recent (3-month) match activity to chart position.';
+      return;
+    }
+  }
+
+  const labels = points.map(p => p.date);
+  const values = points.map(p => p.rank);
+  const worst = Math.max(...values);
+  const ctx = document.getElementById('position-chart').getContext('2d');
+  positionChart = new Chart(ctx, {
     type: 'line',
     data: {
       labels,
       datasets: [{
-        label: 'Rating',
+        label: 'Rank',
         data: values,
-        borderColor: '#f5a623',
-        backgroundColor: 'rgba(245,166,35,0.08)',
+        borderColor: '#c26dfb',
+        backgroundColor: 'rgba(194,109,251,0.08)',
         borderWidth: 2,
-        pointRadius: 3,
-        pointBackgroundColor: '#f5a623',
-        tension: 0.3,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        pointBackgroundColor: '#c26dfb',
+        tension: 0,
         fill: true,
+        stepped: false,
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            title: i => d.timeline[i[0].dataIndex].date,
-            afterLabel: i => d.timeline[i.dataIndex].event,
+            title: i => points[i[0].dataIndex].date,
+            label: i => `#${points[i.dataIndex].rank}`,
           }
         }
       },
       scales: {
-        x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
-        y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
+        x: {
+          ticks: { color: '#7a7f8e', maxTicksLimit: 8 },
+          grid: { color: '#2a2d35' }
+        },
+        y: {
+          reverse: true,
+          min: 1,
+          max: worst,
+          ticks: { color: '#7a7f8e', precision: 0 },
+          grid: { color: '#2a2d35' },
+        }
       }
     }
   });
 }
 
-// ---------------------------------------------------------------------------
-// Simulation
-// ---------------------------------------------------------------------------
+function drawFormChart(d, range) {
+  if (formChart) { formChart.destroy(); formChart = null; }
+  const noteEl = document.getElementById('form-chart-note');
+  if (noteEl) noteEl.textContent = '';
+
+  if (range === '3m') {
+    const ds = (d.daily_series || []).filter(p => p.form_score != null);
+    if (!ds.length) {
+      if (noteEl) noteEl.textContent = 'Not enough recent (3-month) match data to chart form.';
+      return;
+    }
+    const full = d.daily_series || [];
+    const labels = full.map(p => p.date);
+    const values = full.map(p => p.form_score);
+    const ctx = document.getElementById('form-chart').getContext('2d');
+    formChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Form',
+          data: values,
+          borderColor: '#4a9eff',
+          backgroundColor: 'rgba(74,158,255,0.08)',
+          borderWidth: 2,
+          pointRadius: full.map(p => p.match ? 4 : 0),
+          pointBackgroundColor: full.map(p => p.match ? (p.won ? '#4caf82' : '#e05a5a') : 'transparent'),
+          pointBorderColor: '#4a9eff',
+          tension: 0,
+          fill: true,
+          spanGaps: false,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: i => full[i[0].dataIndex].date,
+              label: i => `Form: ${full[i.dataIndex].form_grade || ''} (${full[i.dataIndex].form_score})`,
+              afterLabel: i => full[i.dataIndex].match ? `${full[i.dataIndex].opponent} (${full[i.dataIndex].score})` : '',
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: '#7a7f8e', maxTicksLimit: 8,
+              callback: (val, idx) => full[idx] && full[idx].match ? labels[idx] : null,
+            },
+            grid: { color: '#2a2d35' }
+          },
+          y: { min: 0, max: 100, ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
+        }
+      }
+    });
+  } else {
+    // All-time: standard fixed-n=15 form score attached to every match in
+    // the full timeline (form_score_all) — see get_team() in main.py.
+    const withForm = d.timeline.filter(m => m.form_score_all != null);
+    if (!withForm.length) {
+      if (noteEl) noteEl.textContent = 'Not enough match history to chart form.';
+      return;
+    }
+    const labels = d.timeline.map(m => m.date.split(' ')[0]);
+    const values = d.timeline.map(m => m.form_score_all != null ? m.form_score_all : null);
+    const ctx = document.getElementById('form-chart').getContext('2d');
+    formChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Form',
+          data: values,
+          borderColor: '#4a9eff',
+          backgroundColor: 'rgba(74,158,255,0.08)',
+          borderWidth: 2,
+          pointRadius: 3,
+          pointBackgroundColor: '#4a9eff',
+          tension: 0.3,
+          fill: true,
+          spanGaps: false,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: i => d.timeline[i[0].dataIndex].date,
+              label: i => {
+                const m = d.timeline[i.dataIndex];
+                return m.form_score_all != null ? `Form: ${m.form_grade_all} (${m.form_score_all})` : 'No form data yet';
+              },
+              afterLabel: i => d.timeline[i.dataIndex].event,
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
+          y: { min: 0, max: 100, ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
+        }
+      }
+    });
+  }
+}
 async function runSim() {
   const t1 = document.getElementById('sim-t1').value.trim();
   const t2 = document.getElementById('sim-t2').value.trim();
@@ -3096,6 +3471,116 @@ function renderCompare(d1, d2) {
 }
 
 // ---------------------------------------------------------------------------
+// Analyse Team Form — component breakdown, per-match contribution, trend
+// ---------------------------------------------------------------------------
+attachAutocomplete('fa-input', 'fa-dd', 'team', function(val) {
+  loadFormAnalysis(val);
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  var inp = document.getElementById('fa-input');
+  if (inp) inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadFormAnalysis(); });
+});
+
+async function loadFormAnalysis(name) {
+  name = name || document.getElementById('fa-input').value.trim();
+  if (!name) return;
+  document.getElementById('fa-input').value = name;
+  setEl('fa-result', '<div class="loading"><div class="spinner"></div> Loading…</div>');
+  try {
+    const d = await api(`/api/team/${encodeURIComponent(name)}/form-analysis`);
+    renderFormAnalysis(d);
+  } catch(e) {
+    setError('fa-result', e.message);
+  }
+}
+
+function _faBar(comp) {
+  const pctLabel = comp.compressed ? `${comp.pct.toFixed(0)}%\u2192${comp.pct_compressed.toFixed(0)}%` : `${comp.pct.toFixed(0)}%`;
+  return `
+    <div style="margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;font-size:0.85rem;margin-bottom:4px">
+        <span>${comp.label}</span>
+        <span style="color:var(--muted)">${comp.score.toFixed(1)} / ${comp.weight.toFixed(1)}  ·  ${pctLabel}</span>
+      </div>
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;height:10px;overflow:hidden">
+        <div style="width:${comp.bar_pct}%;height:100%;background:var(--accent)"></div>
+      </div>
+    </div>`;
+}
+
+function renderFormAnalysis(d) {
+  const arrowChar = a => a === 'up' ? '\u2191' : a === 'down' ? '\u2193' : '\u2192';
+  const arrowColor = a => a === 'up' ? 'var(--green)' : a === 'down' ? 'var(--red)' : 'var(--muted)';
+
+  const streakLine = d.streak_bonus_active
+    ? `+${d.streak_bonus.toFixed(1)} Win Streak Bonus (${d.wins_in_window}W/${d.losses_in_window}L in window)  ·  Base: ${d.base_score.toFixed(1)}`
+    : d.streak_wiped
+      ? `Streak Bonus Wiped (consecutive losses)  ·  Base: ${d.base_score.toFixed(1)}`
+      : `No Active Bonus  ·  Base: ${d.base_score.toFixed(1)}`;
+
+  const html = `
+    <div class="team-detail-header" style="margin-top:16px">
+      <h2>${d.team}</h2>
+      <span class="rank-badge">${d.grade}</span>
+      <span class="rank-badge" style="color:var(--accent)">${d.score.toFixed(1)} / ${d.total_form_points.toFixed(1)}</span>
+      <span class="rank-badge" style="font-size:0.78rem">Streak: ${d.streak}</span>
+    </div>
+    <div style="color:var(--muted);font-size:0.82rem;margin:-8px 0 16px 2px">${streakLine}</div>
+
+    <div class="card">
+      <h3 style="margin-bottom:14px;font-size:1rem">Components</h3>
+      ${_faBar(d.components.win)}
+      ${_faBar(d.components.map)}
+      ${_faBar(d.components.comp)}
+    </div>
+
+    ${d.trend.length ? `
+    <div class="card">
+      <h3 style="margin-bottom:12px;font-size:1rem">Trend</h3>
+      <div style="display:flex;gap:24px;flex-wrap:wrap">
+        ${d.trend.map(t => `
+          <div>
+            <div style="color:var(--muted);font-size:0.78rem">Last ${t.window}</div>
+            <div style="font-size:1.05rem;font-weight:600;color:${arrowColor(t.arrow)}">
+              ${t.score.toFixed(1)} ${arrowChar(t.arrow)} ${t.diff >= 0 ? '+' : ''}${t.diff.toFixed(1)}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      <div style="color:var(--muted);font-size:0.75rem;margin-top:10px">vs. base score (excludes streak bonus)</div>
+    </div>` : ''}
+
+    <div class="card">
+      <h3 style="margin-bottom:8px;font-size:1rem">Insights</h3>
+      <ul style="margin:0;padding-left:20px;color:var(--text);font-size:0.88rem;line-height:1.7">
+        ${d.insights.map(i => `<li>${i}</li>`).join('')}
+      </ul>
+    </div>
+
+    <div class="card" style="padding:0">
+      <div style="padding:16px 20px 0;font-size:1rem;font-weight:600">Matches in Window (${d.matches_in_window})</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Date</th><th>Opponent</th><th>Score</th><th>Result</th><th>Form Pts</th></tr></thead>
+          <tbody>
+            ${[...d.matches].reverse().map(m => `
+              <tr>
+                <td style="color:var(--muted);font-size:0.8rem;white-space:nowrap">${m.date}</td>
+                <td class="team-link" onclick="openTeam('${m.opponent.replace(/'/g,"\\'")}')">${m.opponent}</td>
+                <td class="${m.result === 'W' ? 'win-badge' : 'loss-badge'}">${m.score}</td>
+                <td class="${m.result === 'W' ? 'win-badge' : 'loss-badge'}">${m.result}</td>
+                <td>${m.match_form.toFixed(1)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  setEl('fa-result', html);
+}
+
+// ---------------------------------------------------------------------------
 // Elite Over Time
 // ---------------------------------------------------------------------------
 let eliteChart = null;
@@ -3504,6 +3989,7 @@ document.querySelectorAll('.more-sheet-item[data-page]').forEach(a => {
     if (page === 'rating-graph') { setTimeout(() => document.getElementById('rg-input').focus(), 50); }
     if (page === 'form-graph')   { setTimeout(() => document.getElementById('fg-input').focus(), 50); }
     if (page === 'compare')      { setTimeout(() => document.getElementById('cmp-t1').focus(), 50); }
+    if (page === 'form-analysis') { setTimeout(() => document.getElementById('fa-input').focus(), 50); }
   });
 });
 
@@ -3660,6 +4146,10 @@ async function loadTeamDetails(name) {
   el.innerHTML = '<div class="loading"><div class="spinner"></div> Loading\u2026</div>';
   try {
     var d = await api('/api/team/' + encodeURIComponent(name));
+    ratingChartRange = '3m';
+    positionChartRange = '3m';
+    formChartRange = '3m';
+    recordRange = '3m';
     renderTeamDetail(d);
   } catch(e) {
     el.innerHTML = '<div class="error-msg">' + e.message + '</div>';
