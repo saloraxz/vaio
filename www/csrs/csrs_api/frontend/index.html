@@ -159,6 +159,11 @@ nav > a.wip { cursor: default; opacity: 0.6; pointer-events: none; }
 #main {
   margin-left: var(--sidebar-w);
   flex: 1;
+  min-width: 0; /* flex items default to min-width:auto, which lets a wide
+                   child (like the rankings table) force #main — and the
+                   whole page — wider than the viewport instead of
+                   scrolling internally. This is what caused the page to
+                   appear to "zoom in" / cut off content on the right. */
   min-height: 100vh;
   padding: 28px 32px;
 }
@@ -199,6 +204,9 @@ nav > a.wip { cursor: default; opacity: 0.6; pointer-events: none; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px 20px;
+  min-width: 0; /* grid items default to min-width:auto, which lets a wide
+                   child (e.g. a row of form-result dots) force the card
+                   past its own border instead of wrapping inside it. */
 }
 .stat-card .label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
 .stat-card .value { font-size: 1.6rem; font-weight: 700; margin-top: 4px; color: var(--accent); }
@@ -521,6 +529,7 @@ tr:last-child td { border-bottom: none; }
   display: flex;
   align-items: baseline;
   gap: 16px;
+  flex-wrap: wrap;
   margin-bottom: 20px;
 }
 .team-detail-header h2 { font-size: 2rem; }
@@ -531,6 +540,8 @@ tr:last-child td { border-bottom: none; }
   padding: 4px 12px;
   font-size: 0.9rem;
   color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .chart-wrap {
@@ -669,6 +680,18 @@ tr:last-child td { border-bottom: none; }
 @media (max-width: 700px) {
   #sidebar { display: none; }
   #main { margin-left: 0; padding: 16px; padding-bottom: 84px; }
+
+  /* The rankings table has more columns than a phone screen can show at
+     once. Rather than let it scroll sideways, drop the two columns that
+     duplicate info already on the team detail page (Peak / Peak Rank) —
+     tapping a team still gets you that. Keeps #, Team, Points, and the
+     30d trend visible without any horizontal scroll. */
+  #rankings-table .col-peak,
+  #rankings-table .col-peak-rank {
+    display: none;
+  }
+  #rankings-table table { min-width: 0; }
+  #rankings-table th, #rankings-table td { padding: 10px 8px; }
 
   /* iOS/Android zoom in on focus when a form field's font-size is under
      16px — bump it here (mobile-only) so opening any search/filter field
@@ -2425,8 +2448,8 @@ function renderRankings(rows) {
         <th>#</th>
         <th>Team</th>
         <th>Points</th>
-        <th>Peak</th>
-        <th>Peak Rank</th>
+        <th class="col-peak">Peak</th>
+        <th class="col-peak-rank">Peak Rank</th>
         <th>30d Trend</th>
       </tr></thead>
       <tbody>
@@ -2440,9 +2463,9 @@ function renderRankings(rows) {
               ${r.provisional ? `<span class="prov-badge">PROV</span>` : ''}
             </td>
             <td class="pts">${r.points.toFixed(2)}</td>
-            <td class="pts" style="color:var(--muted)" title="${r.peak_date ? 'Rating peak: ' + r.peak_date.split(' ')[0] : ''}">${r.peak_points.toFixed(2)}</td>
-            <td style="color:var(--muted)" title="${r.peak_rank_date ? 'Rank peak: ' + r.peak_rank_date.split(' ')[0] : ''}">${(r.peak_rank != null && r.peak_rank > 0) ? '#' + r.peak_rank : '—'}</td>
-            <td>${sparklineSVG(r.sparkline)}</td>
+            <td class="pts col-peak" style="color:var(--muted)" title="${r.peak_date ? 'Rating peak: ' + r.peak_date.split(' ')[0] : ''}">${r.peak_points.toFixed(2)}</td>
+            <td class="col-peak-rank" style="color:var(--muted)" title="${r.peak_rank_date ? 'Rank peak: ' + r.peak_rank_date.split(' ')[0] : ''}">${(r.peak_rank != null && r.peak_rank > 0) ? '#' + r.peak_rank : '—'}</td>
+            <td>${sparklineSVG(r.sparkline, window.innerWidth <= 700 ? 46 : 80)}</td>
           </tr>
         `).join('')}
       </tbody>
@@ -2636,12 +2659,12 @@ function renderTeamDetail(d) {
       <div class="stat-card">
         <div class="label">Form (3 months)</div>
         ${d.form ? `
-          <div style="display:flex;align-items:center;gap:10px;padding-top:6px">
+          <div style="display:flex;align-items:baseline;gap:8px;padding-top:6px">
             <span style="font-size:1.6rem;font-weight:700;color:${tdFormColor(d.form.grade)}">${d.form.grade}</span>
             <span style="font-size:0.95rem;color:var(--muted)">${d.form.score.toFixed(1)}</span>
-            <div style="display:flex;gap:4px;margin-left:4px">
-              ${d.form.recent.split('').map(c => `<span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:${c === 'W' ? 'var(--green)' : 'var(--red)'};font-size:0.55rem;font-weight:700;color:#fff;line-height:18px;text-align:center">${c}</span>`).join('')}
-            </div>
+          </div>
+          <div style="display:flex;gap:4px;margin-top:6px">
+            ${d.form.recent.split('').map(c => `<span style="flex-shrink:0;display:inline-block;width:18px;height:18px;border-radius:50%;background:${c === 'W' ? 'var(--green)' : 'var(--red)'};font-size:0.55rem;font-weight:700;color:#fff;line-height:18px;text-align:center">${c}</span>`).join('')}
           </div>
         ` : `<div class="value" style="font-size:0.85rem;color:var(--muted);padding-top:8px">—</div>`}
       </div>
@@ -2774,13 +2797,13 @@ function drawRatingChart(d, range) {
   if (noteEl) noteEl.textContent = '';
 
   if (range === '3m') {
-    const ds = d.daily_series || [];
+    const ds = d.timeline_3m || [];
     if (!ds.length) {
       if (noteEl) noteEl.textContent = 'Not enough recent (3-month) match data to chart.';
       return;
     }
-    const labels = ds.map(p => p.date);
-    const values = ds.map(p => p.pts);
+    const labels = ds.map(p => p.date.split(' ')[0]);
+    const values = ds.map(p => p.pts_after);
     const ctx = document.getElementById('rating-chart').getContext('2d');
     ratingChart = new Chart(ctx, {
       type: 'line',
@@ -2792,35 +2815,26 @@ function drawRatingChart(d, range) {
           borderColor: '#f5a623',
           backgroundColor: 'rgba(245,166,35,0.08)',
           borderWidth: 2,
-          pointRadius: ds.map(p => p.match ? 4 : 0),
-          pointBackgroundColor: ds.map(p => p.match ? (p.won ? '#4caf82' : '#e05a5a') : 'transparent'),
-          pointBorderColor: '#f5a623',
-          tension: 0,
+          pointRadius: 3,
+          pointBackgroundColor: '#f5a623',
+          tension: 0.3,
           fill: true,
-          spanGaps: false,
         }]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: { display: false },
           tooltip: {
             callbacks: {
               title: i => ds[i[0].dataIndex].date,
-              afterLabel: i => ds[i.dataIndex].match ? `${ds[i.dataIndex].opponent} (${ds[i.dataIndex].score})` : '',
+              afterLabel: i => ds[i.dataIndex].event,
             }
           }
         },
         scales: {
-          x: {
-            ticks: {
-              color: '#7a7f8e', maxTicksLimit: 8,
-              callback: (val, idx) => ds[idx] && ds[idx].match ? labels[idx] : null,
-            },
-            grid: { color: '#2a2d35' }
-          },
+          x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
           y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
         }
       }
@@ -2948,14 +2962,13 @@ function drawFormChart(d, range) {
   if (noteEl) noteEl.textContent = '';
 
   if (range === '3m') {
-    const ds = (d.daily_series || []).filter(p => p.form_score != null);
+    const ds = (d.timeline_3m || []).filter(m => m.form_score != null);
     if (!ds.length) {
       if (noteEl) noteEl.textContent = 'Not enough recent (3-month) match data to chart form.';
       return;
     }
-    const full = d.daily_series || [];
-    const labels = full.map(p => p.date);
-    const values = full.map(p => p.form_score);
+    const labels = ds.map(m => m.date.split(' ')[0]);
+    const values = ds.map(m => m.form_score);
     const ctx = document.getElementById('form-chart').getContext('2d');
     formChart = new Chart(ctx, {
       type: 'line',
@@ -2967,36 +2980,27 @@ function drawFormChart(d, range) {
           borderColor: '#4a9eff',
           backgroundColor: 'rgba(74,158,255,0.08)',
           borderWidth: 2,
-          pointRadius: full.map(p => p.match ? 4 : 0),
-          pointBackgroundColor: full.map(p => p.match ? (p.won ? '#4caf82' : '#e05a5a') : 'transparent'),
-          pointBorderColor: '#4a9eff',
-          tension: 0,
+          pointRadius: 3,
+          pointBackgroundColor: '#4a9eff',
+          tension: 0.3,
           fill: true,
-          spanGaps: false,
         }]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: { display: false },
           tooltip: {
             callbacks: {
-              title: i => full[i[0].dataIndex].date,
-              label: i => `Form: ${full[i.dataIndex].form_grade || ''} (${full[i.dataIndex].form_score})`,
-              afterLabel: i => full[i.dataIndex].match ? `${full[i.dataIndex].opponent} (${full[i.dataIndex].score})` : '',
+              title: i => ds[i[0].dataIndex].date,
+              label: i => `Form: ${ds[i.dataIndex].form_grade || ''} (${ds[i.dataIndex].form_score})`,
+              afterLabel: i => `${ds[i.dataIndex].opponent} (${ds[i.dataIndex].score})`,
             }
           }
         },
         scales: {
-          x: {
-            ticks: {
-              color: '#7a7f8e', maxTicksLimit: 8,
-              callback: (val, idx) => full[idx] && full[idx].match ? labels[idx] : null,
-            },
-            grid: { color: '#2a2d35' }
-          },
+          x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
           y: { min: 0, max: 100, ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
         }
       }
@@ -3512,6 +3516,11 @@ function _faBar(comp) {
 function renderFormAnalysis(d) {
   const arrowChar = a => a === 'up' ? '\u2191' : a === 'down' ? '\u2193' : '\u2192';
   const arrowColor = a => a === 'up' ? 'var(--green)' : a === 'down' ? 'var(--red)' : 'var(--muted)';
+  // Whole-number totals (e.g. 100) shouldn't show a redundant ".0".
+  const fmtNum = n => (n % 1 === 0) ? n.toString() : n.toFixed(1);
+  const streakColored = [...d.streak].map(c =>
+    `<span style="color:${c === 'W' ? 'var(--green)' : 'var(--red)'}">${c}</span>`
+  ).join('');
 
   const streakLine = d.streak_bonus_active
     ? `+${d.streak_bonus.toFixed(1)} Win Streak Bonus (${d.wins_in_window}W/${d.losses_in_window}L in window)  ·  Base: ${d.base_score.toFixed(1)}`
@@ -3522,9 +3531,9 @@ function renderFormAnalysis(d) {
   const html = `
     <div class="team-detail-header" style="margin-top:16px">
       <h2>${d.team}</h2>
-      <span class="rank-badge">${d.grade}</span>
-      <span class="rank-badge" style="color:var(--accent)">${d.score.toFixed(1)} / ${d.total_form_points.toFixed(1)}</span>
-      <span class="rank-badge" style="font-size:0.78rem">Streak: ${d.streak}</span>
+      <span class="rank-badge" style="color:${tdFormColor(d.grade)};font-weight:700">${d.grade}</span>
+      <span class="rank-badge" style="color:var(--accent)">${d.score.toFixed(1)} / ${fmtNum(d.total_form_points)}</span>
+      <span class="rank-badge" style="font-size:0.78rem;font-family:monospace;letter-spacing:1px">Streak: ${streakColored}</span>
     </div>
     <div style="color:var(--muted);font-size:0.82rem;margin:-8px 0 16px 2px">${streakLine}</div>
 
@@ -3550,13 +3559,6 @@ function renderFormAnalysis(d) {
       </div>
       <div style="color:var(--muted);font-size:0.75rem;margin-top:10px">vs. base score (excludes streak bonus)</div>
     </div>` : ''}
-
-    <div class="card">
-      <h3 style="margin-bottom:8px;font-size:1rem">Insights</h3>
-      <ul style="margin:0;padding-left:20px;color:var(--text);font-size:0.88rem;line-height:1.7">
-        ${d.insights.map(i => `<li>${i}</li>`).join('')}
-      </ul>
-    </div>
 
     <div class="card" style="padding:0">
       <div style="padding:16px 20px 0;font-size:1rem;font-weight:600">Matches in Window (${d.matches_in_window})</div>

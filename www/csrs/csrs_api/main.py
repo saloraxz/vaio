@@ -861,7 +861,7 @@ def get_team(team_name: str):
     form_data = None
     if first_3m_global_idx is not None:
         # Restrict streak/score to 3-month-window matches only
-        form_n = min(15, len(timeline_3m))
+        form_n = len(timeline_3m) if timeline_3m else 15
         form_3m = _calculate_form_at_match_index(
             matched, len(history), history,
             n=form_n
