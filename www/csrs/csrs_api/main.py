@@ -749,6 +749,53 @@ def get_rankings(
 
 
 # ---------------------------------------------------------------------------
+# Form rankings endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/form-rankings")
+def get_form_rankings(
+    limit: int = Query(50, ge=1, le=200),
+    search: str = Query("", description="Filter by team name"),
+):
+    """
+    Same idea as /api/rankings, but ordered by current form score (the same
+    weighted win/map/competition + streak score shown on the team form
+    analysis page) instead of raw/depreciated rating points.
+    """
+    data = load_data()
+    teams: dict = data.get("teams", {})
+    provisional: dict = data.get("provisional_teams", {})
+    history: list = data.get("history", [])
+
+    scored = []
+    for name in teams:
+        f = _calculate_form_at_match_index(name, len(history), history)
+        if not f:
+            continue  # not enough match history yet for a form score
+        grade, score, streak = f
+        scored.append((name, grade, score, streak))
+
+    # Highest form score first; ties broken alphabetically for stability.
+    scored.sort(key=lambda x: (-x[2], x[0]))
+
+    results = []
+    for rank, (name, grade, score, streak) in enumerate(scored, 1):
+        if search and search.lower() not in name.lower():
+            continue
+        results.append({
+            "rank": rank,
+            "name": name,
+            "form_grade": grade,
+            "form_score": score,
+            "streak": streak,
+            "points": round(teams.get(name, 0), 2),
+            "provisional": name in provisional,
+        })
+
+    return {"total": len(results), "rankings": results[:limit]}
+
+
+# ---------------------------------------------------------------------------
 # Team detail + rating history
 # ---------------------------------------------------------------------------
 
@@ -1315,6 +1362,125 @@ def head_to_head(team1: str = Query(...), team2: str = Query(...)):
 # Elite Teams Over Time — matches CSRS.py display_elite_teams_over_time()
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Adaptive Competition-Strength reference for the form calculator
+# ---------------------------------------------------------------------------
+#
+# A Monte Carlo test (synthetic team locked at an exact 50% win rate, no
+# real skill change at all) showed its form score drifting from ~53.96 in
+# Jan 2026 to ~55.10 in Jun 2026 — purely because the form calc's
+# Competition Strength component divided opponent points by the FIXED
+# constant DIMINISHING_MAX (1050), while the league's real top-of-table
+# point levels drifted upward roughly 10% over that span. Win Rate and Map
+# Win Rate don't have this problem (a win is a win regardless of era), so
+# this only affects Competition Strength.
+#
+# Fix: normalize against the league's ACTUAL point level at the time of
+# each match (trailing top-40 teams' points, recomputed daily) instead of
+# a static number. This is intentionally separate from DIMINISHING_MAX's
+# other use in _calculate_points()'s K-factor diminishing-returns curve —
+# that's a different, more sensitive part of the rating engine and is out
+# of scope here.
+
+_comp_reference_cache: dict = {"mtime": None, "series": None, "keys": None}
+
+
+def _build_comp_reference_series(history: list, top_k: int = 20) -> dict:
+    """
+    Day-by-day 'ceiling of the league' series: for each day with at least
+    one match, the average of the top `top_k` teams' most-recent points
+    as of that day. Used to normalize Competition Strength against the
+    league's actual point levels at the time, rather than a fixed constant.
+    """
+    from datetime import datetime
+
+    def parse_date(date_str):
+        clean = date_str.replace(" UTC", "").strip()
+        try:
+            return datetime.strptime(clean, "%Y-%m-%d %H:%M")
+        except ValueError:
+            return datetime.strptime(clean[:10], "%Y-%m-%d")
+
+    latest_pts: dict = {}
+    series: dict = {}
+    current_day_key = None
+
+    def _snapshot(day_key):
+        if not latest_pts:
+            return
+        top_vals = sorted(latest_pts.values(), reverse=True)[:top_k]
+        series[day_key] = sum(top_vals) / len(top_vals)
+
+    for m in history:
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        try:
+            as_of = parse_date(date_str)
+        except Exception:
+            continue
+        day_key = as_of.strftime("%Y-%m-%d")
+
+        if current_day_key is not None and day_key != current_day_key:
+            _snapshot(current_day_key)
+        current_day_key = day_key
+
+        for side in ("t1", "t2"):
+            name = m[side]["name"]
+            latest_pts[name] = m[side]["pts_after"]
+
+    if current_day_key is not None:
+        _snapshot(current_day_key)
+
+    return series
+
+
+def _comp_reference_cached(history: list):
+    """Mtime-cached wrapper — same invalidation pattern as _best_rank_cache."""
+    try:
+        mtime = DATA_FILE.stat().st_mtime
+    except OSError:
+        mtime = None
+
+    if _comp_reference_cache["mtime"] != mtime:
+        series = _build_comp_reference_series(history)
+        _comp_reference_cache["mtime"] = mtime
+        _comp_reference_cache["series"] = series
+        _comp_reference_cache["keys"] = sorted(series.keys())
+
+    return _comp_reference_cache["series"], _comp_reference_cache["keys"]
+
+
+def _comp_reference_for_date(date_str: str, history: list) -> float:
+    """
+    Looks up the adaptive Competition-Strength reference for a match date
+    (nearest day at or before it). Falls back to the static DIMINISHING_MAX
+    constant if there's no series data yet (e.g. the very first matches in
+    history, before any day has been snapshotted).
+    """
+    import bisect
+    from datetime import datetime
+
+    series, keys = _comp_reference_cached(history)
+    if not keys:
+        return DIMINISHING_MAX
+
+    clean = (date_str or "").replace(" UTC", "").strip()
+    try:
+        try:
+            dt = datetime.strptime(clean, "%Y-%m-%d %H:%M")
+        except ValueError:
+            dt = datetime.strptime(clean[:10], "%Y-%m-%d")
+    except Exception:
+        return DIMINISHING_MAX
+    day_key = dt.strftime("%Y-%m-%d")
+
+    idx = bisect.bisect_right(keys, day_key) - 1
+    if idx < 0:
+        return DIMINISHING_MAX
+    return series[keys[idx]]
+
+
 def _calculate_form_at_match_index(team_name: str, match_index: int, history: list, n: int = 15):
     """
     Exact port of CSRS.py calculate_form_at_match_index (default n=15, matching
@@ -1369,7 +1535,8 @@ def _calculate_form_at_match_index(team_name: str, match_index: int, history: li
         map_total_weighted += (t_score + opp_score) * recency
 
         opp_pts = opp.get('pts_before', 500)
-        comp_weighted += (opp_pts / DIMINISHING_MAX) * recency
+        comp_ref = _comp_reference_for_date(m.get('date', ''), history)
+        comp_weighted += (opp_pts / comp_ref) * recency
 
         total_weight += recency
         streak_chars.append('W' if won else 'L')
@@ -1438,10 +1605,15 @@ def _analyze_team_form(team_name: str, history: list, teams: dict, n: int = 15):
     per-match contributions, a short-window trend, and plain-language
     insights. This mirrors CSRS.py's analyze_team_form() CLI feature, with
     the same fix already applied there: Competition Strength uses the flat
-    `opp_pts / DIMINISHING_MAX` formula (matching _calculate_form_at_match_index,
-    the function that actually produces the team's real displayed form
-    score), not a team-rating-relative threshold/buffer — using the latter
-    made the three component scores fail to sum to the real "base" score.
+    `opp_pts / <adaptive reference>` formula (matching
+    _calculate_form_at_match_index, the function that actually produces
+    the team's real displayed form score), not a team-rating-relative
+    threshold/buffer — using the latter made the three component scores
+    fail to sum to the real "base" score. The reference is looked up via
+    `_comp_reference_for_date` (the trailing top-40 teams' point level on
+    that match's date) rather than the fixed DIMINISHING_MAX constant, to
+    avoid the score drifting upward over time purely from league-wide
+    point inflation rather than a real change in the opponent's strength.
 
     Returns a dict, or None if the team doesn't have enough match history
     (minimum 3 matches).
@@ -1524,7 +1696,7 @@ def _analyze_team_form(team_name: str, history: list, teams: dict, n: int = 15):
         map_wins_weighted += t_score * recency
         map_total_weighted += (t_score + opp_score) * recency
 
-        comp_value = opp_pts / DIMINISHING_MAX
+        comp_value = opp_pts / _comp_reference_for_date(m.get('date', ''), history)
         comp_weighted += comp_value * recency
         total_weight += recency
 
@@ -1622,7 +1794,7 @@ def _analyze_team_form(team_name: str, history: list, teams: dict, n: int = 15):
                 w_mw += t.get('score', 0) * r
                 w_mt += (t.get('score', 0) + opp.get('score', 0)) * r
                 opp_pts = opp.get('pts_before', 500)
-                w_c += (opp_pts / DIMINISHING_MAX) * r
+                w_c += (opp_pts / _comp_reference_for_date(m.get('date', ''), history)) * r
                 w_t += r
             w_rate = w_w / w_t if w_t else 0
             w_map = w_mw / w_mt if w_mt else 0
@@ -2975,11 +3147,13 @@ def meta():
     data = load_data()
     history = data.get("history", [])
     last_match = history[-1]["date"] if history else None
+    earliest_match = history[0]["date"] if history else None
     return {
         "version": data.get("version", 1),
         "total_teams": len(data.get("teams", {})),
         "total_matches": len(history),
         "last_match": last_match,
+        "earliest_match": earliest_match,
         "data_file": str(DATA_FILE),
     }
 

@@ -477,6 +477,152 @@ tr:last-child td { border-bottom: none; }
 .win-badge  { color: var(--green); font-weight: 600; }
 .loss-badge { color: var(--red);   font-weight: 600; }
 
+/* ── Grand Final toggle switch (Match Simulator) ── */
+.gf-toggle-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.gf-toggle-input { position: absolute; opacity: 0; width: 0; height: 0; }
+.gf-toggle-track {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  flex-shrink: 0;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.gf-toggle-track::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.15s, background 0.15s;
+}
+.gf-toggle-input:checked + .gf-toggle-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.gf-toggle-input:checked + .gf-toggle-track::before {
+  transform: translateX(18px);
+  background: #0d0d0f;
+}
+.gf-toggle-input:focus-visible + .gf-toggle-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.gf-toggle-label {
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+/* ── Match Simulator: All Scorelines table ──
+   Team names can be long ("The MongolZ Academy"), and repeating them per
+   Δ/New column used to force the table past phone width. Grouping Δ/New
+   under one team-name header (colspan) plus letting that header wrap
+   instead of forcing a min-width keeps all 5 data columns on screen. */
+.sim-scorelines-table {
+  width: 100%;
+  table-layout: fixed;
+}
+.sim-scorelines-table th, .sim-scorelines-table td {
+  padding: 8px 4px;
+  text-align: center;
+  font-size: 0.8rem;
+}
+.sim-scorelines-table thead tr:first-child th {
+  white-space: normal;
+  overflow-wrap: break-word;
+  line-height: 1.2;
+}
+.sim-scorelines-table th:first-child, .sim-scorelines-table td:first-child {
+  width: 18%;
+}
+
+/* ── Results: date-grouped match cards (mobile & desktop share this;
+   only spacing/sizing differs, tightened below 700px) ── */
+.results-date-header {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text);
+  margin: 28px 0 10px;
+}
+.results-date-header:first-child { margin-top: 4px; }
+.match-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  margin-bottom: 10px;
+}
+.match-event {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-bottom: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.match-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 14px;
+}
+.match-team {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.match-team-left { justify-content: flex-start; }
+.match-team-right { justify-content: flex-end; text-align: right; }
+.match-team .team-link {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.match-score {
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: var(--text);
+  white-space: nowrap;
+  padding: 0 4px;
+}
+.match-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.match-footer-links { display: flex; gap: 12px; align-items: center; }
+.match-footer-links a, .match-footer-links span.team-link {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+@media (max-width: 700px) {
+  .results-date-header { font-size: 1rem; margin: 20px 0 8px; }
+  .match-card { padding: 12px 14px; margin-bottom: 8px; }
+  .match-event { font-size: 0.72rem; margin-bottom: 8px; }
+  .match-row { gap: 8px; }
+  .match-score { font-size: 1rem; }
+  .match-team .team-link { font-size: 0.9rem; }
+}
+
 /* ── Pagination ── */
 .pagination {
   display: flex;
@@ -681,17 +827,39 @@ tr:last-child td { border-bottom: none; }
   #sidebar { display: none; }
   #main { margin-left: 0; padding: 16px; padding-bottom: 84px; }
 
-  /* The rankings table has more columns than a phone screen can show at
-     once. Rather than let it scroll sideways, drop the two columns that
-     duplicate info already on the team detail page (Peak / Peak Rank) —
-     tapping a team still gets you that. Keeps #, Team, Points, and the
-     30d trend visible without any horizontal scroll. */
-  #rankings-table .col-peak,
-  #rankings-table .col-peak-rank {
-    display: none;
-  }
-  #rankings-table table { min-width: 0; }
-  #rankings-table th, #rankings-table td { padding: 10px 8px; }
+  /* The rankings table has more columns than a phone screen can comfortably
+     show at default sizing. Rather than dropping columns, shrink this
+     table specifically: tighter padding, smaller text, a slimmer sparkline,
+     and a smaller peak-rank badge — enough to fit #, Team, Points, Peak,
+     Peak Rank, and 30d Trend side by side without horizontal scrolling on
+     most phones. table-wrap still falls back to a horizontal scroll on
+     very narrow screens if needed. */
+  #rankings-table table { min-width: 0; font-size: 0.72rem; }
+  #rankings-table th, #rankings-table td { padding: 8px 4px; }
+  #rankings-table th:first-child, #rankings-table td:first-child { padding-left: 6px; }
+  #rankings-table .col-peak, #rankings-table .col-peak-rank { font-size: 0.68rem; }
+  #rankings-table .team-link { font-size: 0.78rem; }
+  #rankings-table .prov-badge { font-size: 0.55rem; padding: 1px 4px; }
+
+  /* Event Summary → All Participants has 8 columns, too many for a phone
+     even shrunk. Drop Maps (available on each team's own detail page) and
+     keep #, Team, Rating, Δ, W-L, Form, Form Δ — tightened up enough to
+     avoid horizontal scrolling on most phones. */
+  .ap-table-wrap { overflow-x: auto; }
+  .ap-table { font-size: 0.66rem; }
+  .ap-table th, .ap-table td { padding: 6px 3px !important; }
+  .ap-table th:first-child, .ap-table td:first-child { padding-left: 2px !important; }
+  .ap-col-maps { display: none; }
+  .ap-table .ap-col-team { max-width: 74px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap !important; }
+
+  /* Analyse Team Form → Matches in Window still needs horizontal scroll
+     on a phone (Date + Opponent + Score + Result + Form Pts don't fit),
+     but shrinking it reduces how far you have to scroll. */
+  .fa-matches-table { font-size: 0.74rem; }
+  .fa-matches-table th, .fa-matches-table td { padding: 7px 8px; }
+
+  .sim-scorelines-table th, .sim-scorelines-table td { padding: 6px 2px; font-size: 0.72rem; }
+  .sim-scorelines-table thead tr:first-child th { font-size: 0.68rem; }
 
   /* iOS/Android zoom in on focus when a form field's font-size is under
      16px — bump it here (mobile-only) so opening any search/filter field
@@ -824,6 +992,7 @@ tr:last-child td { border-bottom: none; }
   <nav>
     <a class="active" data-page="home">Home</a>
     <a data-page="rankings">Rankings</a>
+    <a data-page="form-rankings">Form Rankings</a>
     <a data-page="history">Results</a>
     <a data-page="simulate">Simulate</a>
 
@@ -833,8 +1002,6 @@ tr:last-child td { border-bottom: none; }
         <span class="chevron">&#9656;</span>
       </div>
       <div class="nav-subnav">
-        <a data-page="rating-graph">Rating Graph</a>
-        <a data-page="form-graph">Form Graph</a>
         <a data-page="elite">Elite Teams Over Time</a>
         <a data-page="form-analysis">Analyse Team Form</a>
         <a data-page="compare">Compare Teams</a>
@@ -879,6 +1046,12 @@ tr:last-child td { border-bottom: none; }
 <div id="more-sheet-overlay"></div>
 <div id="more-sheet">
   <div class="more-sheet-handle"></div>
+  <a data-page="form-rankings" class="more-sheet-item">
+    <span class="more-sheet-icon" style="background:none">
+      <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2.5l2.9 6.6 7.1.6-5.4 4.7 1.6 7-6.2-3.8-6.2 3.8 1.6-7-5.4-4.7 7.1-.6z"/></svg>
+    </span>
+    <span>Form Rankings</span>
+  </a>
   <a data-page="simulate" class="more-sheet-item">
     <span class="more-sheet-icon">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
@@ -894,18 +1067,6 @@ tr:last-child td { border-bottom: none; }
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
     </span>
     <span>Elite Teams Over Time</span>
-  </a>
-  <a data-page="rating-graph" class="more-sheet-item">
-    <span class="more-sheet-icon">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
-    </span>
-    <span>Rating Graph</span>
-  </a>
-  <a data-page="form-graph" class="more-sheet-item">
-    <span class="more-sheet-icon">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
-    </span>
-    <span>Form Graph</span>
   </a>
   <a data-page="form-analysis" class="more-sheet-item">
     <span class="more-sheet-icon">
@@ -1007,6 +1168,22 @@ tr:last-child td { border-bottom: none; }
     </div>
   </div>
 
+  <!-- Form Rankings -->
+  <div class="page" id="page-form-rankings">
+    <div class="page-header">
+      <h2>Form Rankings</h2>
+      <div class="controls" style="margin:0">
+        <input type="text" id="form-rank-search" placeholder="Search team…" style="width:200px">
+      </div>
+    </div>
+
+    <div class="card" style="padding:0">
+      <div class="table-wrap" id="form-rankings-table">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Results -->
   <div class="page" id="page-history">
     <div class="page-header"><h2>Results</h2></div>
@@ -1092,9 +1269,10 @@ tr:last-child td { border-bottom: none; }
           </select>
         </div>
         <div style="display:flex;align-items:flex-end">
-          <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer">
-            <input type="checkbox" id="sim-gf" style="accent-color:var(--accent)">
-            Grand Final
+          <label class="gf-toggle-wrap">
+            <input type="checkbox" id="sim-gf" class="gf-toggle-input">
+            <span class="gf-toggle-track"></span>
+            <span class="gf-toggle-label">Grand Final</span>
           </label>
         </div>
         <div style="display:flex;align-items:flex-end">
@@ -1117,15 +1295,19 @@ tr:last-child td { border-bottom: none; }
         <div id="sim-form-note" style="font-size:0.78rem;color:var(--muted);margin-bottom:16px;text-align:center"></div>
         <!-- Scorelines table -->
         <div style="font-size:0.85rem;color:var(--muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">All Scorelines</div>
-        <div class="table-wrap">
-          <table id="sim-scorelines-table">
+        <div class="table-wrap sim-scorelines-wrap" style="-webkit-overflow-scrolling:touch">
+          <table id="sim-scorelines-table" class="sim-scorelines-table">
             <thead>
               <tr>
-                <th>Score</th>
-                <th id="sim-th-t1"></th>
-                <th id="sim-th-t2"></th>
-                <th id="sim-th-t1-new"></th>
-                <th id="sim-th-t2-new"></th>
+                <th rowspan="2">Score</th>
+                <th colspan="2" id="sim-th-t1-group"></th>
+                <th colspan="2" id="sim-th-t2-group"></th>
+              </tr>
+              <tr>
+                <th>Δ</th>
+                <th>New</th>
+                <th>Δ</th>
+                <th>New</th>
               </tr>
             </thead>
             <tbody id="sim-scorelines-body"></tbody>
@@ -1266,36 +1448,6 @@ tr:last-child td { border-bottom: none; }
       </div>
     </div>
     <div id="td-result"></div>
-  </div>
-
-  <!-- Rating Graph -->
-  <div class="page" id="page-rating-graph">
-    <div class="page-header"><h2>Rating Graph</h2></div>
-    <div class="card">
-      <div class="controls" style="margin-bottom:0">
-        <div class="search-wrap" style="display:inline-block;width:300px">
-          <input type="text" id="rg-input" placeholder="Search team…" style="width:100%" autocomplete="off">
-          <div class="search-dropdown" id="rg-dd"></div>
-        </div>
-        <button onclick="loadRatingGraph()">View</button>
-      </div>
-    </div>
-    <div id="rg-result"></div>
-  </div>
-
-  <!-- Form Graph -->
-  <div class="page" id="page-form-graph">
-    <div class="page-header"><h2>Form Graph</h2></div>
-    <div class="card">
-      <div class="controls" style="margin-bottom:0">
-        <div class="search-wrap" style="display:inline-block;width:300px">
-          <input type="text" id="fg-input" placeholder="Search team…" style="width:100%" autocomplete="off">
-          <div class="search-dropdown" id="fg-dd"></div>
-        </div>
-        <button onclick="loadFormGraph()">View</button>
-      </div>
-    </div>
-    <div id="fg-result"></div>
   </div>
 
   <!-- Compare Teams -->
@@ -1507,14 +1659,13 @@ document.querySelectorAll('nav a[data-page]').forEach(a => {
     showPage(page);
     if (page === 'home')          loadHome();
     if (page === 'rankings')      loadRankings();
+    if (page === 'form-rankings') loadFormRankings();
     if (page === 'history')       loadHistory(1);
     if (page === 'analytics')     loadAnalytics();
     if (page === 'month-summary') loadMonthSummary();
     if (page === 'event-summary')  initEventSummaryPage();
     if (page === 'match')           { /* loaded on demand via openMatch() */ }
     if (page === 'team-details')  { setTimeout(() => document.getElementById('td-input').focus(), 50); }
-    if (page === 'rating-graph')  { setTimeout(() => document.getElementById('rg-input').focus(), 50); }
-    if (page === 'form-graph')    { setTimeout(() => document.getElementById('fg-input').focus(), 50); }
     if (page === 'compare')       { setTimeout(() => document.getElementById('cmp-t1').focus(), 50); }
     if (page === 'form-analysis') { setTimeout(() => document.getElementById('fa-input').focus(), 50); }
   });
@@ -1623,7 +1774,10 @@ let _metaPromise = null;
 function _ensureMetaLoaded() {
   if (!_metaPromise) {
     _metaPromise = api('/api/meta').then(d => {
-      if (d.earliest_match) earliestDataDate = d.earliest_match;
+      // History dates look like "2026-03-18 10:00 UTC" — the date picker
+      // (dpSet/dpGet) only ever works with plain YYYY-MM-DD, so trim down
+      // to just the date portion.
+      if (d.earliest_match) earliestDataDate = d.earliest_match.slice(0, 10);
       return d;
     }).catch(() => ({}));
   }
@@ -1707,7 +1861,15 @@ async function renderMonthSummaryForMonth(ym) {
   const [year, month] = ym.split('-').map(Number);
   const start = `${year}-${String(month).padStart(2,'0')}-01`;
   const lastDay = new Date(year, month, 0).getDate();
-  const end = `${year}-${String(month).padStart(2,'0')}-${lastDay}`;
+  let end = `${year}-${String(month).padStart(2,'0')}-${lastDay}`;
+  // The current, still-in-progress month's "last day" is in the future.
+  // The backend treats `end` as "today" for rank/rating snapshots (so a
+  // past month reflects its own end-of-month standings) — sending a
+  // future end date made it over-depreciate every team's rating by
+  // however many days remained in the month. Clamp to the real today.
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  if (end > todayStr) end = todayStr;
   const label = new Date(year, month - 1, 1).toLocaleString('default', { month: 'long', year: 'numeric' });
 
   // Update sub-labels
@@ -1892,7 +2054,6 @@ function renderEventSummaryHTML(d) {
           <th style="text-align:right;padding:4px 6px;white-space:nowrap">Before</th>
           <th style="text-align:right;padding:4px 6px;white-space:nowrap">After</th>
           <th style="text-align:right;padding:4px 6px;white-space:nowrap">Δ</th>
-          <th style="text-align:right;padding:4px 6px;white-space:nowrap">W-L</th>
         </tr></thead>
         <tbody>${teams.map(t => `
           <tr style="border-top:1px solid var(--border)">
@@ -1900,7 +2061,6 @@ function renderEventSummaryHTML(d) {
             <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.start_rating}</td>
             <td style="padding:5px 6px;text-align:right;font-weight:600;white-space:nowrap">${t.end_rating}</td>
             <td style="padding:5px 6px;text-align:right;font-weight:700;color:${posColor(t.rating_change)};white-space:nowrap">${sign(t.rating_change)}</td>
-            <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.wins}W-${t.losses}L</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -1914,7 +2074,6 @@ function renderEventSummaryHTML(d) {
           <th style="text-align:right;padding:4px 6px;white-space:nowrap">Before</th>
           <th style="text-align:right;padding:4px 6px;white-space:nowrap">After</th>
           <th style="text-align:right;padding:4px 6px;white-space:nowrap">Δ</th>
-          <th style="text-align:right;padding:4px 6px;white-space:nowrap">W-L</th>
         </tr></thead>
         <tbody>${teams.map(t => `
           <tr style="border-top:1px solid var(--border)">
@@ -1922,7 +2081,6 @@ function renderEventSummaryHTML(d) {
             <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${fmtForm(t.form_start)}</td>
             <td style="padding:5px 6px;text-align:right;font-weight:600;white-space:nowrap">${fmtForm(t.form_end)}</td>
             <td style="padding:5px 6px;text-align:right;font-weight:700;color:${posColor(t.form_change)};white-space:nowrap">${t.form_change != null ? sign(t.form_change) : '—'}</td>
-            <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.wins}W-${t.losses}L</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -1950,6 +2108,10 @@ function renderEventSummaryHTML(d) {
 
   return `
     <div style="padding-top:16px">
+      <div class="team-detail-header" style="margin-top:0">
+        <h2>${d.event}</h2>
+        ${d.tier ? `<span class="rank-badge">${d.tier}</span>` : ''}
+      </div>
       <div style="margin-bottom:14px">
         <div style="font-size:0.72rem;color:var(--muted);margin-bottom:4px">${dateStr} · ${envStr}</div>
         <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:0.85rem;color:var(--muted)">
@@ -1992,28 +2154,28 @@ function renderEventSummaryHTML(d) {
 
       <div>
         <div style="font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">All Participants</div>
-        <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
-          <table style="width:100%;border-collapse:collapse;font-size:0.8rem;min-width:560px">
+        <div class="ap-table-wrap" style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+          <table class="ap-table" style="width:100%;border-collapse:collapse;font-size:0.8rem">
             <thead><tr style="color:var(--muted);font-size:0.7rem;text-transform:uppercase">
               <th style="text-align:left;padding:4px 4px">#</th>
-              <th style="text-align:left;padding:4px 6px">Team</th>
+              <th class="ap-col-team" style="text-align:left;padding:4px 6px">Team</th>
               <th style="text-align:right;padding:4px 6px">Rating</th>
               <th style="text-align:right;padding:4px 6px">Δ</th>
-              <th style="text-align:right;padding:4px 6px">W-L</th>
-              <th style="text-align:right;padding:4px 6px">Maps</th>
-              <th style="text-align:right;padding:4px 6px">Form</th>
-              <th style="text-align:right;padding:4px 6px">Form Δ</th>
+              <th class="ap-col-wl" style="text-align:right;padding:4px 6px">W-L</th>
+              <th class="ap-col-maps" style="text-align:right;padding:4px 6px">Maps</th>
+              <th class="ap-col-form" style="text-align:right;padding:4px 6px">Form</th>
+              <th class="ap-col-form" style="text-align:right;padding:4px 6px">Form Δ</th>
             </tr></thead>
             <tbody>${d.all_teams.map((t,i) => `
               <tr style="border-top:1px solid var(--border)">
                 <td style="padding:5px 4px;color:var(--muted)">${i+1}</td>
-                <td style="padding:5px 6px;white-space:nowrap"><span class="team-link" onclick="openTeam('${esc(t.name)}')">${t.name}</span></td>
+                <td class="ap-col-team" style="padding:5px 6px;white-space:nowrap"><span class="team-link" onclick="openTeam('${esc(t.name)}')">${t.name}</span></td>
                 <td style="padding:5px 6px;text-align:right;font-weight:600;white-space:nowrap">${t.end_rating}</td>
                 <td style="padding:5px 6px;text-align:right;font-weight:700;color:${posColor(t.rating_change)};white-space:nowrap">${sign(t.rating_change)}</td>
-                <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.wins}W-${t.losses}L</td>
-                <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.maps_won}-${t.maps_lost}</td>
-                <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${fmtForm(t.form_end)}</td>
-                <td style="padding:5px 6px;text-align:right;font-weight:700;color:${posColor(t.form_change)};white-space:nowrap">${t.form_change != null ? sign(t.form_change) : '—'}</td>
+                <td class="ap-col-wl" style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.wins}W-${t.losses}L</td>
+                <td class="ap-col-maps" style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.maps_won}-${t.maps_lost}</td>
+                <td class="ap-col-form" style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${fmtForm(t.form_end)}</td>
+                <td class="ap-col-form" style="padding:5px 6px;text-align:right;font-weight:700;color:${posColor(t.form_change)};white-space:nowrap">${t.form_change != null ? sign(t.form_change) : '—'}</td>
               </tr>`).join('')}
             </tbody>
           </table>
@@ -2450,7 +2612,7 @@ function renderRankings(rows) {
         <th>Points</th>
         <th class="col-peak">Peak</th>
         <th class="col-peak-rank">Peak Rank</th>
-        <th>30d Trend</th>
+        <th class="col-trend">30d Trend</th>
       </tr></thead>
       <tbody>
         ${rows.map(r => `
@@ -2465,7 +2627,7 @@ function renderRankings(rows) {
             <td class="pts">${r.points.toFixed(2)}</td>
             <td class="pts col-peak" style="color:var(--muted)" title="${r.peak_date ? 'Rating peak: ' + r.peak_date.split(' ')[0] : ''}">${r.peak_points.toFixed(2)}</td>
             <td class="col-peak-rank" style="color:var(--muted)" title="${r.peak_rank_date ? 'Rank peak: ' + r.peak_rank_date.split(' ')[0] : ''}">${(r.peak_rank != null && r.peak_rank > 0) ? '#' + r.peak_rank : '—'}</td>
-            <td>${sparklineSVG(r.sparkline, window.innerWidth <= 700 ? 46 : 80)}</td>
+            <td class="col-trend">${sparklineSVG(r.sparkline, window.innerWidth <= 700 ? 34 : 80, window.innerWidth <= 700 ? 20 : 28)}</td>
           </tr>
         `).join('')}
       </tbody>
@@ -2477,6 +2639,67 @@ document.getElementById('rank-search').addEventListener('input', () => {
   const q = document.getElementById('rank-search').value.toLowerCase();
   const filtered = rankingsData.filter(r => r.name.toLowerCase().includes(q));
   renderRankings(filtered);
+});
+
+// ---------------------------------------------------------------------------
+// Form Rankings — same layout as Rankings, ordered by current form score
+// ---------------------------------------------------------------------------
+let formRankingsData = [];
+
+async function loadFormRankings() {
+  setLoading('form-rankings-table');
+  try {
+    const search = document.getElementById('form-rank-search').value;
+    const d = await api(`/api/form-rankings?limit=200&search=${encodeURIComponent(search)}`);
+    formRankingsData = d.rankings;
+    renderFormRankings(formRankingsData);
+  } catch(e) {
+    setError('form-rankings-table', e.message);
+  }
+}
+
+function renderFormRankings(rows) {
+  if (!rows.length) {
+    setEl('form-rankings-table', '<div class="empty-msg">No teams found.</div>');
+    return;
+  }
+  const html = `
+    <table>
+      <thead><tr>
+        <th>#</th>
+        <th>Team</th>
+        <th>Form</th>
+        <th>Streak</th>
+        <th class="col-peak">Points</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(r => {
+          const streakColored = [...r.streak].map(c =>
+            `<span style="color:${c === 'W' ? 'var(--green)' : 'var(--red)'}">${c}</span>`
+          ).join('');
+          return `
+          <tr>
+            <td class="rank-num">${r.rank}</td>
+            <td>
+              <span class="team-link" onclick="openTeam('${r.name.replace(/'/g,"\\'")}')">
+                ${r.name}
+              </span>
+              ${r.provisional ? `<span class="prov-badge">PROV</span>` : ''}
+            </td>
+            <td class="pts"><span style="color:${tdFormColor(r.form_grade)};font-weight:700">${r.form_grade}</span> (${r.form_score})</td>
+            <td style="font-family:monospace;letter-spacing:1px">${streakColored}</td>
+            <td class="pts col-peak" style="color:var(--muted)">${r.points.toFixed(2)}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+  setEl('form-rankings-table', html);
+}
+
+document.getElementById('form-rank-search').addEventListener('input', () => {
+  const q = document.getElementById('form-rank-search').value.toLowerCase();
+  const filtered = formRankingsData.filter(r => r.name.toLowerCase().includes(q));
+  renderFormRankings(filtered);
 });
 
 // ---------------------------------------------------------------------------
@@ -2523,51 +2746,63 @@ async function loadHistory(page) {
   }
 }
 
+function formatDateHeader(dateStr) {
+  // "2026-07-10" -> "July 10th 2026"
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const day = d;
+  const suffix = (day % 10 === 1 && day !== 11) ? 'st'
+    : (day % 10 === 2 && day !== 12) ? 'nd'
+    : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+  return `${months[m - 1]} ${day}${suffix} ${y}`;
+}
+
 function renderHistory(rows) {
   if (!rows.length) {
     setEl('history-table', '<div class="empty-msg">No matches found.</div>');
     return;
   }
-  const html = `
-    <table>
-      <thead><tr>
-        <th>Date</th>
-        <th class="col-hide-mobile">Event</th>
-        <th>Tier</th>
-        <th>Team 1</th>
-        <th></th>
-        <th>Team 2</th>
-        <th class="col-hide-mobile">Result</th>
-      </tr></thead>
-      <tbody>
-        ${rows.map(h => {
-          const t1won = h.t1.score > h.t2.score;
-          return `
-            <tr>
-              <td style="color:var(--muted);white-space:nowrap;font-size:0.8rem">${h.date.split(' ')[0]}</td>
-              <td class="col-hide-mobile" style="font-size:0.8rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${h.event}">${h.event}</td>
-              <td>${tierBadge(h.tier)}</td>
-              <td>
-                <span class="team-link ${t1won ? 'win-badge' : ''}" onclick="openTeam('${h.t1.name.replace(/'/g,"\\'")}')">
-                  ${h.t1.name}
-                </span>
-                <small class="${deltaClass(h.t1.pts_delta)}" style="font-size:0.7rem;margin-left:4px">${fmt(h.t1.pts_delta)}</small>
-              </td>
-              <td style="text-align:center;font-weight:700;color:var(--muted)">${h.t1.score}–${h.t2.score}</td>
-              <td>
-                <span class="team-link ${!t1won ? 'win-badge' : ''}" onclick="openTeam('${h.t2.name.replace(/'/g,"\\'")}')">
-                  ${h.t2.name}
-                </span>
-                <small class="${deltaClass(h.t2.pts_delta)}" style="font-size:0.7rem;margin-left:4px">${fmt(h.t2.pts_delta)}</small>
-              </td>
-              <td>
-                ${h.url ? `<a href="${h.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none;margin-right:8px">HLTV</a>` : ''}
-                ${h.url ? `<span class="team-link" style="font-size:0.75rem;color:var(--accent)" onclick="openMatch(${JSON.stringify(h.url)})">CSRS</span>` : ''}
-              </td>
-            </tr>`;
-        }).join('')}
-      </tbody>
-    </table>`;
+  let html = '<div class="results-list">';
+  let lastDate = null;
+
+  rows.forEach(h => {
+    const t1won = h.t1.score > h.t2.score;
+    const dateOnly = h.date.split(' ')[0];
+    if (dateOnly !== lastDate) {
+      html += `<div class="results-date-header">${formatDateHeader(dateOnly)}</div>`;
+      lastDate = dateOnly;
+    }
+    html += `
+      <div class="match-card">
+        <div class="match-event" title="${h.event}">${h.event}</div>
+        <div class="match-row">
+          <div class="match-team match-team-left">
+            <span class="team-link ${t1won ? 'win-badge' : ''}" onclick="openTeam('${h.t1.name.replace(/'/g,"\\'")}')">
+              ${h.t1.name}
+            </span>
+            <small class="${deltaClass(h.t1.pts_delta)}" style="font-size:0.72rem">${fmt(h.t1.pts_delta)}</small>
+          </div>
+          <div class="match-score">
+            <span class="${t1won ? 'win-badge' : ''}">${h.t1.score}</span> - <span class="${!t1won ? 'win-badge' : ''}">${h.t2.score}</span>
+          </div>
+          <div class="match-team match-team-right">
+            <small class="${deltaClass(h.t2.pts_delta)}" style="font-size:0.72rem">${fmt(h.t2.pts_delta)}</small>
+            <span class="team-link ${!t1won ? 'win-badge' : ''}" onclick="openTeam('${h.t2.name.replace(/'/g,"\\'")}')">
+              ${h.t2.name}
+            </span>
+          </div>
+        </div>
+        <div class="match-footer">
+          ${tierBadge(h.tier)}
+          <div class="match-footer-links">
+            ${h.url ? `<a href="${h.url}" target="_blank">HLTV</a>` : ''}
+            ${h.url ? `<span class="team-link" onclick="openMatch(${JSON.stringify(h.url)})">CSRS</span>` : ''}
+          </div>
+        </div>
+      </div>`;
+  });
+
+  html += '</div>';
   setEl('history-table', html);
 }
 
@@ -2655,6 +2890,10 @@ function renderTeamDetail(d) {
         <div class="label">Peak Rank</div>
         <div class="value">${d.peak.rank ? '#' + d.peak.rank : '—'}</div>
         <div class="sub">${d.peak.rank_date ? d.peak.rank_date.split(' ')[0] : ''}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Rating Change (3 Months)</div>
+        <div class="value" style="color:${d.pts_delta_3m >= 0 ? 'var(--green)' : 'var(--red)'}">${d.pts_delta_3m >= 0 ? '+' : ''}${d.pts_delta_3m.toFixed(1)}</div>
       </div>
       <div class="stat-card">
         <div class="label">Form (3 months)</div>
@@ -3095,10 +3334,8 @@ async function runSim() {
     }
 
     // Table headers
-    document.getElementById('sim-th-t1').textContent = `${d.team1.name} Δ`;
-    document.getElementById('sim-th-t2').textContent = `${d.team2.name} Δ`;
-    document.getElementById('sim-th-t1-new').textContent = `${d.team1.name} New`;
-    document.getElementById('sim-th-t2-new').textContent = `${d.team2.name} New`;
+    document.getElementById('sim-th-t1-group').textContent = d.team1.name;
+    document.getElementById('sim-th-t2-group').textContent = d.team2.name;
 
     // Scorelines — t1 wins first, then t2 wins
     const t1wins = d.scorelines.filter(s => s.winner === 't1');
@@ -3412,6 +3649,36 @@ function renderCompare(d1, d2) {
   const v1 = ds1.map(p => p.pts);
   const v2 = ds2.map(p => p.pts);
 
+  // Build point styling for one team's series: colored dot on match days
+  // (green/red = win/loss), a small hollow dot on transition points (the
+  // day before a scheduling gap — mirrors the single-team rating chart),
+  // and a hollow dot at the very first/last point so the line always has
+  // a clear, visible start and end instead of just trailing off.
+  // Point border width is bumped up (not just radius) so the marker's
+  // outline visually sits on top of the connecting line rather than the
+  // line cutting through a thin dot.
+  function pointStyle(ds, color) {
+    const lastIdx = ds.length - 1;
+    const radius = ds.map((p, i) => {
+      if (i === 0 || i === lastIdx) return 5;
+      if (p.match) return 5;
+      if (p.transition) return 4;
+      return 0;
+    });
+    const bg = ds.map((p, i) => {
+      if (i === 0 || i === lastIdx) return '#16181c'; // hollow start/end
+      if (p.match) return p.won ? '#4caf82' : '#e05a5a';
+      if (p.transition) return '#16181c'; // hollow transition
+      return 'transparent';
+    });
+    const border = ds.map(() => color);
+    const borderWidth = ds.map((p, i) => (i === 0 || i === lastIdx || p.match || p.transition) ? 2 : 1);
+    return { radius, bg, border, borderWidth };
+  }
+
+  const ps1 = pointStyle(ds1, '#f5a623');
+  const ps2 = pointStyle(ds2, '#4a9eff');
+
   const ctx = document.getElementById('cmp-chart').getContext('2d');
   cmpChart = new Chart(ctx, {
     type: 'line',
@@ -3424,9 +3691,11 @@ function renderCompare(d1, d2) {
           borderColor: '#f5a623',
           backgroundColor: 'rgba(245,166,35,0.08)',
           borderWidth: 2,
-          pointRadius: ds1.map(p => p.match ? 4 : 0),
-          pointBackgroundColor: ds1.map(p => p.match ? (p.won ? '#4caf82' : '#e05a5a') : 'transparent'),
-          pointBorderColor: '#f5a623',
+          pointRadius: ps1.radius,
+          pointBackgroundColor: ps1.bg,
+          pointBorderColor: ps1.border,
+          pointBorderWidth: ps1.borderWidth,
+          pointHoverRadius: 7,
           tension: 0,
           fill: false,
           spanGaps: false,
@@ -3437,9 +3706,11 @@ function renderCompare(d1, d2) {
           borderColor: '#4a9eff',
           backgroundColor: 'rgba(74,158,255,0.08)',
           borderWidth: 2,
-          pointRadius: ds2.map(p => p.match ? 4 : 0),
-          pointBackgroundColor: ds2.map(p => p.match ? (p.won ? '#4caf82' : '#e05a5a') : 'transparent'),
-          pointBorderColor: '#4a9eff',
+          pointRadius: ps2.radius,
+          pointBackgroundColor: ps2.bg,
+          pointBorderColor: ps2.border,
+          pointBorderWidth: ps2.borderWidth,
+          pointHoverRadius: 7,
           tension: 0,
           fill: false,
           spanGaps: false,
@@ -3562,8 +3833,8 @@ function renderFormAnalysis(d) {
 
     <div class="card" style="padding:0">
       <div style="padding:16px 20px 0;font-size:1rem;font-weight:600">Matches in Window (${d.matches_in_window})</div>
-      <div class="table-wrap">
-        <table>
+      <div class="table-wrap fa-matches-wrap">
+        <table class="fa-matches-table">
           <thead><tr><th>Date</th><th>Opponent</th><th>Score</th><th>Result</th><th>Form Pts</th></tr></thead>
           <tbody>
             ${[...d.matches].reverse().map(m => `
@@ -3966,12 +4237,13 @@ function closeMoreSheet() {
 document.getElementById('bottom-nav-more').addEventListener('click', openMoreSheet);
 document.getElementById('more-sheet-overlay').addEventListener('click', closeMoreSheet);
 
-// Swipe down to close
+// Swipe down to close (only via the drag handle, so scrolling the
+// item list never gets mistaken for a close gesture)
 (function() {
   let startY = 0;
-  const sheet = document.getElementById('more-sheet');
-  sheet.addEventListener('touchstart', e => { startY = e.touches[0].clientY; }, { passive: true });
-  sheet.addEventListener('touchend', e => {
+  const handle = document.querySelector('.more-sheet-handle');
+  handle.addEventListener('touchstart', e => { startY = e.touches[0].clientY; }, { passive: true });
+  handle.addEventListener('touchend', e => {
     if (e.changedTouches[0].clientY - startY > 60) closeMoreSheet();
   }, { passive: true });
 })();
@@ -3983,13 +4255,12 @@ document.querySelectorAll('.more-sheet-item[data-page]').forEach(a => {
     closeMoreSheet();
     showPage(page);
     if (page === 'rankings')      loadRankings();
+    if (page === 'form-rankings') loadFormRankings();
     if (page === 'history')       loadHistory(1);
     if (page === 'month-summary') loadMonthSummary();
     if (page === 'event-summary')  initEventSummaryPage();
     if (page === 'match')           { /* loaded on demand via openMatch() */ }
     if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
-    if (page === 'rating-graph') { setTimeout(() => document.getElementById('rg-input').focus(), 50); }
-    if (page === 'form-graph')   { setTimeout(() => document.getElementById('fg-input').focus(), 50); }
     if (page === 'compare')      { setTimeout(() => document.getElementById('cmp-t1').focus(), 50); }
     if (page === 'form-analysis') { setTimeout(() => document.getElementById('fa-input').focus(), 50); }
   });
