@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-CSRS Admin API — FastAPI backend (port 8001, Tailscale-only)
+CSRS Admin API — FastAPI backend (port 8001, localhost-only)
 Protected by HTTP Basic Auth + CSRF tokens.
 Handles: point adjustments, team management, import triggering, log viewing.
 """
