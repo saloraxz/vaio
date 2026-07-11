@@ -118,6 +118,7 @@ def clear_checkpoint():
 
 
 def log_failed(urls, event_id):
+    os.makedirs(os.path.dirname(FAILED_LOG), exist_ok=True)
     with open(FAILED_LOG, "a") as f:
         for u in urls:
             f.write(f"{event_id}\t{u}\n")
