@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CSRS Admin</title>
+<style>
+:root {
+  --bg:       #0d0d0f;
+  --surface:  #16181c;
+  --surface2: #1e2127;
+  --border:   #2a2d35;
+  --accent:   #f5a623;
+  --accent2:  #e8891a;
+  --text:     #e8eaf0;
+  --muted:    #7a7f8e;
+  --green:    #4caf82;
+  --red:      #e05a5a;
+  --blue:     #5b9cf6;
+  --radius:   8px;
+  --sidebar:  220px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  display: flex;
+}
+
+/* Sidebar */
+#sidebar {
+  width: var(--sidebar);
+  min-height: 100vh;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 0; left: 0;
+}
+.logo {
+  padding: 24px 20px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.logo h1 { font-size: 1.2rem; font-weight: 700; color: var(--red); }
+.logo p  { font-size: 0.7rem; color: var(--muted); margin-top: 2px; }
+nav { flex: 1; padding: 12px 0; }
+nav a {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 20px;
+  color: var(--muted); text-decoration: none;
+  font-size: 0.875rem; cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: all 0.15s;
+}
+nav a:hover { color: var(--text); background: var(--surface2); }
+nav a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(245,166,35,0.08); }
+.sidebar-meta {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  font-size: 0.7rem; color: var(--muted);
+}
+.sidebar-meta span { display: block; margin-bottom: 2px; }
+
+/* Main */
+#main { margin-left: var(--sidebar); flex: 1; padding: 28px 32px; }
+.page { display: none; }
+.page.active { display: block; }
+
+/* Login overlay */
+#login-overlay {
+  position: fixed; inset: 0;
+  background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 999;
+}
+.login-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 36px 40px;
+  width: 340px;
+}
+.login-card h2 { font-size: 1.3rem; margin-bottom: 4px; }
+.login-card p  { font-size: 0.8rem; color: var(--muted); margin-bottom: 24px; }
+
+/* Cards */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.card h3 { font-size: 1rem; margin-bottom: 16px; font-weight: 600; }
+
+/* Form elements */
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 0.75rem; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.4px; }
+input[type="text"], input[type="number"], input[type="password"], textarea {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 9px 12px;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.15s;
+  font-family: inherit;
+}
+input:focus, textarea:focus { border-color: var(--accent); }
+input::placeholder, textarea::placeholder { color: var(--muted); }
+textarea { resize: vertical; min-height: 60px; }
+
+button {
+  background: var(--accent);
+  color: #0d0d0f;
+  border: none;
+  border-radius: var(--radius);
+  padding: 9px 18px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+button:hover { background: var(--accent2); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.danger {
+  background: var(--red);
+  color: #fff;
+}
+button.danger:hover { background: #c94444; }
+button.secondary {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+button.secondary:hover { background: var(--border); }
+
+/* Table */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th { text-align: left; padding: 10px 12px; color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+td { padding: 10px 12px; border-bottom: 1px solid rgba(42,45,53,0.5); }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--surface2); }
+
+/* Status badges */
+.badge {
+  display: inline-block; padding: 2px 8px;
+  border-radius: 4px; font-size: 0.72rem; font-weight: 600;
+}
+.badge-green { background: rgba(76,175,130,0.15); color: var(--green); }
+.badge-red   { background: rgba(224,90,90,0.15);  color: var(--red); }
+.badge-blue  { background: rgba(91,156,246,0.15); color: var(--blue); }
+.badge-muted { background: rgba(122,127,142,0.15); color: var(--muted); }
+
+/* Log viewer */
+.log-box {
+  background: #0a0a0c;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.75rem;
+  color: #9da5b4;
+  max-height: 400px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.log-box .log-error  { color: var(--red); }
+.log-box .log-ok     { color: var(--green); }
+.log-box .log-warn   { color: var(--accent); }
+
+/* Alert */
+.alert {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  margin-bottom: 14px;
+}
+.alert-success { background: rgba(76,175,130,0.12); border: 1px solid var(--green); color: var(--green); }
+.alert-error   { background: rgba(224,90,90,0.12);  border: 1px solid var(--red);   color: var(--red); }
+.alert-info    { background: rgba(91,156,246,0.12); border: 1px solid var(--blue);  color: var(--blue); }
+
+/* Import status */
+.import-status {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 16px;
+  background: var(--surface2);
+  border-radius: var(--radius);
+  margin-bottom: 14px;
+}
+.pulse {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--green);
+  animation: pulse 1.5s infinite;
+}
+.pulse.idle { background: var(--muted); animation: none; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+/* Page header */
+.page-header { margin-bottom: 24px; }
+.page-header h2 { font-size: 1.5rem; font-weight: 600; }
+.page-header p  { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
+
+/* Grid */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+
+/* Delta colors */
+.pos { color: var(--green); font-weight: 600; }
+.neg { color: var(--red);   font-weight: 600; }
+
+/* Loading */
+.loading { color: var(--muted); padding: 20px; text-align: center; }
+</style>
+</head>
+<body>
+
+<!-- Login overlay -->
+<div id="login-overlay">
+  <div class="login-card">
+    <h2>🔐 CSRS Admin</h2>
+    <p>Tailscale network access required</p>
+    <div class="field">
+      <label>Username</label>
+      <input type="text" id="login-user" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="login-pass" autocomplete="current-password">
+    </div>
+    <div id="login-error" style="display:none" class="alert alert-error">Invalid credentials</div>
+    <button onclick="doLogin()" style="width:100%">Sign In</button>
+  </div>
+</div>
+
+<!-- Sidebar -->
+<aside id="sidebar" style="display:none">
+  <div class="logo">
+    <h1>CSRS Admin</h1>
+    <p>Restricted access</p>
+  </div>
+  <nav>
+    <a class="active" data-page="adjust">⚡ Adjustments</a>
+    <a data-page="teams">👥 Teams</a>
+    <a data-page="import">🔄 Import Control</a>
+    <a data-page="logs">📄 Logs</a>
+  </nav>
+  <div class="sidebar-meta" id="admin-meta">
+    <span>Loading...</span>
+  </div>
+</aside>
+
+<!-- Main -->
+<main id="main" style="display:none">
+
+  <!-- Adjustments -->
+  <div class="page active" id="page-adjust">
+    <div class="page-header">
+      <h2>⚡ Point Adjustments</h2>
+      <p>Manually add or subtract points from a team</p>
+    </div>
+    <div class="two-col">
+      <div class="card">
+        <h3>Apply Adjustment</h3>
+        <div id="adjust-alert"></div>
+        <div class="field">
+          <label>Team Name</label>
+          <input type="text" id="adj-team" placeholder="e.g. Vitality">
+        </div>
+        <div class="field">
+          <label>Amount (use - to subtract)</label>
+          <input type="number" id="adj-amount" placeholder="e.g. 25 or -10" step="0.1">
+        </div>
+        <div class="field">
+          <label>Reason (optional)</label>
+          <textarea id="adj-reason" placeholder="e.g. Roster change penalty"></textarea>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center">
+          <button onclick="previewAdjust()">Preview</button>
+        </div>
+        <!-- Preview -->
+        <div id="adj-preview" style="display:none;margin-top:16px;padding:14px;background:var(--surface2);border-radius:var(--radius)">
+          <div style="font-size:0.8rem;color:var(--muted);margin-bottom:8px">PREVIEW</div>
+          <div id="adj-preview-text" style="margin-bottom:12px"></div>
+          <div style="display:flex;gap:10px">
+            <button onclick="applyAdjust()">Confirm & Apply</button>
+            <button class="secondary" onclick="cancelPreview()">Cancel</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Recent Adjustments</h3>
+        <div id="adj-history">
+          <div class="loading">Loading...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Teams -->
+  <div class="page" id="page-teams">
+    <div class="page-header">
+      <h2>👥 Team Management</h2>
+      <p>Add or remove teams from the rating system</p>
+    </div>
+    <div class="two-col">
+      <div class="card">
+        <h3>Add New Team</h3>
+        <div id="add-team-alert"></div>
+        <div class="field">
+          <label>Team Name</label>
+          <input type="text" id="new-team-name" placeholder="e.g. New Team">
+        </div>
+        <div class="field">
+          <label>Starting Points (CSRS Elo)</label>
+          <input type="number" id="new-team-pts" placeholder="e.g. 750" min="0" step="1">
+        </div>
+        <p style="font-size:0.78rem;color:var(--muted);margin-bottom:14px">
+          New teams are automatically marked provisional until they have played 3 matches.
+        </p>
+        <button onclick="addTeam()">Add Team</button>
+      </div>
+      <div class="card">
+        <h3>Delete Team</h3>
+        <div id="del-team-alert"></div>
+        <div class="field">
+          <label>Team Name</label>
+          <input type="text" id="del-team-name" placeholder="Exact team name">
+        </div>
+        <p style="font-size:0.78rem;color:var(--red);margin-bottom:14px">
+          ⚠ This cannot be undone. Match history referencing this team will remain but the team will no longer appear in rankings.
+        </p>
+        <button class="danger" onclick="deleteTeam()">Delete Team</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Control -->
+  <div class="page" id="page-import">
+    <div class="page-header">
+      <h2>🔄 Import Control</h2>
+      <p>Monitor and manually trigger the HLTV importer</p>
+    </div>
+    <div class="card">
+      <h3>Daemon Status</h3>
+      <div class="import-status" id="import-status-bar">
+        <div class="pulse idle" id="import-pulse"></div>
+        <div>
+          <div id="import-status-text" style="font-weight:600">Checking...</div>
+          <div id="import-last-run" style="font-size:0.78rem;color:var(--muted)"></div>
+        </div>
+        <div style="margin-left:auto">
+          <button onclick="triggerImport()" id="trigger-btn">Run Import Now</button>
+        </div>
+      </div>
+      <div id="import-alert"></div>
+    </div>
+    <div class="card">
+      <h3>Live Log</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <span style="font-size:0.8rem;color:var(--muted)">Last 30 lines of batch_import.log</span>
+        <button class="secondary" onclick="refreshImportStatus()" style="padding:5px 12px;font-size:0.78rem">Refresh</button>
+      </div>
+      <div class="log-box" id="import-log">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Logs -->
+  <div class="page" id="page-logs">
+    <div class="page-header">
+      <h2>📄 Full Logs</h2>
+      <p>batch_import.log</p>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <label style="font-size:0.8rem;color:var(--muted)">Lines:</label>
+          <select id="log-lines" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:var(--radius);font-size:0.8rem">
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+            <option value="500">500</option>
+          </select>
+        </div>
+        <button class="secondary" onclick="loadLogs()" style="padding:5px 12px;font-size:0.78rem">Refresh</button>
+      </div>
+      <div class="log-box" id="log-box" style="max-height:600px">Loading...</div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let AUTH_HEADER = '';
+let CSRF_TOKEN  = '';
+
+// ---------------------------------------------------------------------------
+// Login
+// ---------------------------------------------------------------------------
+async function doLogin() {
+  const user = document.getElementById('login-user').value;
+  const pass = document.getElementById('login-pass').value;
+  if (!user || !pass) return;
+
+  AUTH_HEADER = 'Basic ' + btoa(user + ':' + pass);
+
+  try {
+    const res = await fetch('/admin/csrf-token', {
+      headers: { 'Authorization': AUTH_HEADER }
+    });
+    if (!res.ok) {
+      document.getElementById('login-error').style.display = 'block';
+      AUTH_HEADER = '';
+      return;
+    }
+    const data = await res.json();
+    CSRF_TOKEN = data.csrf_token;
+
+    document.getElementById('login-overlay').style.display = 'none';
+    document.getElementById('sidebar').style.display = 'flex';
+    document.getElementById('main').style.display = 'block';
+
+    loadMeta();
+    loadAdjHistory();
+    refreshImportStatus();
+  } catch(e) {
+    document.getElementById('login-error').style.display = 'block';
+    AUTH_HEADER = '';
+  }
+}
+
+// Allow Enter key on password field
+document.getElementById('login-pass').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
+document.querySelectorAll('nav a[data-page]').forEach(a => {
+  a.addEventListener('click', () => {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('nav a').forEach(x => x.classList.remove('active'));
+    document.getElementById('page-' + a.dataset.page).classList.add('active');
+    a.classList.add('active');
+    if (a.dataset.page === 'import') refreshImportStatus();
+    if (a.dataset.page === 'logs')   loadLogs();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// API helpers
+// ---------------------------------------------------------------------------
+async function api(path, opts = {}) {
+  const headers = {
+    'Authorization': AUTH_HEADER,
+    'Content-Type': 'application/json',
+    ...(opts.csrf ? { 'X-CSRF-Token': CSRF_TOKEN } : {}),
+    ...(opts.headers || {}),
+  };
+  const res = await fetch(path, { ...opts, headers });
+
+  // If 401, ask user to re-login
+  if (res.status === 401) {
+    AUTH_HEADER = '';
+    location.reload();
+    return;
+  }
+  // If 403 (CSRF expired), get new token and retry once
+  if (res.status === 403) {
+    const refresh = await fetch('/admin/csrf-token', { headers: { 'Authorization': AUTH_HEADER } });
+    if (refresh.ok) {
+      CSRF_TOKEN = (await refresh.json()).csrf_token;
+      headers['X-CSRF-Token'] = CSRF_TOKEN;
+      return fetch(path, { ...opts, headers });
+    }
+  }
+  return res;
+}
+
+function showAlert(id, msg, type = 'success') {
+  const el = document.getElementById(id);
+  el.innerHTML = `<div class="alert alert-${type}">${msg}</div>`;
+  setTimeout(() => { el.innerHTML = ''; }, 5000);
+}
+
+// ---------------------------------------------------------------------------
+// Meta
+// ---------------------------------------------------------------------------
+async function loadMeta() {
+  try {
+    const res = await api('/admin/meta');
+    const d = await res.json();
+    document.getElementById('admin-meta').innerHTML = `
+      <span>${d.total_teams} teams</span>
+      <span>${d.total_matches} matches</span>
+      <span>${d.adjustments} adjustments</span>
+      <span style="color:var(--blue)">${d.provisional} provisional</span>
+    `;
+  } catch(e) {}
+}
+
+// ---------------------------------------------------------------------------
+// Adjustments
+// ---------------------------------------------------------------------------
+async function loadAdjHistory() {
+  try {
+    const res = await api('/admin/adjustments');
+    const d = await res.json();
+    const rows = d.adjustments;
+    if (!rows.length) {
+      document.getElementById('adj-history').innerHTML =
+        '<div style="color:var(--muted);font-size:0.85rem">No adjustments yet.</div>';
+      return;
+    }
+    document.getElementById('adj-history').innerHTML = `
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Date</th><th>Team</th><th>Delta</th><th>Reason</th></tr></thead>
+          <tbody>
+            ${rows.slice(0,10).map(r => `
+              <tr>
+                <td style="color:var(--muted);font-size:0.78rem;white-space:nowrap">${r.date}</td>
+                <td style="font-weight:500">${r.team}</td>
+                <td class="${r.adjustment >= 0 ? 'pos' : 'neg'}">${r.adjustment >= 0 ? '+' : ''}${r.adjustment.toFixed(1)}</td>
+                <td style="color:var(--muted);font-size:0.8rem">${r.reason || '—'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch(e) {
+    document.getElementById('adj-history').innerHTML =
+      '<div style="color:var(--red)">Failed to load adjustments.</div>';
+  }
+}
+
+function previewAdjust() {
+  const team   = document.getElementById('adj-team').value.trim();
+  const amount = parseFloat(document.getElementById('adj-amount').value);
+  const reason = document.getElementById('adj-reason').value.trim();
+
+  if (!team) return showAlert('adjust-alert', 'Enter a team name.', 'error');
+  if (isNaN(amount) || amount === 0) return showAlert('adjust-alert', 'Enter a non-zero amount.', 'error');
+
+  const sign = amount >= 0 ? '+' : '';
+  document.getElementById('adj-preview-text').innerHTML = `
+    <strong>${team}</strong>: <span class="${amount >= 0 ? 'pos' : 'neg'}">${sign}${amount.toFixed(2)} pts</span>
+    ${reason ? `<br><span style="color:var(--muted);font-size:0.82rem">Reason: ${reason}</span>` : ''}
+  `;
+  document.getElementById('adj-preview').style.display = 'block';
+}
+
+function cancelPreview() {
+  document.getElementById('adj-preview').style.display = 'none';
+}
+
+async function applyAdjust() {
+  const team   = document.getElementById('adj-team').value.trim();
+  const amount = parseFloat(document.getElementById('adj-amount').value);
+  const reason = document.getElementById('adj-reason').value.trim();
+
+  try {
+    const res = await api('/admin/adjust', {
+      method: 'POST',
+      body: JSON.stringify({ team, amount, reason }),
+      csrf: true,
+    });
+    const d = await res.json();
+    if (!res.ok) {
+      showAlert('adjust-alert', d.detail || 'Failed.', 'error');
+      return;
+    }
+    showAlert('adjust-alert',
+      `✓ ${d.team}: ${d.old_points.toFixed(1)} → ${d.new_points.toFixed(1)} pts`, 'success');
+    document.getElementById('adj-team').value   = '';
+    document.getElementById('adj-amount').value = '';
+    document.getElementById('adj-reason').value = '';
+    cancelPreview();
+    loadAdjHistory();
+    loadMeta();
+  } catch(e) {
+    showAlert('adjust-alert', 'Request failed: ' + e.message, 'error');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Teams
+// ---------------------------------------------------------------------------
+async function addTeam() {
+  const name = document.getElementById('new-team-name').value.trim();
+  const pts  = parseFloat(document.getElementById('new-team-pts').value);
+
+  if (!name) return showAlert('add-team-alert', 'Enter a team name.', 'error');
+  if (isNaN(pts) || pts < 0) return showAlert('add-team-alert', 'Enter valid starting points.', 'error');
+
+  try {
+    const res = await api('/admin/team/add', {
+      method: 'POST',
+      body: JSON.stringify({ name, points: pts }),
+      csrf: true,
+    });
+    const d = await res.json();
+    if (!res.ok) {
+      showAlert('add-team-alert', d.detail || 'Failed.', 'error');
+      return;
+    }
+    showAlert('add-team-alert', `✓ ${d.name} added with ${pts} pts (provisional)`, 'success');
+    document.getElementById('new-team-name').value = '';
+    document.getElementById('new-team-pts').value  = '';
+    loadMeta();
+  } catch(e) {
+    showAlert('add-team-alert', 'Request failed: ' + e.message, 'error');
+  }
+}
+
+async function deleteTeam() {
+  const name = document.getElementById('del-team-name').value.trim();
+  if (!name) return showAlert('del-team-alert', 'Enter a team name.', 'error');
+
+  if (!confirm(`Are you sure you want to delete "${name}"? This cannot be undone.`)) return;
+
+  try {
+    const res = await api('/admin/team/delete', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+      csrf: true,
+    });
+    const d = await res.json();
+    if (!res.ok) {
+      showAlert('del-team-alert', d.detail || 'Failed.', 'error');
+      return;
+    }
+    const warn = d.had_matches
+      ? ` (had ${d.had_matches} matches in history)`
+      : '';
+    showAlert('del-team-alert', `✓ ${d.deleted} deleted${warn}`, 'success');
+    document.getElementById('del-team-name').value = '';
+    loadMeta();
+  } catch(e) {
+    showAlert('del-team-alert', 'Request failed: ' + e.message, 'error');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Import control
+// ---------------------------------------------------------------------------
+let importPolling = null;
+
+async function refreshImportStatus() {
+  try {
+    const res = await api('/admin/import/status');
+    const d = await res.json();
+
+    const pulse = document.getElementById('import-pulse');
+    const text  = document.getElementById('import-status-text');
+    const last  = document.getElementById('import-last-run');
+    const btn   = document.getElementById('trigger-btn');
+
+    if (d.running) {
+      pulse.className = 'pulse';
+      text.textContent = 'Import running...';
+      text.style.color = 'var(--green)';
+      btn.disabled = true;
+      // Auto-refresh while running
+      if (!importPolling) {
+        importPolling = setInterval(refreshImportStatus, 3000);
+      }
+    } else if (d.trigger_pending) {
+      pulse.className = 'pulse';
+      text.textContent = 'Queued — waking daemon (up to 5s)...';
+      text.style.color = 'var(--accent)';
+      btn.disabled = true;
+      if (!importPolling) {
+        importPolling = setInterval(refreshImportStatus, 2000);
+      }
+    } else {
+      pulse.className = 'pulse idle';
+      text.textContent = d.last_result === 'success' ? 'Last import succeeded'
+                       : d.last_result === 'failed'  ? 'Last import failed'
+                       : 'Idle';
+      text.style.color = d.last_result === 'failed' ? 'var(--red)' : 'var(--text)';
+      btn.disabled = false;
+      if (importPolling) { clearInterval(importPolling); importPolling = null; }
+    }
+
+    last.textContent = d.last_run ? 'Last run: ' + d.last_run : 'Never run manually';
+
+    // Render log
+    const logEl = document.getElementById('import-log');
+    if (d.log_tail && d.log_tail.length) {
+      logEl.innerHTML = d.log_tail.map(coloriseLine).join('\n');
+      logEl.scrollTop = logEl.scrollHeight;
+    } else {
+      logEl.textContent = 'No log entries yet.';
+    }
+  } catch(e) {}
+}
+
+async function triggerImport() {
+  document.getElementById('trigger-btn').disabled = true;
+  try {
+    const res = await api('/admin/import/trigger', { method: 'POST', csrf: true });
+    const d = await res.json();
+    if (!res.ok) {
+      showAlert('import-alert', d.detail || 'Failed to start import.', 'error');
+      document.getElementById('trigger-btn').disabled = false;
+      return;
+    }
+    showAlert('import-alert', '✓ Import started — watching log...', 'info');
+    // Start polling
+    importPolling = setInterval(refreshImportStatus, 3000);
+    refreshImportStatus();
+  } catch(e) {
+    showAlert('import-alert', 'Request failed: ' + e.message, 'error');
+    document.getElementById('trigger-btn').disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Logs
+// ---------------------------------------------------------------------------
+async function loadLogs() {
+  const lines = document.getElementById('log-lines').value;
+  try {
+    const res = await api(`/admin/logs?lines=${lines}`);
+    const d = await res.json();
+    const el = document.getElementById('log-box');
+    if (!d.lines.length) {
+      el.textContent = 'No log entries yet.';
+      return;
+    }
+    el.innerHTML = d.lines.map(coloriseLine).join('\n');
+    el.scrollTop = el.scrollHeight;
+  } catch(e) {
+    document.getElementById('log-box').textContent = 'Failed to load logs.';
+  }
+}
+
+function coloriseLine(line) {
+  const escaped = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  if (escaped.includes('[ERROR]') || escaped.includes('FAILED') || escaped.includes('Error'))
+    return `<span class="log-error">${escaped}</span>`;
+  if (escaped.includes('[OK]') || escaped.includes('complete') || escaped.includes('imported'))
+    return `<span class="log-ok">${escaped}</span>`;
+  if (escaped.includes('[WARN]') || escaped.includes('Warning'))
+    return `<span class="log-warn">${escaped}</span>`;
+  return escaped;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-refresh meta every 60s
+// ---------------------------------------------------------------------------
+setInterval(loadMeta, 60000);
+</script>
+</body>
+</html>

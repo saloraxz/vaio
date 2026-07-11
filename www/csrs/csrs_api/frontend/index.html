@@ -69,7 +69,6 @@ body {
 
 nav { flex: 1; padding: 12px 0; overflow-y: auto; }
 
-/* Top-level link (no children) */
 nav > a {
   display: flex;
   align-items: center;
@@ -85,7 +84,6 @@ nav > a {
 nav > a:hover { color: var(--text); background: var(--surface2); }
 nav > a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(245,166,35,0.08); }
 
-/* Dropdown category group */
 .nav-group { border-left: 3px solid transparent; }
 .nav-group-toggle {
   display: flex;
@@ -101,7 +99,7 @@ nav > a.active { color: var(--accent); border-left-color: var(--accent); backgro
 }
 .nav-group-toggle:hover { color: var(--text); background: var(--surface2); }
 .nav-group-toggle .chevron {
-  font-size: 0.65rem;
+  font-size: 1rem;
   color: var(--muted);
   transition: transform 0.2s ease;
   display: inline-block;
@@ -135,6 +133,7 @@ nav > a.active { color: var(--accent); border-left-color: var(--accent); backgro
 .nav-subnav a.active { color: var(--accent); border-left-color: var(--accent); background: rgba(245,166,35,0.08); }
 .nav-subnav a.wip { cursor: default; opacity: 0.6; }
 .nav-subnav a.wip:hover { color: var(--muted); background: none; }
+nav > a.wip { cursor: default; opacity: 0.6; pointer-events: none; }
 
 .wip-tag {
   font-size: 0.6rem;
@@ -206,13 +205,21 @@ nav > a.active { color: var(--accent); border-left-color: var(--accent); backgro
 .stat-card .sub   { font-size: 0.72rem; color: var(--muted); margin-top: 2px; }
 
 /* ── Controls ── */
+.rank-date-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
 .controls {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
   margin-bottom: 16px;
 }
-input[type="text"], select {
+input[type="text"], input[type="date"], select {
   background: var(--surface2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -222,8 +229,135 @@ input[type="text"], select {
   outline: none;
   transition: border-color 0.15s;
 }
-input[type="text"]:focus, select:focus { border-color: var(--accent); }
+input[type="text"]:focus, input[type="date"]:focus, select:focus { border-color: var(--accent); }
 input[type="text"]::placeholder { color: var(--muted); }
+
+/* ── Custom date picker ── */
+.dp-wrap { position: relative; display: inline-block; }
+.dp-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  font-size: 0.85rem;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s;
+  min-width: 140px;
+  white-space: nowrap;
+}
+.dp-input:hover { border-color: var(--muted); }
+.dp-input.open { border-color: var(--accent); }
+.dp-input svg { flex-shrink: 0; color: var(--muted); }
+.dp-cal {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 9999;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  padding: 12px;
+  width: 260px;
+  display: none;
+}
+.dp-cal.open { display: block; }
+.dp-cal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.dp-cal-header span {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+.dp-cal-header span:hover { color: var(--accent); }
+.dp-nav-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 1rem;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+.dp-nav-btn:hover { background: var(--surface2); color: var(--text); }
+.dp-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-bottom: 4px;
+}
+.dp-weekdays span {
+  text-align: center;
+  font-size: 0.7rem;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 4px 0;
+}
+.dp-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.dp-day {
+  text-align: center;
+  padding: 6px 2px;
+  font-size: 0.82rem;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.1s, color 0.1s;
+}
+.dp-day:hover { background: var(--surface2); }
+.dp-day.today { color: var(--accent); font-weight: 700; }
+.dp-day.selected { background: var(--accent); color: #0d0d0f; font-weight: 700; }
+.dp-day.selected:hover { background: var(--accent2); }
+.dp-day.other-month { color: var(--muted); opacity: 0.4; }
+.dp-day.disabled { opacity: 0.2; cursor: default; pointer-events: none; }
+.dp-month-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-top: 4px;
+}
+.dp-month-btn {
+  padding: 8px 4px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  text-align: center;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.1s;
+}
+.dp-month-btn:hover { background: var(--surface2); }
+.dp-month-btn.selected { background: var(--accent); color: #0d0d0f; font-weight: 700; }
+.dp-year-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-top: 4px;
+}
+.dp-year-btn {
+  padding: 8px 4px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  text-align: center;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.1s;
+}
+.dp-year-btn:hover { background: var(--surface2); }
+.dp-year-btn.selected { background: var(--accent); color: #0d0d0f; font-weight: 700; }
 
 button {
   background: var(--accent);
@@ -243,6 +377,38 @@ button.secondary {
   border: 1px solid var(--border);
 }
 button.secondary:hover { background: var(--border); }
+
+/* ── Table ── */
+/* Mobile: hide verbose columns to prevent horizontal overflow */
+@media (max-width: 700px) {
+  .col-hide-mobile { display: none !important; }
+  .col-trunc-mobile {
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  table { font-size: 0.78rem; }
+  th, td { padding: 8px 6px; }
+
+  /* Cards — tighter padding on mobile */
+  .card { padding: 14px 12px; }
+
+  /* Charts shorter on mobile */
+  .chart-wrap { height: 200px; }
+
+  /* Page header controls stack vertically */
+  .page-header .controls { flex-direction: column; align-items: stretch !important; }
+  .page-header .controls .search-wrap { width: 100% !important; }
+  .page-header .controls button { width: 100%; }
+
+  /* Event summary side-by-side grids collapse */
+  .es-two-col { grid-template-columns: 1fr !important; }
+
+  /* Tables inside event summary scroll horizontally */
+  .es-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .es-table-wrap table { min-width: 480px; }
+}
 
 /* ── Table ── */
 .table-wrap { overflow-x: auto; }
@@ -275,7 +441,6 @@ tr:last-child td { border-bottom: none; }
 .delta-neg { color: var(--red); }
 .delta-zero { color: var(--muted); }
 
-/* Tier badges */
 .tier {
   display: inline-block;
   padding: 2px 7px;
@@ -405,6 +570,10 @@ tr:last-child td { border-bottom: none; }
   justify-content: center;
   padding: 60px;
   color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
 }
 .spinner {
   width: 28px; height: 28px;
@@ -444,58 +613,11 @@ tr:last-child td { border-bottom: none; }
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 5px 20px;
+  padding: 6px 20px;
   cursor: pointer;
   transition: background 0.15s, opacity 0.15s;
 }
 .elite-legend-row:hover { background: var(--surface2); }
-.elite-legend-row.dismissed { display: none; }
-
-.legend-close-btn {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  font-size: 0.72rem;
-  color: transparent;
-  cursor: pointer;
-  transition: color 0.12s, background 0.12s;
-  margin-left: 2px;
-  line-height: 1;
-  user-select: none;
-}
-.elite-legend-row:hover .legend-close-btn { color: var(--muted); }
-.legend-close-btn:hover {
-  color: var(--red) !important;
-  background: rgba(224, 90, 90, 0.15);
-}
-
-.barely-elite-section { border-top: 1px solid var(--border); margin-top: 2px; }
-.barely-elite-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 20px 5px;
-  font-size: 0.65rem;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  color: var(--muted);
-  cursor: pointer;
-  user-select: none;
-}
-.barely-elite-header:hover { color: var(--text); }
-.barely-elite-header .be-chev {
-  font-size: 0.6rem;
-  transition: transform 0.2s;
-  display: inline-block;
-}
-.barely-elite-header.be-collapsed .be-chev { transform: rotate(-90deg); }
-.barely-elite-rows { overflow: hidden; transition: max-height 0.3s ease; }
-.barely-elite-rows.be-collapsed { max-height: 0 !important; }
 
 /* ── Search dropdown ── */
 .search-wrap { position: relative; display: inline-block; }
@@ -538,10 +660,133 @@ tr:last-child td { border-bottom: none; }
   color: var(--muted);
 }
 
+/* ── Mobile-only elements — hidden on desktop, all styles inside media query ── */
+#bottom-nav,
+#more-sheet,
+#more-sheet-overlay { display: none; }
+
 /* ── Responsive ── */
 @media (max-width: 700px) {
   #sidebar { display: none; }
-  #main { margin-left: 0; padding: 16px; }
+  #main { margin-left: 0; padding: 16px; padding-bottom: 84px; }
+
+  /* iOS/Android zoom in on focus when a form field's font-size is under
+     16px — bump it here (mobile-only) so opening any search/filter field
+     doesn't trigger an automatic page zoom. Desktop styling is untouched. */
+  input[type="text"], input[type="date"], select {
+    font-size: 16px;
+  }
+
+  .sim-layout {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 8px;
+  }
+  .sim-vs { padding-top: 0; }
+  .sim-team-card .search-wrap { max-width: 100%; }
+
+  #bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    z-index: 200;
+    padding: 8px 4px calc(8px + env(safe-area-inset-bottom, 0px));
+    flex: none;
+    overflow-y: visible;
+  }
+  .bottom-nav-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 6px 0;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.68rem;
+    font-weight: 500;
+    cursor: pointer;
+    border-radius: var(--radius);
+    border-left: none;
+  }
+  .bottom-nav-item.active { color: var(--accent); background: none; border-left: none; }
+  .bottom-nav-icon {
+    font-size: 1.3rem;
+    height: 1.3rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+
+  /* ── More sheet overlay ── */
+  #more-sheet-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 300;
+    backdrop-filter: blur(2px);
+  }
+  #more-sheet-overlay.open { display: block; }
+
+  /* Sheet slides up from bottom, FACEIT-style */
+  #more-sheet {
+    display: none;
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    background: var(--surface);
+    border-radius: 20px 20px 0 0;
+    z-index: 301;
+    padding: 0 0 calc(env(safe-area-inset-bottom, 0px));
+    max-height: 80vh;
+    overflow-y: auto;
+    transform: translateY(100%);
+    transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
+  }
+  #more-sheet.open {
+    display: block;
+    transform: translateY(0);
+  }
+  .more-sheet-handle {
+    width: 36px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    margin: 12px auto 8px;
+  }
+  /* FACEIT-style: large icon + label rows */
+  .more-sheet-item {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 18px 24px;
+    color: var(--text);
+    text-decoration: none;
+    cursor: pointer;
+    font-size: 1.05rem;
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.12s;
+  }
+  .more-sheet-item:last-child { border-bottom: none; }
+  .more-sheet-item:active { background: var(--surface2); }
+  .more-sheet-item.wip { cursor: default; opacity: 0.6; }
+  .more-sheet-item.wip:active { background: none; }
+  .more-sheet-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: var(--surface2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 1.3rem;
+  }
+  .more-sheet-icon svg { width: 22px; height: 22px; }
 }
 </style>
 </head>
@@ -554,8 +799,9 @@ tr:last-child td { border-bottom: none; }
     <p>Counter Strike Rating System</p>
   </div>
   <nav>
-    <a class="active" data-page="rankings">Rankings</a>
-    <a data-page="history">Match History</a>
+    <a class="active" data-page="home">Home</a>
+    <a data-page="rankings">Rankings</a>
+    <a data-page="history">Results</a>
     <a data-page="simulate">Simulate</a>
 
     <div class="nav-group" id="nav-group-team-analytics">
@@ -564,34 +810,173 @@ tr:last-child td { border-bottom: none; }
         <span class="chevron">&#9656;</span>
       </div>
       <div class="nav-subnav">
-        <a data-page="" class="wip">Rating Graph <span class="wip-tag">WIP</span></a>
-        <a data-page="" class="wip">Form Graph <span class="wip-tag">WIP</span></a>
+        <a data-page="rating-graph">Rating Graph</a>
+        <a data-page="form-graph">Form Graph</a>
         <a data-page="elite">Elite Teams Over Time</a>
-        <a data-page="" class="wip">Map Score Distribution <span class="wip-tag">WIP</span></a>
-        <a data-page="" class="wip">Analyse Team Form <span class="wip-tag">WIP</span></a>
-        <a data-page="" class="wip">Compare Teams <span class="wip-tag">WIP</span></a>
+        <a data-page="form-analysis">Analyse Team Form</a>
+        <a data-page="compare">Compare Teams</a>
       </div>
     </div>
 
+    <a data-page="team-details">Team Details</a>
     <a data-page="h2h">Head to Head</a>
+    <a data-page="month-summary">Month Summary</a>
+    <a data-page="event-summary">Event Summary</a>
   </nav>
   <div class="sidebar-meta" id="sidebar-meta">
     <span>Loading...</span>
   </div>
-  
 </aside>
+
+<!-- Mobile bottom nav (hidden on desktop via CSS) -->
+<nav id="bottom-nav">
+  <a data-page="home" class="bottom-nav-item active">
+    <span class="bottom-nav-icon">&#8962;</span>
+    <span>Home</span>
+  </a>
+  <a data-page="rankings" class="bottom-nav-item">
+    <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4zM7 6H4a2 2 0 0 0 0 4h1M17 6h3a2 2 0 0 1 0 4h-1"/></svg></span>
+    <span>Rankings</span>
+  </a>
+  <a data-page="history" class="bottom-nav-item">
+    <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span>
+    <span>Results</span>
+  </a>
+  <a data-page="team-details" class="bottom-nav-item">
+    <span class="bottom-nav-icon"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg></span>
+    <span>Team Details</span>
+  </a>
+  <a id="bottom-nav-more" class="bottom-nav-item">
+    <span class="bottom-nav-icon">&#8943;</span>
+    <span>More</span>
+  </a>
+</nav>
+
+<!-- Mobile "More" sheet (hidden on desktop via CSS) -->
+<div id="more-sheet-overlay"></div>
+<div id="more-sheet">
+  <div class="more-sheet-handle"></div>
+  <a data-page="simulate" class="more-sheet-item">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
+    </span>
+    <span>Simulate</span>
+  </a>
+  <a data-page="h2h" class="more-sheet-item">
+    <span class="more-sheet-icon" style="font-size:0.95rem;font-weight:700;letter-spacing:0.5px;">VS</span>
+    <span>Head to Head</span>
+  </a>
+  <a data-page="elite" class="more-sheet-item">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
+    </span>
+    <span>Elite Teams Over Time</span>
+  </a>
+  <a data-page="rating-graph" class="more-sheet-item">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
+    </span>
+    <span>Rating Graph</span>
+  </a>
+  <a data-page="form-graph" class="more-sheet-item">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>
+    </span>
+    <span>Form Graph</span>
+  </a>
+  <a data-page="form-analysis" class="more-sheet-item">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+    </span>
+    <span>Analyse Team Form</span>
+  </a>
+  <a data-page="compare" class="more-sheet-item">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.2l1.3 2.8h-2.6z" fill="currentColor"/><path d="M4 7h16M7 7l-3 9M7 7l3 9M17 7l-3 9M17 7l3 9"/><path d="M4 16a3.5 1.6 0 0 0 6 0"/><path d="M14 16a3.5 1.6 0 0 0 6 0"/><path d="M12 7v13M9 20h6"/></svg>
+    </span>
+    <span>Compare Teams</span>
+  </a>
+  <a data-page="month-summary" class="more-sheet-item">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+    </span>
+    <span>Month Summary</span>
+  </a>
+  <a data-page="event-summary" class="more-sheet-item">
+    <span class="more-sheet-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4zM7 6H4a2 2 0 0 0 0 4h1M17 6h3a2 2 0 0 1 0 4h-1"/></svg>
+    </span>
+    <span>Event Summary</span>
+  </a>
+</div>
 
 <!-- Main content -->
 <main id="main">
 
+  <!-- Home -->
+  <div class="page active" id="page-home">
+    <div class="page-header"><h2>Home</h2></div>
+    <div class="analytics-grid" style="margin-bottom:16px">
+      <div class="card" id="home-top-team">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+      <div class="card" id="home-top-form-team">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Featured Results</h2>
+      </div>
+      <div id="home-featured-results">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+    <div class="page-header" style="margin-bottom:12px">
+      <h2 style="font-size:1rem">Standouts <span style="color:var(--muted);font-weight:400;font-size:0.78rem">— last 30 days</span></h2>
+    </div>
+    <div class="stat-grid" id="home-tiles">
+      <div class="loading"><div class="spinner"></div> Loading…</div>
+    </div>
+    <div class="card">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Hot Teams <span style="color:var(--muted);font-weight:400;font-size:0.78rem">— top 30, last 30 days</span></h2>
+      </div>
+      <div class="analytics-grid" id="home-hot-teams">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Cold Teams <span style="color:var(--muted);font-weight:400;font-size:0.78rem">— top 30, last 30 days</span></h2>
+      </div>
+      <div class="analytics-grid" id="home-cold-teams">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Rankings -->
-  <div class="page active" id="page-rankings">
+  <div class="page" id="page-rankings">
     <div class="page-header">
       <h2>Rankings</h2>
       <div class="controls" style="margin:0">
         <input type="text" id="rank-search" placeholder="Search team…" style="width:200px">
       </div>
     </div>
+
+    <!-- Date selector -->
+    <div class="rank-date-bar">
+      <div class="dp-wrap" id="dp-rank-date-wrap">
+        <input type="hidden" id="rank-date">
+        <div class="dp-input" id="dp-rank-date-btn" onclick="dpToggle('rank-date')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+          <span id="dp-rank-date-label">Select date</span>
+        </div>
+        <div class="dp-cal" id="dp-rank-date-cal"></div>
+      </div>
+    </div>
+
     <div class="card" style="padding:0">
       <div class="table-wrap" id="rankings-table">
         <div class="loading"><div class="spinner"></div> Loading…</div>
@@ -599,11 +984,14 @@ tr:last-child td { border-bottom: none; }
     </div>
   </div>
 
-  <!-- Match History -->
+  <!-- Results -->
   <div class="page" id="page-history">
-    <div class="page-header"><h2>Match History</h2></div>
+    <div class="page-header"><h2>Results</h2></div>
     <div class="controls">
-      <input type="text" id="hist-team"  placeholder="Team…" style="width:160px">
+      <div class="search-wrap" style="display:inline-block;width:160px">
+        <input type="text" id="hist-team" placeholder="Team…" style="width:100%" autocomplete="off">
+        <div class="search-dropdown" id="hist-team-dd"></div>
+      </div>
       <select id="hist-tier">
         <option value="">All Tiers</option>
         <option value="S+">S+</option>
@@ -613,7 +1001,10 @@ tr:last-child td { border-bottom: none; }
         <option value="C">C</option>
         <option value="D">D</option>
       </select>
-      <input type="text" id="hist-event" placeholder="Event…" style="width:200px">
+      <div class="search-wrap" style="display:inline-block;width:200px">
+        <input type="text" id="hist-event" placeholder="Event…" style="width:100%" autocomplete="off">
+        <div class="search-dropdown" id="hist-event-dd"></div>
+      </div>
       <button onclick="loadHistory(1)">Filter</button>
       <button class="secondary" onclick="clearHistoryFilters()">Clear</button>
     </div>
@@ -632,13 +1023,19 @@ tr:last-child td { border-bottom: none; }
       <div class="sim-layout">
         <div class="sim-team-card">
           <div style="margin-bottom:8px;font-size:0.8rem;color:var(--muted)">TEAM 1</div>
-          <input type="text" id="sim-t1" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem">
+          <div class="search-wrap" style="width:100%">
+            <input type="text" id="sim-t1" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem" autocomplete="off">
+            <div class="search-dropdown" id="sim-t1-dd"></div>
+          </div>
           <div class="team-pts" id="sim-t1-pts" style="margin-top:8px"></div>
         </div>
         <div class="sim-vs">VS</div>
         <div class="sim-team-card">
           <div style="margin-bottom:8px;font-size:0.8rem;color:var(--muted)">TEAM 2</div>
-          <input type="text" id="sim-t2" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem">
+          <div class="search-wrap" style="width:100%">
+            <input type="text" id="sim-t2" placeholder="Team name…" style="width:100%;text-align:center;font-size:1rem" autocomplete="off">
+            <div class="search-dropdown" id="sim-t2-dd"></div>
+          </div>
           <div class="team-pts" id="sim-t2-pts" style="margin-top:8px"></div>
         </div>
       </div>
@@ -654,12 +1051,12 @@ tr:last-child td { border-bottom: none; }
         <div>
           <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">Tier</div>
           <select id="sim-tier">
-            <option value="S+">S+ — Elite Major</option>
-            <option value="S">S — Major</option>
-            <option value="A" selected>A — Premier</option>
-            <option value="B">B — A-tier</option>
-            <option value="C">C — B-tier</option>
-            <option value="D">D — Lower</option>
+            <option value="S+">S+</option>
+            <option value="S">S</option>
+            <option value="A" selected>A</option>
+            <option value="B">B</option>
+            <option value="C">C</option>
+            <option value="D">D</option>
           </select>
         </div>
         <div>
@@ -725,11 +1122,25 @@ tr:last-child td { border-bottom: none; }
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
         <div>
           <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">Start Date</div>
-          <input type="date" id="elite-start" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:var(--radius);font-size:0.85rem">
+          <div class="dp-wrap" id="dp-elite-start-wrap">
+            <input type="hidden" id="elite-start">
+            <div class="dp-input" id="dp-elite-start-btn" onclick="dpToggle('elite-start')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+              <span id="dp-elite-start-label">Select date</span>
+            </div>
+            <div class="dp-cal" id="dp-elite-start-cal"></div>
+          </div>
         </div>
         <div>
           <div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px">End Date</div>
-          <input type="date" id="elite-end" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:var(--radius);font-size:0.85rem">
+          <div class="dp-wrap" id="dp-elite-end-wrap">
+            <input type="hidden" id="elite-end">
+            <div class="dp-input" id="dp-elite-end-btn" onclick="dpToggle('elite-end')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+              <span id="dp-elite-end-label">Select date</span>
+            </div>
+            <div class="dp-cal" id="dp-elite-end-cal"></div>
+          </div>
         </div>
         <button onclick="loadElite()">Generate</button>
         <button class="secondary" onclick="setElitePreset('all')">All Time</button>
@@ -747,27 +1158,300 @@ tr:last-child td { border-bottom: none; }
     <div class="page-header"><h2>Head to Head</h2></div>
     <div class="card">
       <div class="controls" style="margin-bottom:0">
-        <input type="text" id="h2h-t1" placeholder="Team 1…" style="width:200px">
-        <input type="text" id="h2h-t2" placeholder="Team 2…" style="width:200px">
+        <div class="search-wrap" style="display:inline-block;width:200px">
+          <input type="text" id="h2h-t1" placeholder="Team 1…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="h2h-t1-dd"></div>
+        </div>
+        <div class="search-wrap" style="display:inline-block;width:200px">
+          <input type="text" id="h2h-t2" placeholder="Team 2…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="h2h-t2-dd"></div>
+        </div>
         <button onclick="loadH2H()">Compare</button>
       </div>
     </div>
     <div id="h2h-result"></div>
   </div>
 
-  <!-- Team Detail (hidden page) -->
-  <div class="page" id="page-team">
+  <!-- Month Summary -->
+  <div class="page" id="page-month-summary">
+    <div class="page-header">
+      <h2>Month Summary</h2>
+      <div class="controls" style="margin-top:12px;margin-bottom:0">
+        <select id="month-select" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 12px;cursor:pointer">
+          <option value="">Loading months…</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="analytics-grid" style="margin-bottom:16px">
+      <div class="card" id="ms-top-team"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+      <div class="card" id="ms-top-form-team"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+    </div>
+    <div class="page-header" style="margin-bottom:12px">
+      <h2 style="font-size:1rem">Standouts <span id="ms-standouts-label" style="color:var(--muted);font-weight:400;font-size:0.78rem"></span></h2>
+    </div>
+    <div class="stat-grid" id="ms-tiles"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+    <div class="card">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Hot Teams <span id="ms-hot-label" style="color:var(--muted);font-weight:400;font-size:0.78rem"></span></h2>
+      </div>
+      <div class="analytics-grid" id="ms-hot-teams"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+    </div>
+    <div class="card">
+      <div class="page-header" style="margin-bottom:12px">
+        <h2 style="font-size:1rem">Cold Teams <span id="ms-cold-label" style="color:var(--muted);font-weight:400;font-size:0.78rem"></span></h2>
+      </div>
+      <div class="analytics-grid" id="ms-cold-teams"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+    </div>
+
+  </div>
+
+  <!-- Event Summary -->
+  <div class="page" id="page-event-summary">
+    <div class="page-header">
+      <h2>Event Summary</h2>
+      <div class="controls" style="margin-top:12px;margin-bottom:0;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <div class="search-wrap" style="display:inline-block;width:320px">
+          <input type="text" id="es-search" placeholder="Search event…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="es-dd"></div>
+        </div>
+        <button onclick="esSelectEvent(document.getElementById('es-search').value)">View</button>
+      </div>
+    </div>
+    <div id="es-result"></div>
+  </div>
+
+  <!-- Match Page -->
+  <div class="page" id="page-match">
     <div style="margin-bottom:16px">
       <button class="secondary" onclick="goBack()">← Back</button>
     </div>
-    <div id="team-detail-content">
-      <div class="loading"><div class="spinner"></div> Loading…</div>
+    <div class="page-header"><h2 id="match-page-title">Match</h2></div>
+    <div id="match-result"><div class="loading"><div class="spinner"></div> Loading…</div></div>
+  </div>
+
+  <!-- Team Details -->
+  <div class="page" id="page-team-details">
+    <div class="page-header"><h2>Team Details</h2></div>
+    <div class="card">
+      <div class="controls" style="margin-bottom:0">
+        <div class="search-wrap" style="display:inline-block;width:300px">
+          <input type="text" id="td-input" placeholder="Search team…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="td-dd"></div>
+        </div>
+        <button onclick="loadTeamDetails()">View</button>
+      </div>
     </div>
+    <div id="td-result"></div>
+  </div>
+
+  <!-- Rating Graph -->
+  <div class="page" id="page-rating-graph">
+    <div class="page-header"><h2>Rating Graph</h2></div>
+    <div class="card">
+      <div class="controls" style="margin-bottom:0">
+        <div class="search-wrap" style="display:inline-block;width:300px">
+          <input type="text" id="rg-input" placeholder="Search team…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="rg-dd"></div>
+        </div>
+        <button onclick="loadRatingGraph()">View</button>
+      </div>
+    </div>
+    <div id="rg-result"></div>
+  </div>
+
+  <!-- Form Graph -->
+  <div class="page" id="page-form-graph">
+    <div class="page-header"><h2>Form Graph</h2></div>
+    <div class="card">
+      <div class="controls" style="margin-bottom:0">
+        <div class="search-wrap" style="display:inline-block;width:300px">
+          <input type="text" id="fg-input" placeholder="Search team…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="fg-dd"></div>
+        </div>
+        <button onclick="loadFormGraph()">View</button>
+      </div>
+    </div>
+    <div id="fg-result"></div>
+  </div>
+
+  <!-- Compare Teams -->
+  <div class="page" id="page-compare">
+    <div class="page-header"><h2>Compare Teams</h2></div>
+    <div class="card">
+      <div class="controls" style="margin-bottom:0">
+        <div class="search-wrap" style="display:inline-block;width:200px">
+          <input type="text" id="cmp-t1" placeholder="Team 1…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="cmp-t1-dd"></div>
+        </div>
+        <div class="search-wrap" style="display:inline-block;width:200px">
+          <input type="text" id="cmp-t2" placeholder="Team 2…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="cmp-t2-dd"></div>
+        </div>
+        <button onclick="loadCompare()">Compare</button>
+      </div>
+    </div>
+    <div id="cmp-result"></div>
+  </div>
+
+  <!-- Analyse Team Form -->
+  <div class="page" id="page-form-analysis">
+    <div class="page-header"><h2>Analyse Team Form</h2></div>
+    <div class="card">
+      <div class="controls" style="margin-bottom:0">
+        <div class="search-wrap" style="display:inline-block;width:300px">
+          <input type="text" id="fa-input" placeholder="Search team…" style="width:100%" autocomplete="off">
+          <div class="search-dropdown" id="fa-dd"></div>
+        </div>
+        <button onclick="loadFormAnalysis()">Analyse</button>
+      </div>
+    </div>
+    <div id="fa-result"></div>
   </div>
 
 </main>
 
 <script>
+// ---------------------------------------------------------------------------
+// Custom Date Picker
+// ---------------------------------------------------------------------------
+const _dpState = {}; // id -> { year, month, mode: 'day'|'month'|'year', value, onChange }
+
+function dpInit(id, onChange) {
+  const today = new Date();
+  _dpState[id] = { year: today.getFullYear(), month: today.getMonth(), mode: 'day', value: null, onChange };
+  dpRender(id);
+}
+
+function dpToggle(id) {
+  const cal = document.getElementById(`dp-${id}-cal`);
+  const btn = document.getElementById(`dp-${id}-btn`);
+  const isOpen = cal.classList.contains('open');
+  // Close all
+  document.querySelectorAll('.dp-cal.open').forEach(c => c.classList.remove('open'));
+  document.querySelectorAll('.dp-input.open').forEach(b => b.classList.remove('open'));
+  if (!isOpen) {
+    cal.classList.add('open');
+    btn.classList.add('open');
+    dpRender(id);
+  }
+}
+
+function dpSet(id, yyyy_mm_dd) {
+  if (!_dpState[id]) dpInit(id, null);
+  const s = _dpState[id];
+  s.value = yyyy_mm_dd;
+  if (yyyy_mm_dd) {
+    const [y, m] = yyyy_mm_dd.split('-').map(Number);
+    s.year = y; s.month = m - 1;
+  }
+  const hidden = document.getElementById(id);
+  if (hidden) hidden.value = yyyy_mm_dd || '';
+  const lbl = document.getElementById(`dp-${id}-label`);
+  if (lbl) lbl.textContent = yyyy_mm_dd ? _dpFmtDisplay(yyyy_mm_dd) : 'Select date';
+  dpRender(id);
+}
+
+function dpGet(id) {
+  const hidden = document.getElementById(id);
+  return hidden ? hidden.value : '';
+}
+
+function _dpFmtDisplay(yyyy_mm_dd) {
+  if (!yyyy_mm_dd) return 'Select date';
+  const [y, m, d] = yyyy_mm_dd.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function dpRender(id) {
+  const cal = document.getElementById(`dp-${id}-cal`);
+  if (!cal) return;
+  if (!_dpState[id]) dpInit(id, null);
+  const s = _dpState[id];
+  const today = new Date();
+
+  if (s.mode === 'year') {
+    const base = Math.floor(s.year / 12) * 12;
+    const years = Array.from({length: 12}, (_, i) => base + i);
+    cal.innerHTML = `
+      <div class="dp-cal-header">
+        <button class="dp-nav-btn" onclick="_dpYearPage('${id}',-12)">‹</button>
+        <span onclick="_dpMode('${id}','day')">${base}–${base+11}</span>
+        <button class="dp-nav-btn" onclick="_dpYearPage('${id}',12)">›</button>
+      </div>
+      <div class="dp-year-grid">
+        ${years.map(y => `<div class="dp-year-btn${y===s.year?' selected':''}" onclick="_dpPickYear('${id}',${y})">${y}</div>`).join('')}
+      </div>`;
+    return;
+  }
+
+  if (s.mode === 'month') {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    cal.innerHTML = `
+      <div class="dp-cal-header">
+        <button class="dp-nav-btn" onclick="_dpYearPage('${id}',-1)">‹</button>
+        <span onclick="_dpMode('${id}','year')">${s.year}</span>
+        <button class="dp-nav-btn" onclick="_dpYearPage('${id}',1)">›</button>
+      </div>
+      <div class="dp-month-grid">
+        ${months.map((mn, i) => `<div class="dp-month-btn${i===s.month?' selected':''}" onclick="_dpPickMonth('${id}',${i})">${mn}</div>`).join('')}
+      </div>`;
+    return;
+  }
+
+  // Day view
+  const firstDay = new Date(s.year, s.month, 1).getDay();
+  const daysInMonth = new Date(s.year, s.month + 1, 0).getDate();
+  const monthName = new Date(s.year, s.month, 1).toLocaleString('default', { month: 'long' });
+  const selParts = s.value ? s.value.split('-').map(Number) : null;
+
+  let cells = '';
+  const offset = (firstDay + 6) % 7; // Mon-start
+  const prevDays = new Date(s.year, s.month, 0).getDate();
+  for (let i = 0; i < offset; i++) {
+    cells += `<div class="dp-day other-month">${prevDays - offset + i + 1}</div>`;
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    const isToday = d === today.getDate() && s.month === today.getMonth() && s.year === today.getFullYear();
+    const isSel = selParts && d === selParts[2] && s.month === selParts[1]-1 && s.year === selParts[0];
+    const cls = ['dp-day', isToday ? 'today' : '', isSel ? 'selected' : ''].filter(Boolean).join(' ');
+    const val = `${s.year}-${String(s.month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    cells += `<div class="${cls}" onclick="_dpPickDay('${id}','${val}')">${d}</div>`;
+  }
+  const remaining = (7 - ((offset + daysInMonth) % 7)) % 7;
+  for (let i = 1; i <= remaining; i++) cells += `<div class="dp-day other-month">${i}</div>`;
+
+  cal.innerHTML = `
+    <div class="dp-cal-header">
+      <button class="dp-nav-btn" onclick="_dpMonthPage('${id}',-1)">‹</button>
+      <span onclick="_dpMode('${id}','month')">${monthName} ${s.year}</span>
+      <button class="dp-nav-btn" onclick="_dpMonthPage('${id}',1)">›</button>
+    </div>
+    <div class="dp-weekdays"><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span><span>Su</span></div>
+    <div class="dp-days">${cells}</div>`;
+}
+
+function _dpMode(id, mode) { _dpState[id].mode = mode; dpRender(id); }
+function _dpMonthPage(id, d) { const s=_dpState[id]; s.month+=d; if(s.month<0){s.month=11;s.year--;}else if(s.month>11){s.month=0;s.year++;} dpRender(id); }
+function _dpYearPage(id, d) { _dpState[id].year+=d; dpRender(id); }
+function _dpPickYear(id, y) { _dpState[id].year=y; _dpState[id].mode='month'; dpRender(id); }
+function _dpPickMonth(id, m) { _dpState[id].month=m; _dpState[id].mode='day'; dpRender(id); }
+function _dpPickDay(id, val) {
+  dpSet(id, val);
+  document.getElementById(`dp-${id}-cal`).classList.remove('open');
+  document.getElementById(`dp-${id}-btn`).classList.remove('open');
+  const s = _dpState[id];
+  if (s.onChange) s.onChange(val);
+}
+
+// Close picker on outside click
+document.addEventListener('click', e => {
+  if (!e.target.closest('.dp-wrap')) {
+    document.querySelectorAll('.dp-cal.open').forEach(c => c.classList.remove('open'));
+    document.querySelectorAll('.dp-input.open').forEach(b => b.classList.remove('open'));
+  }
+}, true);
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -785,17 +1469,31 @@ function showPage(name) {
   document.getElementById('page-' + name).classList.add('active');
   const navLink = document.querySelector(`nav a[data-page="${name}"]`);
   if (navLink) navLink.classList.add('active');
+  // Also sync the mobile bottom nav
+  document.querySelectorAll('#bottom-nav .bottom-nav-item').forEach(a => a.classList.remove('active'));
+  const bnLink = document.querySelector(`#bottom-nav .bottom-nav-item[data-page="${name}"]`);
+  if (bnLink) bnLink.classList.add('active');
   prevPage = currentPage;
   currentPage = name;
+  window.scrollTo(0, 0);
 }
 
 document.querySelectorAll('nav a[data-page]').forEach(a => {
   a.addEventListener('click', () => {
     const page = a.dataset.page;
     showPage(page);
-    if (page === 'rankings')  loadRankings();
-    if (page === 'history')   loadHistory(1);
-    if (page === 'analytics') loadAnalytics();
+    if (page === 'home')          loadHome();
+    if (page === 'rankings')      loadRankings();
+    if (page === 'history')       loadHistory(1);
+    if (page === 'analytics')     loadAnalytics();
+    if (page === 'month-summary') loadMonthSummary();
+    if (page === 'event-summary')  initEventSummaryPage();
+    if (page === 'match')           { /* loaded on demand via openMatch() */ }
+    if (page === 'team-details')  { setTimeout(() => document.getElementById('td-input').focus(), 50); }
+    if (page === 'rating-graph')  { setTimeout(() => document.getElementById('rg-input').focus(), 50); }
+    if (page === 'form-graph')    { setTimeout(() => document.getElementById('fg-input').focus(), 50); }
+    if (page === 'compare')       { setTimeout(() => document.getElementById('cmp-t1').focus(), 50); }
+    if (page === 'form-analysis') { setTimeout(() => document.getElementById('fa-input').focus(), 50); }
   });
 });
 
@@ -891,13 +1589,32 @@ function setError(id, msg) {
 // ---------------------------------------------------------------------------
 // Sidebar meta
 // ---------------------------------------------------------------------------
+let earliestDataDate = null; // set once meta loads; used to clamp graph start dates
+
+// Single shared promise for the meta fetch — created once on page load so
+// both loadMeta() and setElitePreset('all') await the SAME request rather
+// than racing against each other. setElitePreset('all') can await this
+// directly, guaranteeing earliestDataDate is populated before dpSet runs.
+let _metaPromise = null;
+
+function _ensureMetaLoaded() {
+  if (!_metaPromise) {
+    _metaPromise = api('/api/meta').then(d => {
+      if (d.earliest_match) earliestDataDate = d.earliest_match;
+      return d;
+    }).catch(() => ({}));
+  }
+  return _metaPromise;
+}
+
 async function loadMeta() {
   try {
     const [d, versionRes] = await Promise.all([
-      api('/api/meta'),
+      _ensureMetaLoaded(),
       fetch('/version.txt'),
     ]);
     const version = versionRes.ok ? (await versionRes.text()).trim() : 'unknown';
+    // earliestDataDate already set inside _ensureMetaLoaded()
     const el = document.getElementById('sidebar-meta');
     el.innerHTML = `
       <span>${d.total_teams} teams</span>
@@ -909,15 +1626,787 @@ async function loadMeta() {
 }
 
 // ---------------------------------------------------------------------------
+// Home
+// ---------------------------------------------------------------------------
+async function loadHome() {
+  setLoading('home-top-team');
+  setLoading('home-top-form-team');
+  setLoading('home-featured-results');
+  setLoading('home-hot-teams');
+  setLoading('home-cold-teams');
+  setEl('home-tiles', '<div class="loading"><div class="spinner"></div> Loading…</div>');
+  try {
+    const d = await api('/api/home');
+    renderHomeTopTeam(d.top_team);
+    renderHomeTopFormTeam(d.top_form_team);
+    renderHomeFeaturedResults(d.featured_results);
+    renderHomeHotTeams(d.hot_teams, d.top_rating_increase);
+    renderHomeColdTeams(d.cold_teams, d.top_rating_decrease);
+    renderHomeTiles(d.tiles);
+  } catch(e) {
+    setError('home-top-team', e.message);
+    setError('home-top-form-team', e.message);
+    setError('home-featured-results', e.message);
+    setError('home-hot-teams', e.message);
+    setError('home-cold-teams', e.message);
+    setError('home-tiles', e.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Month Summary
+// ---------------------------------------------------------------------------
+let msMonthsLoaded = false;
+
+async function loadMonthSummary() {
+  // Populate month picker once
+  if (!msMonthsLoaded) {
+    try {
+      const { months } = await api('/api/home/months');
+      const sel = document.getElementById('month-select');
+      sel.innerHTML = months.map(m => {
+        const [y, mo] = m.split('-');
+        const label = new Date(y, mo - 1, 1).toLocaleString('default', { month: 'long', year: 'numeric' });
+        return `<option value="${m}">${label}</option>`;
+      }).join('');
+      sel.addEventListener('change', () => renderMonthSummaryForMonth(sel.value));
+      msMonthsLoaded = true;
+    } catch(e) {
+      document.getElementById('month-select').innerHTML = '<option>Error loading months</option>';
+      return;
+    }
+  }
+  const sel = document.getElementById('month-select');
+  if (sel.value) renderMonthSummaryForMonth(sel.value);
+}
+
+async function renderMonthSummaryForMonth(ym) {
+  const [year, month] = ym.split('-').map(Number);
+  const start = `${year}-${String(month).padStart(2,'0')}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const end = `${year}-${String(month).padStart(2,'0')}-${lastDay}`;
+  const label = new Date(year, month - 1, 1).toLocaleString('default', { month: 'long', year: 'numeric' });
+
+  // Update sub-labels
+  document.getElementById('ms-standouts-label').textContent = `— ${label}`;
+  document.getElementById('ms-hot-label').textContent = `— top 30, ${label}`;
+  document.getElementById('ms-cold-label').textContent = `— top 30, ${label}`;
+
+  const ids = ['ms-top-team','ms-top-form-team','ms-hot-teams','ms-cold-teams','ms-tiles'];
+  ids.forEach(id => setLoading(id));
+
+  try {
+    const d = await api(`/api/home?start=${start}&end=${end}`);
+    renderMSTopTeam(d.top_team);
+    renderMSTopFormTeam(d.top_form_team);
+    renderMSHotTeams(d.hot_teams, d.top_rating_increase);
+    renderMSColdTeams(d.cold_teams, d.top_rating_decrease);
+    renderMSTiles(d.tiles, label);
+  } catch(e) {
+    ids.forEach(id => setError(id, e.message));
+  }
+
+}
+
+// ── Match Page ────────────────────────────────────────────────────────────────
+function openMatch(url) {
+  showPage('match');
+  document.getElementById('match-page-title').textContent = 'Match';
+  setEl('match-result', '<div class="loading"><div class="spinner"></div> Loading…</div>');
+  api('/api/match?url=' + encodeURIComponent(url))
+    .then(d => {
+      document.getElementById('match-page-title').textContent =
+        d.t1.name + ' vs ' + d.t2.name;
+      setEl('match-result', renderMatchHTML(d));
+    })
+    .catch(e => setEl('match-result', '<div class="empty-msg">Error: ' + e.message + '</div>'));
+}
+
+function renderMatchHTML(d) {
+  const sign = v => v >= 0 ? '+' + v : '' + v;
+  const fmtForm = f => f ? f.grade + ' (' + f.score + ')' : '—';
+  const posColor = v => v > 0 ? '#4caf82' : v < 0 ? '#e05a5a' : 'var(--muted)';
+  const esc = s => s.replace(/'/g, "\'");
+
+  const t1won = d.t1.score > d.t2.score;
+  const stageBadge = (d.match_stage || d.grand_final)
+    ? '<span style="background:var(--accent);color:#000;font-size:0.7rem;font-weight:700;padding:2px 8px;border-radius:4px;text-transform:uppercase;letter-spacing:0.5px">'
+      + (d.match_stage || 'Grand Final') + '</span>'
+    : '';
+  const envBadge = d.env
+    ? '<span style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-size:0.7rem;padding:2px 8px;border-radius:4px">' + d.env + '</span>'
+    : '';
+
+  const recentDots = (results) => results.map(r =>
+    '<span title="' + (r.won ? 'W' : 'L') + ' vs ' + r.opponent + ' ' + r.score + ' (' + r.date + ')" '
+    + 'style="display:inline-block;width:10px;height:10px;border-radius:50%;margin:0 2px;background:'
+    + (r.won ? '#4caf82' : '#e05a5a') + '"></span>'
+  ).join('');
+
+  const teamCard = (t, won) =>
+    '<div style="flex:1;min-width:0;text-align:center;padding:20px 16px">' +
+      '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:6px">' +
+        (t.rank_before ? '#' + t.rank_before : '') +
+        (t.rank_shift ? ' <span style="color:' + posColor(t.rank_shift) + ';font-size:0.7rem">(' + sign(t.rank_shift) + ')</span>' : '') +
+      '</div>' +
+      '<div class="team-link" style="font-size:1.2rem;font-weight:700;' + (won ? 'color:var(--text)' : 'color:var(--muted)') + '" onclick="openTeam(this.dataset.team)" data-team="' + esc(t.name) + '"> ' + t.name + '</div>' +
+      '<div style="font-size:2.5rem;font-weight:800;margin:10px 0;' + (won ? 'color:var(--text)' : 'color:var(--muted)') + '">' + t.score + '</div>' +
+      '<div style="font-size:0.8rem;margin-bottom:8px">' +
+        '<span style="color:var(--muted)">Rating: </span>' +
+        t.pts_before + '<span style="color:var(--muted)"> → </span><span style="font-weight:700">' + t.pts_after + '</span>' +
+        '<span style="color:' + posColor(t.pts_delta) + ';font-weight:700;margin-left:4px">' + sign(t.pts_delta) + '</span>' +
+      '</div>' +
+      '<div style="font-size:0.8rem;color:var(--muted);margin-bottom:8px">Form: <span style="color:var(--text)">' + fmtForm(t.form_before) + '</span> → <span style="color:var(--text);font-weight:600">' + fmtForm(t.form_after) + '</span></div>' +
+      '<div style="margin-top:8px">' + recentDots(t.recent) + '</div>' +
+    '</div>';
+
+  const h2hBar = () => {
+    const total = d.h2h.t1_wins + d.h2h.t2_wins;
+    if (!total) return '';
+    const t1pct = Math.round(d.h2h.t1_wins / total * 100);
+    return '<div style="margin:0 0 20px">' +
+      '<div style="font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;text-align:center">Head to Head (all time)</div>' +
+      '<div style="display:flex;align-items:center;gap:10px">' +
+        '<span style="font-weight:700;min-width:24px;text-align:right">' + d.h2h.t1_wins + '</span>' +
+        '<div style="flex:1;height:8px;background:var(--surface2);border-radius:4px;overflow:hidden">' +
+          '<div style="width:' + t1pct + '%;height:100%;background:var(--accent);border-radius:4px"></div>' +
+        '</div>' +
+        '<span style="font-weight:700;min-width:24px">' + d.h2h.t2_wins + '</span>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--muted);margin-top:4px"><span>' + d.t1.name + '</span><span>' + d.t2.name + '</span></div>' +
+    '</div>';
+  };
+
+  const h2hMatches = d.h2h.matches.length ? (
+    '<div style="font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Recent H2H</div>' +
+    '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch">' +
+      '<table style="width:100%;border-collapse:collapse;font-size:0.82rem">' +
+        '<tbody>' + d.h2h.matches.map(m =>
+          '<tr style="border-top:1px solid var(--border)">' +
+            '<td style="padding:5px 0;color:var(--muted)">' + m.date + '</td>' +
+            '<td style="padding:5px 8px;font-size:0.78rem;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + m.event + '</td>' +
+            '<td style="padding:5px 8px;font-weight:600">' + m.score + '</td>' +
+            '<td style="padding:5px 0"><span class="' + (m.t1_won ? 'win-badge' : 'loss-badge') + '">' + (m.t1_won ? d.t1.name : d.t2.name) + ' W</span></td>' +
+            (m.url ? '<td style="padding:5px 0 5px 8px"><span class="team-link" style="font-size:0.72rem;color:var(--accent)" onclick="openMatch(' + JSON.stringify(m.url) + ')">CSRS</span></td>' : '<td></td>') +
+          '</tr>'
+        ).join('') +
+        '</tbody>' +
+      '</table>' +
+    '</div>'
+  ) : '<div class="empty-msg" style="padding:8px 0">No previous meetings</div>';
+
+  return '<div class="card" style="padding:0">' +
+    '<div style="padding:16px 20px;border-bottom:1px solid var(--border)">' +
+      '<div style="font-size:0.8rem;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+        '<span>' + d.date.split(' ')[0] + '</span><span>·</span>' +
+        '<span>' + d.event + '</span>' +
+        (d.tier ? '<span>·</span>' + tierBadge(d.tier) : '') +
+        (envBadge ? '<span>·</span>' + envBadge : '') +
+        (stageBadge ? '<span>·</span>' + stageBadge : '') +
+        (d.url ? '<span>·</span><a href="' + d.url + '" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none">HLTV ↗</a>' : '') +
+      '</div>' +
+    '</div>' +
+    '<div style="display:flex;align-items:stretch;border-bottom:1px solid var(--border)">' +
+      teamCard(d.t1, t1won) +
+      '<div style="display:flex;align-items:center;padding:0 12px;color:var(--muted);font-size:1.2rem">vs</div>' +
+      teamCard(d.t2, !t1won) +
+    '</div>' +
+    '<div style="padding:20px">' +
+      h2hBar() +
+      h2hMatches +
+    '</div>' +
+  '</div>';
+}
+
+// ── Event Summary page ───────────────────────────────────────────────────────
+function initEventSummaryPage() {
+  if (!document.getElementById('es-result').dataset.ready) {
+    document.getElementById('es-result').dataset.ready = '1';
+    setEl('es-result', '<div class="empty-msg" style="padding:40px 0;text-align:center">Search for an event above to view its summary.</div>');
+  }
+}
+
+function esSelectEvent(name) {
+  if (!name) return;
+  document.getElementById('es-search').value = name;
+  document.getElementById('es-dd').style.display = 'none';
+  setEl('es-result', '<div class="loading"><div class="spinner"></div> Loading…</div>');
+  api(`/api/event-summary?event=${encodeURIComponent(name)}`)
+    .then(d => { setEl('es-result', renderEventSummaryHTML(d)); })
+    .catch(e => { setEl('es-result', `<div class="empty-msg">Error: ${e.message}</div>`); });
+}
+
+function renderEventSummaryHTML(d) {
+  const sign = v => v >= 0 ? `+${v}` : `${v}`;
+  const fmtForm = f => f ? `${f.grade} (${Math.round(f.score)})` : '—';
+  const posColor = v => v > 0 ? '#4caf82' : v < 0 ? '#e05a5a' : 'var(--muted)';
+  const negColor = v => v < 0 ? '#4caf82' : v > 0 ? '#e05a5a' : 'var(--muted)';
+  const esc = s => s.replace(/'/g, "\'");
+
+  const envStr = Object.entries(d.environments)
+    .sort((a,b) => b[1]-a[1])
+    .map(([k,v]) => `${k} (${v})`).join(' · ');
+
+  const dateStr = d.start_date === d.end_date
+    ? d.start_date : `${d.start_date} → ${d.end_date}`;
+
+  const grandFinalHtml = d.grand_final ? `
+    <div style="background:var(--surface2);border:1px solid var(--accent);border-radius:8px;padding:12px 14px;margin-bottom:16px">
+      <div style="font-size:0.7rem;color:var(--accent);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:6px">Grand Final</div>
+      <div style="font-weight:700;font-size:0.95rem;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span class="team-link" onclick="openTeam('${esc(d.grand_final.winner)}')">${d.grand_final.winner}</span>
+        <span style="color:var(--muted)">def.</span>
+        <span class="team-link" onclick="openTeam('${esc(d.grand_final.loser)}')">${d.grand_final.loser}</span>
+        <span style="color:var(--muted)">${d.grand_final.score}</span>
+      </div>
+    </div>` : '';
+
+  const ratingTable = (teams) => teams.length ? `
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem;min-width:300px">
+        <thead><tr style="color:var(--muted);font-size:0.72rem;text-transform:uppercase">
+          <th style="text-align:left;padding:4px 0">Team</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">Before</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">After</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">Δ</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">W-L</th>
+        </tr></thead>
+        <tbody>${teams.map(t => `
+          <tr style="border-top:1px solid var(--border)">
+            <td style="padding:5px 0"><span class="team-link" onclick="openTeam('${esc(t.name)}')">${t.name}</span></td>
+            <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.start_rating}</td>
+            <td style="padding:5px 6px;text-align:right;font-weight:600;white-space:nowrap">${t.end_rating}</td>
+            <td style="padding:5px 6px;text-align:right;font-weight:700;color:${posColor(t.rating_change)};white-space:nowrap">${sign(t.rating_change)}</td>
+            <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.wins}W-${t.losses}L</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : '<div class="empty-msg" style="padding:8px 0">None</div>';
+
+  const formTable = (teams) => teams.length ? `
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem;min-width:300px">
+        <thead><tr style="color:var(--muted);font-size:0.72rem;text-transform:uppercase">
+          <th style="text-align:left;padding:4px 0">Team</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">Before</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">After</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">Δ</th>
+          <th style="text-align:right;padding:4px 6px;white-space:nowrap">W-L</th>
+        </tr></thead>
+        <tbody>${teams.map(t => `
+          <tr style="border-top:1px solid var(--border)">
+            <td style="padding:5px 0"><span class="team-link" onclick="openTeam('${esc(t.name)}')">${t.name}</span></td>
+            <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${fmtForm(t.form_start)}</td>
+            <td style="padding:5px 6px;text-align:right;font-weight:600;white-space:nowrap">${fmtForm(t.form_end)}</td>
+            <td style="padding:5px 6px;text-align:right;font-weight:700;color:${posColor(t.form_change)};white-space:nowrap">${t.form_change != null ? sign(t.form_change) : '—'}</td>
+            <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.wins}W-${t.losses}L</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : '<div class="empty-msg" style="padding:8px 0">None</div>';
+
+  const upsetHtml = d.upsets.length ? d.upsets.map((u,i) => `
+    <div style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:3px">
+        <span style="color:var(--muted);font-size:0.78rem">${i+1}</span>
+        <span class="team-link" onclick="openTeam('${esc(u.winner)}')">${u.winner}</span>
+        <span style="color:var(--muted);font-size:0.85rem">def.</span>
+        <span class="team-link" onclick="openTeam('${esc(u.loser)}')">${u.loser}</span>
+        <span style="color:var(--muted);font-size:0.85rem">${u.score}</span>
+        <span style="color:var(--muted);font-size:0.78rem">(${u.diff} pt gap)</span>
+      </div>
+      <div style="font-size:0.78rem;color:var(--muted);padding-left:20px">
+        ${u.winner}: <span style="color:#4caf82">${sign(u.winner_pts_delta)}</span>
+        &nbsp;·&nbsp;
+        ${u.loser}: <span style="color:#e05a5a">${sign(u.loser_pts_delta)}</span>
+      </div>
+    </div>`).join('') : '<div class="empty-msg" style="padding:8px 0">No upsets recorded</div>';
+
+  const section = (label, html) =>
+    `<div><div style="font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">${label}</div>${html}</div>`;
+
+  return `
+    <div style="padding-top:16px">
+      <div style="margin-bottom:14px">
+        <div style="font-size:0.72rem;color:var(--muted);margin-bottom:4px">${dateStr} · ${envStr}</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:0.85rem;color:var(--muted)">
+          <span>Tier: <strong style="color:var(--text)">${d.tier || '—'}</strong></span>
+          <span>Matches: <strong style="color:var(--text)">${d.match_count}</strong></span>
+          <span>Teams: <strong style="color:var(--text)">${d.team_count}</strong></span>
+          ${d.stats.avg_rating_change != null ? `<span>Avg Rating Δ: <strong style="color:${posColor(d.stats.avg_rating_change)}">${sign(d.stats.avg_rating_change)}</strong></span>` : ''}
+          ${d.stats.avg_form_change != null ? `<span>Avg Form Δ: <strong style="color:${posColor(d.stats.avg_form_change)}">${sign(d.stats.avg_form_change)}</strong></span>` : ''}
+        </div>
+      </div>
+
+      ${grandFinalHtml}
+
+      <div class="analytics-grid" style="margin-bottom:20px">
+        ${d.stats.highest_rated_team ? `<div style="background:var(--surface2);border-radius:8px;padding:12px 14px">
+          <div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Highest Rated</div>
+          <span class="team-link" style="font-weight:700" onclick="openTeam('${esc(d.stats.highest_rated_team)}')">${d.stats.highest_rated_team}</span>
+          <div style="color:var(--accent);font-weight:700">${d.stats.highest_rated_pts} pts <span style="color:var(--muted);font-size:0.8rem;font-weight:400">#${d.all_teams.findIndex(t => t.name === d.stats.highest_rated_team) + 1} at event</span></div>
+        </div>` : ''}
+        ${d.stats.most_maps_team ? `<div style="background:var(--surface2);border-radius:8px;padding:12px 14px">
+          <div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Most Active</div>
+          <span class="team-link" style="font-weight:700" onclick="openTeam('${esc(d.stats.most_maps_team)}')">${d.stats.most_maps_team}</span>
+          <div style="color:var(--muted);font-size:0.85rem">${d.stats.most_maps_count} maps · ${d.stats.most_maps_matches} matches</div>
+        </div>` : ''}
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin-bottom:20px">
+        ${section('Top Rating Gainers', ratingTable(d.gainers))}
+        ${section('Top Rating Losers',  ratingTable(d.losers))}
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin-bottom:20px">
+        ${section('Top Form Improvers', formTable(d.form_improvers))}
+        ${section('Top Form Decliners', formTable(d.form_decliners))}
+      </div>
+
+      <div style="margin-bottom:20px">
+        ${section('Biggest Upsets', upsetHtml)}
+      </div>
+
+      <div>
+        <div style="font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">All Participants</div>
+        <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+          <table style="width:100%;border-collapse:collapse;font-size:0.8rem;min-width:560px">
+            <thead><tr style="color:var(--muted);font-size:0.7rem;text-transform:uppercase">
+              <th style="text-align:left;padding:4px 4px">#</th>
+              <th style="text-align:left;padding:4px 6px">Team</th>
+              <th style="text-align:right;padding:4px 6px">Rating</th>
+              <th style="text-align:right;padding:4px 6px">Δ</th>
+              <th style="text-align:right;padding:4px 6px">W-L</th>
+              <th style="text-align:right;padding:4px 6px">Maps</th>
+              <th style="text-align:right;padding:4px 6px">Form</th>
+              <th style="text-align:right;padding:4px 6px">Form Δ</th>
+            </tr></thead>
+            <tbody>${d.all_teams.map((t,i) => `
+              <tr style="border-top:1px solid var(--border)">
+                <td style="padding:5px 4px;color:var(--muted)">${i+1}</td>
+                <td style="padding:5px 6px;white-space:nowrap"><span class="team-link" onclick="openTeam('${esc(t.name)}')">${t.name}</span></td>
+                <td style="padding:5px 6px;text-align:right;font-weight:600;white-space:nowrap">${t.end_rating}</td>
+                <td style="padding:5px 6px;text-align:right;font-weight:700;color:${posColor(t.rating_change)};white-space:nowrap">${sign(t.rating_change)}</td>
+                <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.wins}W-${t.losses}L</td>
+                <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${t.maps_won}-${t.maps_lost}</td>
+                <td style="padding:5px 6px;text-align:right;color:var(--muted);white-space:nowrap">${fmtForm(t.form_end)}</td>
+                <td style="padding:5px 6px;text-align:right;font-weight:700;color:${posColor(t.form_change)};white-space:nowrap">${t.form_change != null ? sign(t.form_change) : '—'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderMSTopTeam(team) {
+  if (!team) { setEl('ms-top-team', '<div class="empty-msg">No ranked teams this month.</div>'); return; }
+  setEl('ms-top-team', `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Ranked Team</div>
+        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${team.name.replace(/'/g,"\\'")}')">
+          ${team.name}
+        </span>
+        <div style="margin-top:4px">
+          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${team.points.toFixed(2)} pts</span>
+          ${team.form_grade ? `<span style="margin-left:10px;color:var(--muted);font-size:0.82rem">Form: ${team.form_grade} (${team.form_score})</span>` : ''}
+        </div>
+      </div>
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">Month Trend</div>
+        ${sparklineSVG(team.sparkline_30d, 120, 36)}
+      </div>
+    </div>
+  `);
+}
+
+function renderMSTopFormTeam(formTeam) {
+  if (!formTeam) { setEl('ms-top-form-team', '<div class="empty-msg">No form data this month.</div>'); return; }
+  setEl('ms-top-form-team', `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Form Team</div>
+        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${formTeam.name.replace(/'/g,"\\'")}')">
+          ${formTeam.name}
+        </span>
+        <div style="margin-top:4px">
+          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${formTeam.form_grade || ''}${formTeam.form_score !== undefined ? ` (${formTeam.form_score})` : ''}</span>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">Month Trend</div>
+        ${sparklineSVG(formTeam.sparkline_30d, 120, 36)}
+      </div>
+    </div>
+  `);
+}
+
+function renderMSHotTeams(winrateTeams, ratingTeams) {
+  if ((!winrateTeams || !winrateTeams.length) && (!ratingTeams || !ratingTeams.length)) {
+    setEl('ms-hot-teams', '<div class="empty-msg">Not enough data this month.</div>'); return;
+  }
+  const mkList = (teams, valFn, col) => (teams || []).slice(0, 5).map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i+1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}${t.rank ? ` <span style="color:var(--muted);font-weight:400">(#${t.rank})</span>` : ''}</span>
+      </div>
+      <div style="text-align:right"><span style="font-weight:700;color:${col}">${valFn(t)}</span></div>
+    </div>`).join('') || '<div class="empty-msg" style="padding:20px">No data.</div>';
+
+  setEl('ms-hot-teams', `
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Highest Win Rates</div>
+      ${mkList(winrateTeams, t => `${t.winrate}% <span style="color:var(--muted);font-size:0.78rem;margin-left:4px">${t.wins}W ${t.losses}L</span>`, 'var(--green)')}
+    </div>
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Rating Increase</div>
+      ${mkList(ratingTeams, t => `${t.delta > 0 ? '+' : ''}${t.delta.toFixed ? t.delta.toFixed(1) : t.delta} pts`, 'var(--green)')}
+    </div>
+  `);
+}
+
+function renderMSColdTeams(winrateTeams, ratingTeams) {
+  if ((!winrateTeams || !winrateTeams.length) && (!ratingTeams || !ratingTeams.length)) {
+    setEl('ms-cold-teams', '<div class="empty-msg">Not enough data this month.</div>'); return;
+  }
+  const mkList = (teams, valFn, col) => (teams || []).slice(0, 5).map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i+1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}${t.rank ? ` <span style="color:var(--muted);font-weight:400">(#${t.rank})</span>` : ''}</span>
+      </div>
+      <div style="text-align:right"><span style="font-weight:700;color:${col}">${valFn(t)}</span></div>
+    </div>`).join('') || '<div class="empty-msg" style="padding:20px">No data.</div>';
+
+  setEl('ms-cold-teams', `
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Lowest Win Rates</div>
+      ${mkList(winrateTeams, t => `${t.winrate}% <span style="color:var(--muted);font-size:0.78rem;margin-left:4px">${t.wins}W ${t.losses}L</span>`, 'var(--red)')}
+    </div>
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Rating Decrease</div>
+      ${mkList(ratingTeams, t => `${t.delta > 0 ? '+' : ''}${t.delta.toFixed ? t.delta.toFixed(1) : t.delta} pts`, 'var(--red)')}
+    </div>
+  `);
+}
+
+function renderMSTiles(tiles, label) {
+  if (!tiles) { setEl('ms-tiles', '<div class="empty-msg">No data available.</div>'); return; }
+  const cards = [];
+  const tile = (heading, name, sub, col) => `
+    <div class="stat-card">
+      <div class="label">${heading}</div>
+      <div class="value" style="font-size:1.2rem">${name}</div>
+      <div class="sub"${col ? ` style="color:${col}"` : ''}>${sub}</div>
+    </div>`;
+  if (tiles.highest_rating_change) { const t = tiles.highest_rating_change; cards.push(tile('Greatest Rating Increase', t.name, `${t.delta > 0 ? '+' : ''}${t.delta} pts`, t.delta > 0 ? 'var(--green)' : 'var(--red)')); }
+  if (tiles.lowest_rating_change)  { const t = tiles.lowest_rating_change;  cards.push(tile('Greatest Rating Decrease', t.name, `${t.delta > 0 ? '+' : ''}${t.delta} pts`, t.delta > 0 ? 'var(--green)' : 'var(--red)')); }
+  if (tiles.highest_form_change)   { const t = tiles.highest_form_change;   cards.push(tile('Greatest Form Increase',   t.name, `${t.delta > 0 ? '+' : ''}${t.delta} form pts`, t.delta > 0 ? 'var(--green)' : 'var(--red)')); }
+  if (tiles.lowest_form_change)    { const t = tiles.lowest_form_change;    cards.push(tile('Greatest Form Decrease',   t.name, `${t.delta > 0 ? '+' : ''}${t.delta} form pts`, t.delta > 0 ? 'var(--green)' : 'var(--red)')); }
+  if (tiles.biggest_upset)         { const t = tiles.biggest_upset;         cards.push(tile('Biggest Upset', t.winner, `beat ${t.loser} (Δ${t.gap} pts)`)); }
+  if (tiles.most_positions_gained) { const t = tiles.most_positions_gained; cards.push(tile('Most Positions Gained', t.name, `+${t.positions_gained} (#${t.rank_30d_ago} → #${t.rank_now})`, 'var(--green)')); }
+  if (tiles.most_positions_lost)   { const t = tiles.most_positions_lost;   cards.push(tile('Most Positions Lost',   t.name, `-${t.positions_lost} (#${t.rank_30d_ago} → #${t.rank_now})`, 'var(--red)')); }
+  if (tiles.longest_win_streak)    { const t = tiles.longest_win_streak;    cards.push(tile('Longest Win Streak',  t.name, `${t.streak} in a row`, 'var(--green)')); }
+  if (tiles.longest_loss_streak)   { const t = tiles.longest_loss_streak;   cards.push(tile('Longest Loss Streak', t.name, `${t.streak} in a row`, 'var(--red)')); }
+  setEl('ms-tiles', cards.length ? cards.join('') : `<div class="empty-msg">No standout data for ${label}.</div>`);
+}
+
+function renderHomeTopTeam(team) {
+  if (!team) { setEl('home-top-team', '<div class="empty-msg">No ranked teams yet.</div>'); return; }
+  setEl('home-top-team', `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Ranked Team</div>
+        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${team.name.replace(/'/g,"\\'")}')">
+          ${team.name}
+        </span>
+        <div style="margin-top:4px">
+          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${team.points.toFixed(2)} pts</span>
+          ${team.form_grade ? `<span style="margin-left:10px;color:var(--muted);font-size:0.82rem">Form: ${team.form_grade} (${team.form_score})</span>` : ''}
+        </div>
+      </div>
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">30d Trend</div>
+        ${sparklineSVG(team.sparkline_30d, 120, 36)}
+      </div>
+    </div>
+  `);
+}
+
+function renderHomeTopFormTeam(formTeam) {
+  if (!formTeam) { setEl('home-top-form-team', '<div class="empty-msg">No form data yet.</div>'); return; }
+  setEl('home-top-form-team', `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">#1 Form Team</div>
+        <span class="team-link" style="font-size:1.4rem;font-weight:700" onclick="openTeam('${formTeam.name.replace(/'/g,"\\'")}')">
+          ${formTeam.name}
+        </span>
+        <div style="margin-top:4px">
+          <span style="font-size:1.1rem;color:var(--accent);font-weight:700">${formTeam.form_grade || ''}${formTeam.form_score !== undefined ? ` (${formTeam.form_score})` : ''}</span>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;text-align:right;margin-bottom:4px">30d Trend</div>
+        ${sparklineSVG(formTeam.sparkline_30d, 120, 36)}
+      </div>
+    </div>
+  `);
+}
+
+function renderHomeFeaturedResults(results) {
+  if (!results || !results.length) {
+    setEl('home-featured-results', '<div class="empty-msg">No featured results yet.</div>');
+    return;
+  }
+  const TIER_STYLE = {
+    'S+': 'background:rgba(255,68,68,0.15);color:#ff4444',
+    'S':  'background:rgba(255,215,0,0.15);color:#FFD700',
+    'A':  'background:rgba(192,192,192,0.15);color:#C0C0C0',
+    'B':  'background:rgba(205,127,50,0.15);color:#CD7F32',
+    'C':  'background:rgba(60,180,75,0.15);color:#3cb44b',
+    'D':  'background:rgba(230,25,75,0.15);color:#e6194B',
+  };
+  const rows = results.map(r => {
+    const t1won = r.t1.score > r.t2.score;
+    const tierStyle = TIER_STYLE[r.tier] || 'background:var(--surface2);color:var(--muted)';
+
+    const t1NameStyle = t1won
+      ? 'font-weight:600;color:var(--text)'
+      : 'font-weight:400;color:var(--muted)';
+    const t2NameStyle = !t1won
+      ? 'font-weight:600;color:var(--text)'
+      : 'font-weight:400;color:var(--muted)';
+    const t1ScoreStyle = t1won
+      ? 'color:var(--green);font-weight:700'
+      : 'color:var(--red);font-weight:700;opacity:0.75';
+    const t2ScoreStyle = !t1won
+      ? 'color:var(--green);font-weight:700'
+      : 'color:var(--red);font-weight:700;opacity:0.75';
+
+    return `
+      <div style="display:flex;align-items:center;padding:14px 4px;gap:14px;border-bottom:1px solid var(--border);cursor:pointer" onclick="showPage('history');loadHistory(1)">
+        <div style="width:30px;height:30px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:800;${tierStyle}">${r.tier}</div>
+        <div style="flex:1;min-width:0;text-align:left">
+          <span style="font-size:0.95rem;${t1NameStyle};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.t1.name}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;min-width:64px;justify-content:center">
+          <span style="font-size:1.1rem;${t1ScoreStyle}">${r.t1.score}</span>
+          <span style="color:var(--muted);font-size:0.9rem">-</span>
+          <span style="font-size:1.1rem;${t2ScoreStyle}">${r.t2.score}</span>
+        </div>
+        <div style="flex:1;min-width:0;text-align:right">
+          <span style="font-size:0.95rem;${t2NameStyle};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.t2.name}</span>
+        </div>
+        <div style="flex-shrink:0;width:36px;text-align:right">
+          <span style="font-size:0.75rem;color:var(--muted)">${r.format || 'bo3'}</span>
+        </div>
+      </div>`;
+  }).join('');
+  setEl('home-featured-results', rows + `<div style="padding-top:12px"><a class="team-link" style="font-size:0.82rem;color:var(--muted)" onclick="showPage('history');loadHistory(1)">See all results →</a></div>`);
+}
+
+function renderHomeHotTeams(winrateTeams, ratingTeams) {
+  if ((!winrateTeams || !winrateTeams.length) && (!ratingTeams || !ratingTeams.length)) {
+    setEl('home-hot-teams', '<div class="empty-msg">Not enough recent data yet.</div>');
+    return;
+  }
+
+  const winrateList = (winrateTeams || []).slice(0, 5).map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}${t.rank ? ` <span style="color:var(--muted);font-weight:400">(#${t.rank})</span>` : ''}</span>
+      </div>
+      <div style="text-align:right">
+        <span style="font-weight:700;color:var(--green)">${t.winrate}%</span>
+        <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">${t.wins}W ${t.losses}L</span>
+      </div>
+    </div>
+  `).join('') || '<div class="empty-msg" style="padding:20px">No data available.</div>';
+
+  const ratingList = (ratingTeams || []).slice(0, 5).map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}${t.rank ? ` <span style="color:var(--muted);font-weight:400">(#${t.rank})</span>` : ''}</span>
+      </div>
+      <div style="text-align:right">
+        <span style="font-weight:700;color:var(--green)">${t.delta > 0 ? '+' : ''}${t.delta.toFixed ? t.delta.toFixed(1) : t.delta}</span>
+        <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">pts</span>
+      </div>
+    </div>
+  `).join('') || '<div class="empty-msg" style="padding:20px">No data available.</div>';
+
+  setEl('home-hot-teams', `
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Highest Win Rates</div>
+      ${winrateList}
+    </div>
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Rating Increase</div>
+      ${ratingList}
+    </div>
+  `);
+}
+
+function renderHomeColdTeams(winrateTeams, ratingTeams) {
+  if ((!winrateTeams || !winrateTeams.length) && (!ratingTeams || !ratingTeams.length)) {
+    setEl('home-cold-teams', '<div class="empty-msg">Not enough recent data yet.</div>');
+    return;
+  }
+
+  const winrateList = (winrateTeams || []).slice(0, 5).map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}${t.rank ? ` <span style="color:var(--muted);font-weight:400">(#${t.rank})</span>` : ''}</span>
+      </div>
+      <div style="text-align:right">
+        <span style="font-weight:700;color:var(--red)">${t.winrate}%</span>
+        <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">${t.wins}W ${t.losses}L</span>
+      </div>
+    </div>
+  `).join('') || '<div class="empty-msg" style="padding:20px">No data available.</div>';
+
+  const ratingList = (ratingTeams || []).slice(0, 5).map((t, i) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="color:var(--muted);font-size:0.8rem;width:18px">${i + 1}</span>
+        <span class="team-link" onclick="openTeam('${t.name.replace(/'/g,"\\'")}')">${t.name}${t.rank ? ` <span style="color:var(--muted);font-weight:400">(#${t.rank})</span>` : ''}</span>
+      </div>
+      <div style="text-align:right">
+        <span style="font-weight:700;color:var(--red)">${t.delta > 0 ? '+' : ''}${t.delta.toFixed ? t.delta.toFixed(1) : t.delta}</span>
+        <span style="color:var(--muted);font-size:0.78rem;margin-left:6px">pts</span>
+      </div>
+    </div>
+  `).join('') || '<div class="empty-msg" style="padding:20px">No data available.</div>';
+
+  setEl('home-cold-teams', `
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Lowest Win Rates</div>
+      ${winrateList}
+    </div>
+    <div>
+      <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Top 5 Rating Decrease</div>
+      ${ratingList}
+    </div>
+  `);
+}
+
+function renderHomeTiles(tiles) {
+  if (!tiles) { setEl('home-tiles', '<div class="empty-msg">No data available.</div>'); return; }
+  const cards = [];
+  if (tiles.highest_rating_change) {
+    const t = tiles.highest_rating_change;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Greatest Rating Increase</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} pts</div>
+      </div>`);
+  }
+  if (tiles.lowest_rating_change) {
+    const t = tiles.lowest_rating_change;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Greatest Rating Decrease</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} pts</div>
+      </div>`);
+  }
+  if (tiles.highest_form_change) {
+    const t = tiles.highest_form_change;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Greatest Form Increase</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} form pts</div>
+      </div>`);
+  }
+  if (tiles.lowest_form_change) {
+    const t = tiles.lowest_form_change;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Greatest Form Decrease</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:${t.delta > 0 ? 'var(--green)' : 'var(--red)'}">${t.delta > 0 ? '+' : ''}${t.delta} form pts</div>
+      </div>`);
+  }
+  if (tiles.biggest_upset) {
+    const t = tiles.biggest_upset;
+    const upsetDate = t.date ? t.date.split(' ')[0] : '';
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Biggest Upset</div>
+        <div class="value" style="font-size:1.2rem">${t.winner}</div>
+        <div class="sub">beat ${t.loser} (Δ${t.gap} pts)</div>
+        ${upsetDate ? `<div class="sub" style="color:var(--muted);font-size:0.75rem">${upsetDate}${t.event ? ' · ' + t.event : ''}</div>` : ''}
+      </div>`);
+  }
+  if (tiles.most_positions_gained) {
+    const t = tiles.most_positions_gained;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Most Positions Gained</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:var(--green)">+${t.positions_gained} (#${t.rank_30d_ago} → #${t.rank_now})</div>
+      </div>`);
+  }
+  if (tiles.most_positions_lost) {
+    const t = tiles.most_positions_lost;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Most Positions Lost</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:var(--red)">-${t.positions_lost} (#${t.rank_30d_ago} → #${t.rank_now})</div>
+      </div>`);
+  }
+  if (tiles.longest_win_streak) {
+    const t = tiles.longest_win_streak;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Longest Win Streak</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:var(--green)">${t.streak} in a row</div>
+      </div>`);
+  }
+  if (tiles.longest_loss_streak) {
+    const t = tiles.longest_loss_streak;
+    cards.push(`
+      <div class="stat-card">
+        <div class="label">Longest Loss Streak</div>
+        <div class="value" style="font-size:1.2rem">${t.name}</div>
+        <div class="sub" style="color:var(--red)">${t.streak} in a row</div>
+      </div>`);
+  }
+  setEl('home-tiles', cards.length ? cards.join('') : '<div class="empty-msg">No standout data in the last 30 days.</div>');
+}
+
+// ---------------------------------------------------------------------------
 // Rankings
 // ---------------------------------------------------------------------------
 let rankingsData = [];
+
+function getTodayStr() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+}
 
 async function loadRankings() {
   setLoading('rankings-table');
   try {
     const search = document.getElementById('rank-search').value;
-    const d = await api(`/api/rankings?limit=200&search=${encodeURIComponent(search)}`);
+    const date = dpGet('rank-date');
+    // Today == live: omit the date param so the backend serves current
+    // rankings exactly as before, even though the button always shows an
+    // actual date rather than a separate "Live" label.
+    const dateParam = (date && date !== getTodayStr()) ? `&as_of=${encodeURIComponent(date)}` : '';
+    const d = await api(`/api/rankings?limit=200&search=${encodeURIComponent(search)}${dateParam}`);
     rankingsData = d.rankings;
     renderRankings(rankingsData);
   } catch(e) {
@@ -951,8 +2440,8 @@ function renderRankings(rows) {
               ${r.provisional ? `<span class="prov-badge">PROV</span>` : ''}
             </td>
             <td class="pts">${r.points.toFixed(2)}</td>
-            <td class="pts" style="color:var(--muted)">${r.peak_points.toFixed(2)}</td>
-            <td style="color:var(--muted)">${(r.peak_rank !== null && r.peak_rank !== undefined && r.peak_rank > 0) ? '#' + r.peak_rank : '—'}</td>
+            <td class="pts" style="color:var(--muted)" title="${r.peak_date ? 'Rating peak: ' + r.peak_date.split(' ')[0] : ''}">${r.peak_points.toFixed(2)}</td>
+            <td style="color:var(--muted)" title="${r.peak_rank_date ? 'Rank peak: ' + r.peak_rank_date.split(' ')[0] : ''}">${(r.peak_rank != null && r.peak_rank > 0) ? '#' + r.peak_rank : '—'}</td>
             <td>${sparklineSVG(r.sparkline)}</td>
           </tr>
         `).join('')}
@@ -968,7 +2457,22 @@ document.getElementById('rank-search').addEventListener('input', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Match History
+// Rankings — "as of" date picker
+// ---------------------------------------------------------------------------
+(function () {
+  // Init custom picker — fires loadRankings whenever a day is picked
+  dpInit('rank-date', (val) => {
+    loadRankings();
+  });
+
+  // Defaults to today — same date format loadRankings() treats as "live"
+  // (no date param sent), so opening the page shows current rankings while
+  // the button still always displays an actual date, never a "Live" label.
+  dpSet('rank-date', getTodayStr());
+})();
+
+// ---------------------------------------------------------------------------
+// Results
 // ---------------------------------------------------------------------------
 let histPage = 1;
 let histTotal = 0;
@@ -1005,12 +2509,12 @@ function renderHistory(rows) {
     <table>
       <thead><tr>
         <th>Date</th>
-        <th>Event</th>
+        <th class="col-hide-mobile">Event</th>
         <th>Tier</th>
         <th>Team 1</th>
         <th></th>
         <th>Team 2</th>
-        <th>Result</th>
+        <th class="col-hide-mobile">Result</th>
       </tr></thead>
       <tbody>
         ${rows.map(h => {
@@ -1018,7 +2522,7 @@ function renderHistory(rows) {
           return `
             <tr>
               <td style="color:var(--muted);white-space:nowrap;font-size:0.8rem">${h.date.split(' ')[0]}</td>
-              <td style="font-size:0.8rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${h.event}">${h.event}</td>
+              <td class="col-hide-mobile" style="font-size:0.8rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${h.event}">${h.event}</td>
               <td>${tierBadge(h.tier)}</td>
               <td>
                 <span class="team-link ${t1won ? 'win-badge' : ''}" onclick="openTeam('${h.t1.name.replace(/'/g,"\\'")}')">
@@ -1034,7 +2538,8 @@ function renderHistory(rows) {
                 <small class="${deltaClass(h.t2.pts_delta)}" style="font-size:0.7rem;margin-left:4px">${fmt(h.t2.pts_delta)}</small>
               </td>
               <td>
-                ${h.url ? `<a href="${h.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none">HLTV</a>` : ''}
+                ${h.url ? `<a href="${h.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none;margin-right:8px">HLTV</a>` : ''}
+                ${h.url ? `<span class="team-link" style="font-size:0.75rem;color:var(--accent)" onclick="openMatch(${JSON.stringify(h.url)})">CSRS</span>` : ''}
               </td>
             </tr>`;
         }).join('')}
@@ -1061,28 +2566,43 @@ function clearHistoryFilters() {
 }
 
 // ---------------------------------------------------------------------------
-// Team detail
+// Team detail — single unified page, reachable either by clicking a team
+// link anywhere in the app or by searching on the Team Details page. Both
+// paths land here and render identically.
 // ---------------------------------------------------------------------------
 let ratingChart = null;
+let ratingChartRange = '3m'; // '3m' | 'all' — which view Rating History defaults to
+let positionChart = null;
+let positionChartRange = '3m'; // '3m' | 'all' — which view Position History defaults to
+let formChart = null;
+let formChartRange = '3m'; // '3m' | 'all' — which view Form History defaults to
+let recordRange = '3m'; // '3m' | 'all' — which view the Record tile defaults to
+let currentTeamDetail = null; // last-loaded team API response, so toggling range doesn't refetch
 
 async function openTeam(name) {
-  showPage('team');
-  setLoading('team-detail-content');
-  try {
-    const d = await api(`/api/team/${encodeURIComponent(name)}`);
-    renderTeamDetail(d);
-  } catch(e) {
-    setError('team-detail-content', e.message);
-  }
+  showPage('team-details');
+  const inp = document.getElementById('td-input');
+  if (inp) inp.value = name;
+  await loadTeamDetails(name);
+}
+
+function goToTeamResults(name) {
+  showPage('history');
+  document.getElementById('hist-team').value = name;
+  loadHistory(1);
 }
 
 function renderTeamDetail(d) {
-  const wl = d.total_matches > 0 ? `${d.wins}W ${d.losses}L (${(d.wins/d.total_matches*100).toFixed(0)}%)` : '—';
+  const wlAll = d.total_matches > 0 ? `${d.wins}W ${d.losses}L (${(d.wins/d.total_matches*100).toFixed(0)}%)` : '—';
+  const m3m = d.wins_3m + d.losses_3m;
+  const wl3m = m3m > 0 ? `${d.wins_3m}W ${d.losses_3m}L (${(d.wins_3m/m3m*100).toFixed(0)}%)` : '—';
+  const recentResults = [...d.timeline].reverse().slice(0, 5);
   const html = `
-    <div class="team-detail-header">
+    <div class="team-detail-header" style="margin-top:16px">
       <h2>${d.name}</h2>
       <span class="rank-badge">#${d.rank}</span>
       <span class="rank-badge" style="color:var(--accent)">${d.points.toFixed(2)} pts</span>
+      ${d.depreciation_loss > 0.5 ? `<span class="rank-badge" style="color:var(--red);font-size:0.72rem">−${d.depreciation_loss.toFixed(1)} decay</span>` : ''}
     </div>
     <div class="stat-grid">
       <div class="stat-card">
@@ -1094,21 +2614,76 @@ function renderTeamDetail(d) {
         <div class="value">#${d.rank}</div>
       </div>
       <div class="stat-card">
-        <div class="label">Record</div>
-        <div class="value" style="font-size:1.1rem;padding-top:8px">${wl}</div>
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div class="label">Record</div>
+          <div style="display:flex;gap:4px" id="record-range-toggle">
+            <button class="${recordRange === '3m' ? '' : 'secondary'}" style="padding:2px 7px;font-size:0.65rem" onclick="setRecordRange('3m')">3M</button>
+            <button class="${recordRange === 'all' ? '' : 'secondary'}" style="padding:2px 7px;font-size:0.65rem" onclick="setRecordRange('all')">All</button>
+          </div>
+        </div>
+        <div class="value" id="record-value" style="font-size:1.1rem;padding-top:8px">${recordRange === '3m' ? wl3m : wlAll}</div>
       </div>
       <div class="stat-card">
         <div class="label">Peak Rating</div>
         <div class="value">${d.peak.points ? d.peak.points.toFixed(1) : '—'}</div>
-        <div class="sub">${d.peak.date ? d.peak.date.split(' ')[0] + ' · #' + d.peak.rank : ''}</div>
+        <div class="sub">${d.peak.date ? d.peak.date.split(' ')[0] : ''}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Peak Rank</div>
+        <div class="value">${d.peak.rank ? '#' + d.peak.rank : '—'}</div>
+        <div class="sub">${d.peak.rank_date ? d.peak.rank_date.split(' ')[0] : ''}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Form (3 months)</div>
+        ${d.form ? `
+          <div style="display:flex;align-items:center;gap:10px;padding-top:6px">
+            <span style="font-size:1.6rem;font-weight:700;color:${tdFormColor(d.form.grade)}">${d.form.grade}</span>
+            <span style="font-size:0.95rem;color:var(--muted)">${d.form.score.toFixed(1)}</span>
+            <div style="display:flex;gap:4px;margin-left:4px">
+              ${d.form.recent.split('').map(c => `<span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:${c === 'W' ? 'var(--green)' : 'var(--red)'};font-size:0.55rem;font-weight:700;color:#fff;line-height:18px;text-align:center">${c}</span>`).join('')}
+            </div>
+          </div>
+        ` : `<div class="value" style="font-size:0.85rem;color:var(--muted);padding-top:8px">—</div>`}
       </div>
     </div>
     <div class="card">
-      <h3 style="margin-bottom:12px;font-size:1rem">Rating History</h3>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+        <h3 style="font-size:1rem">Rating History</h3>
+        <div style="display:flex;gap:6px" id="rating-range-toggle">
+          <button class="${ratingChartRange === '3m' ? '' : 'secondary'}" style="padding:5px 12px;font-size:0.78rem" onclick="setRatingRange('3m')">3 Months</button>
+          <button class="${ratingChartRange === 'all' ? '' : 'secondary'}" style="padding:5px 12px;font-size:0.78rem" onclick="setRatingRange('all')">All Time</button>
+        </div>
+      </div>
       <div class="chart-wrap"><canvas id="rating-chart"></canvas></div>
+      <div id="rating-chart-note" style="color:var(--muted);font-size:0.8rem;margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:2px">
+        <h3 style="font-size:1rem">Position History</h3>
+        <div style="display:flex;gap:6px" id="position-range-toggle">
+          <button class="${positionChartRange === '3m' ? '' : 'secondary'}" style="padding:5px 12px;font-size:0.78rem" onclick="setPositionRange('3m')">3 Months</button>
+          <button class="${positionChartRange === 'all' ? '' : 'secondary'}" style="padding:5px 12px;font-size:0.78rem" onclick="setPositionRange('all')">All Time</button>
+        </div>
+      </div>
+      <div style="color:var(--muted);font-size:0.8rem;margin-bottom:10px">
+        Current #${d.rank}${d.peak.rank ? ` · Peak #${d.peak.rank}${d.peak.rank_date ? ' (' + d.peak.rank_date.split(' ')[0] + ')' : ''}` : ''}
+      </div>
+      <div class="chart-wrap"><canvas id="position-chart"></canvas></div>
+      <div id="position-chart-note" style="color:var(--muted);font-size:0.8rem;margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+        <h3 style="font-size:1rem">Form History</h3>
+        <div style="display:flex;gap:6px" id="form-range-toggle">
+          <button class="${formChartRange === '3m' ? '' : 'secondary'}" style="padding:5px 12px;font-size:0.78rem" onclick="setFormRange('3m')">3 Months</button>
+          <button class="${formChartRange === 'all' ? '' : 'secondary'}" style="padding:5px 12px;font-size:0.78rem" onclick="setFormRange('all')">All Time</button>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="form-chart"></canvas></div>
+      <div id="form-chart-note" style="color:var(--muted);font-size:0.8rem;margin-top:8px"></div>
     </div>
     <div class="card" style="padding:0">
-      <div style="padding:16px 20px 0;font-size:1rem;font-weight:600">Match History</div>
+      <div style="padding:16px 20px 0;font-size:1rem;font-weight:600">Results</div>
       <div class="table-wrap">
         <table>
           <thead><tr>
@@ -1116,7 +2691,7 @@ function renderTeamDetail(d) {
             <th>Score</th><th>Delta</th>
           </tr></thead>
           <tbody>
-            ${[...d.timeline].reverse().map(m => `
+            ${recentResults.length ? recentResults.map(m => `
               <tr>
                 <td style="color:var(--muted);font-size:0.8rem;white-space:nowrap">${m.date.split(' ')[0]}</td>
                 <td style="font-size:0.8rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${m.event}">${m.event}</td>
@@ -1127,58 +2702,357 @@ function renderTeamDetail(d) {
                 <td class="${m.won ? 'win-badge' : 'loss-badge'}">${m.score}</td>
                 <td class="${deltaClass(m.pts_delta)}">${fmt(m.pts_delta)}</td>
               </tr>
-            `).join('')}
+            `).join('') : `<tr><td colspan="6" style="color:var(--muted);padding:20px;text-align:center">No results</td></tr>`}
           </tbody>
         </table>
       </div>
+      <div style="padding:12px 20px">
+        <a class="team-link" style="font-size:0.82rem;color:var(--muted)" onclick="goToTeamResults('${d.name.replace(/'/g,"\\'")}')">All Results →</a>
+      </div>
     </div>
   `;
-  setEl('team-detail-content', html);
+  document.getElementById('td-result').innerHTML = html;
 
-  // Draw chart
+  currentTeamDetail = d;
+  drawRatingChart(d, ratingChartRange);
+  drawPositionChart(d, positionChartRange);
+  drawFormChart(d, formChartRange);
+}
+
+function setRecordRange(range) {
+  recordRange = range;
+  const btns = document.querySelectorAll('#record-range-toggle button');
+  btns.forEach(b => {
+    const is3m = b.textContent.trim() === '3M';
+    const isActive = (range === '3m' && is3m) || (range === 'all' && !is3m);
+    b.classList.toggle('secondary', !isActive);
+  });
+  if (!currentTeamDetail) return;
+  const d = currentTeamDetail;
+  const m3m = d.wins_3m + d.losses_3m;
+  const wl3m = m3m > 0 ? `${d.wins_3m}W ${d.losses_3m}L (${(d.wins_3m/m3m*100).toFixed(0)}%)` : '—';
+  const wlAll = d.total_matches > 0 ? `${d.wins}W ${d.losses}L (${(d.wins/d.total_matches*100).toFixed(0)}%)` : '—';
+  document.getElementById('record-value').textContent = range === '3m' ? wl3m : wlAll;
+}
+
+function setPositionRange(range) {
+  positionChartRange = range;
+  const btns = document.querySelectorAll('#position-range-toggle button');
+  btns.forEach(b => {
+    const is3m = b.textContent.trim() === '3 Months';
+    const isActive = (range === '3m' && is3m) || (range === 'all' && !is3m);
+    b.classList.toggle('secondary', !isActive);
+  });
+  if (currentTeamDetail) drawPositionChart(currentTeamDetail, range);
+}
+
+function setRatingRange(range) {
+  ratingChartRange = range;
+  const btns = document.querySelectorAll('#rating-range-toggle button');
+  btns.forEach(b => {
+    const is3m = b.textContent.trim() === '3 Months';
+    const isActive = (range === '3m' && is3m) || (range === 'all' && !is3m);
+    b.classList.toggle('secondary', !isActive);
+  });
+  if (currentTeamDetail) drawRatingChart(currentTeamDetail, range);
+}
+
+function setFormRange(range) {
+  formChartRange = range;
+  const btns = document.querySelectorAll('#form-range-toggle button');
+  btns.forEach(b => {
+    const is3m = b.textContent.trim() === '3 Months';
+    const isActive = (range === '3m' && is3m) || (range === 'all' && !is3m);
+    b.classList.toggle('secondary', !isActive);
+  });
+  if (currentTeamDetail) drawFormChart(currentTeamDetail, range);
+}
+
+function drawRatingChart(d, range) {
   if (ratingChart) { ratingChart.destroy(); ratingChart = null; }
-  const labels = d.timeline.map(m => m.date.split(' ')[0]);
-  const values = d.timeline.map(m => m.pts_after);
-  const ctx = document.getElementById('rating-chart').getContext('2d');
-  ratingChart = new Chart(ctx, {
+  const noteEl = document.getElementById('rating-chart-note');
+  if (noteEl) noteEl.textContent = '';
+
+  if (range === '3m') {
+    const ds = d.daily_series || [];
+    if (!ds.length) {
+      if (noteEl) noteEl.textContent = 'Not enough recent (3-month) match data to chart.';
+      return;
+    }
+    const labels = ds.map(p => p.date);
+    const values = ds.map(p => p.pts);
+    const ctx = document.getElementById('rating-chart').getContext('2d');
+    ratingChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Rating',
+          data: values,
+          borderColor: '#f5a623',
+          backgroundColor: 'rgba(245,166,35,0.08)',
+          borderWidth: 2,
+          pointRadius: ds.map(p => p.match ? 4 : 0),
+          pointBackgroundColor: ds.map(p => p.match ? (p.won ? '#4caf82' : '#e05a5a') : 'transparent'),
+          pointBorderColor: '#f5a623',
+          tension: 0,
+          fill: true,
+          spanGaps: false,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: i => ds[i[0].dataIndex].date,
+              afterLabel: i => ds[i.dataIndex].match ? `${ds[i.dataIndex].opponent} (${ds[i.dataIndex].score})` : '',
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: '#7a7f8e', maxTicksLimit: 8,
+              callback: (val, idx) => ds[idx] && ds[idx].match ? labels[idx] : null,
+            },
+            grid: { color: '#2a2d35' }
+          },
+          y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
+        }
+      }
+    });
+  } else {
+    // All-time: raw match-by-match points (no day-by-day depreciation interpolation)
+    const labels = d.timeline.map(m => m.date.split(' ')[0]);
+    const values = d.timeline.map(m => m.pts_after);
+    const ctx = document.getElementById('rating-chart').getContext('2d');
+    ratingChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Rating',
+          data: values,
+          borderColor: '#f5a623',
+          backgroundColor: 'rgba(245,166,35,0.08)',
+          borderWidth: 2,
+          pointRadius: 3,
+          pointBackgroundColor: '#f5a623',
+          tension: 0.3,
+          fill: true,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: i => d.timeline[i[0].dataIndex].date,
+              afterLabel: i => d.timeline[i.dataIndex].event,
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
+          y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
+        }
+      }
+    });
+  }
+}
+
+function drawPositionChart(d, range) {
+  if (positionChart) { positionChart.destroy(); positionChart = null; }
+  const noteEl = document.getElementById('position-chart-note');
+  if (noteEl) noteEl.textContent = '';
+
+  const full = d.rank_history || [];
+  if (!full.length) {
+    if (noteEl) noteEl.textContent = 'Not enough history to chart position.';
+    return;
+  }
+
+  let points = full;
+  if (range === '3m') {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 90);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    points = full.filter(p => p.date >= cutoffStr);
+    if (!points.length) {
+      if (noteEl) noteEl.textContent = 'Not enough recent (3-month) match activity to chart position.';
+      return;
+    }
+  }
+
+  const labels = points.map(p => p.date);
+  const values = points.map(p => p.rank);
+  const worst = Math.max(...values);
+  const ctx = document.getElementById('position-chart').getContext('2d');
+  positionChart = new Chart(ctx, {
     type: 'line',
     data: {
       labels,
       datasets: [{
-        label: 'Rating',
+        label: 'Rank',
         data: values,
-        borderColor: '#f5a623',
-        backgroundColor: 'rgba(245,166,35,0.08)',
+        borderColor: '#c26dfb',
+        backgroundColor: 'rgba(194,109,251,0.08)',
         borderWidth: 2,
-        pointRadius: 3,
-        pointBackgroundColor: '#f5a623',
-        tension: 0.3,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        pointBackgroundColor: '#c26dfb',
+        tension: 0,
         fill: true,
+        stepped: false,
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            title: i => d.timeline[i[0].dataIndex].date,
-            afterLabel: i => d.timeline[i.dataIndex].event,
+            title: i => points[i[0].dataIndex].date,
+            label: i => `#${points[i.dataIndex].rank}`,
           }
         }
       },
       scales: {
-        x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
-        y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
+        x: {
+          ticks: { color: '#7a7f8e', maxTicksLimit: 8 },
+          grid: { color: '#2a2d35' }
+        },
+        y: {
+          reverse: true,
+          min: 1,
+          max: worst,
+          ticks: { color: '#7a7f8e', precision: 0 },
+          grid: { color: '#2a2d35' },
+        }
       }
     }
   });
 }
 
-// ---------------------------------------------------------------------------
-// Simulation
-// ---------------------------------------------------------------------------
+function drawFormChart(d, range) {
+  if (formChart) { formChart.destroy(); formChart = null; }
+  const noteEl = document.getElementById('form-chart-note');
+  if (noteEl) noteEl.textContent = '';
+
+  if (range === '3m') {
+    const ds = (d.daily_series || []).filter(p => p.form_score != null);
+    if (!ds.length) {
+      if (noteEl) noteEl.textContent = 'Not enough recent (3-month) match data to chart form.';
+      return;
+    }
+    const full = d.daily_series || [];
+    const labels = full.map(p => p.date);
+    const values = full.map(p => p.form_score);
+    const ctx = document.getElementById('form-chart').getContext('2d');
+    formChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Form',
+          data: values,
+          borderColor: '#4a9eff',
+          backgroundColor: 'rgba(74,158,255,0.08)',
+          borderWidth: 2,
+          pointRadius: full.map(p => p.match ? 4 : 0),
+          pointBackgroundColor: full.map(p => p.match ? (p.won ? '#4caf82' : '#e05a5a') : 'transparent'),
+          pointBorderColor: '#4a9eff',
+          tension: 0,
+          fill: true,
+          spanGaps: false,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: i => full[i[0].dataIndex].date,
+              label: i => `Form: ${full[i.dataIndex].form_grade || ''} (${full[i.dataIndex].form_score})`,
+              afterLabel: i => full[i.dataIndex].match ? `${full[i.dataIndex].opponent} (${full[i.dataIndex].score})` : '',
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: '#7a7f8e', maxTicksLimit: 8,
+              callback: (val, idx) => full[idx] && full[idx].match ? labels[idx] : null,
+            },
+            grid: { color: '#2a2d35' }
+          },
+          y: { min: 0, max: 100, ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
+        }
+      }
+    });
+  } else {
+    // All-time: standard fixed-n=15 form score attached to every match in
+    // the full timeline (form_score_all) — see get_team() in main.py.
+    const withForm = d.timeline.filter(m => m.form_score_all != null);
+    if (!withForm.length) {
+      if (noteEl) noteEl.textContent = 'Not enough match history to chart form.';
+      return;
+    }
+    const labels = d.timeline.map(m => m.date.split(' ')[0]);
+    const values = d.timeline.map(m => m.form_score_all != null ? m.form_score_all : null);
+    const ctx = document.getElementById('form-chart').getContext('2d');
+    formChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Form',
+          data: values,
+          borderColor: '#4a9eff',
+          backgroundColor: 'rgba(74,158,255,0.08)',
+          borderWidth: 2,
+          pointRadius: 3,
+          pointBackgroundColor: '#4a9eff',
+          tension: 0.3,
+          fill: true,
+          spanGaps: false,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: i => d.timeline[i[0].dataIndex].date,
+              label: i => {
+                const m = d.timeline[i.dataIndex];
+                return m.form_score_all != null ? `Form: ${m.form_grade_all} (${m.form_score_all})` : 'No form data yet';
+              },
+              afterLabel: i => d.timeline[i.dataIndex].event,
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#7a7f8e', maxTicksLimit: 8 }, grid: { color: '#2a2d35' } },
+          y: { min: 0, max: 100, ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } },
+        }
+      }
+    });
+  }
+}
 async function runSim() {
   const t1 = document.getElementById('sim-t1').value.trim();
   const t2 = document.getElementById('sim-t2').value.trim();
@@ -1192,10 +3066,12 @@ async function runSim() {
       grand_final: document.getElementById('sim-gf').checked,
     });
 
+    const provTag1 = d.team1.provisional ? ` · PROV (match ${d.team1.provisional_matches_played + 1}/3)` : '';
+    const provTag2 = d.team2.provisional ? ` · PROV (match ${d.team2.provisional_matches_played + 1}/3)` : '';
     document.getElementById('sim-t1-pts').textContent =
-      `${d.team1.points.toFixed(2)} pts · #${d.team1.rank}`;
+      `${d.team1.points.toFixed(2)} pts · #${d.team1.rank}${provTag1}`;
     document.getElementById('sim-t2-pts').textContent =
-      `${d.team2.points.toFixed(2)} pts · #${d.team2.rank}`;
+      `${d.team2.points.toFixed(2)} pts · #${d.team2.rank}${provTag2}`;
 
     const p1 = d.win_probability_t1;
     const p2 = d.win_probability_t2;
@@ -1411,7 +3287,10 @@ function renderH2H(d) {
                 <td>${tierBadge(m.tier)}</td>
                 <td style="font-weight:600">${m.score}</td>
                 <td class="win-badge">${m.winner}</td>
-                <td>${m.url ? `<a href="${m.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none">HLTV</a>` : ''}</td>
+                <td style="white-space:nowrap">
+                  ${m.url ? `<a href="${m.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none;margin-right:8px">HLTV</a>` : ''}
+                  ${m.url ? `<span class="team-link" style="font-size:0.75rem;color:var(--accent)" onclick="openMatch(${JSON.stringify(m.url)})">CSRS</span>` : ''}
+                </td>
               </tr>
             `).join('')}
           </tbody>
@@ -1422,6 +3301,286 @@ function renderH2H(d) {
 }
 
 // ---------------------------------------------------------------------------
+// Compare Teams — side-by-side stat comparison + overlaid rating chart
+// ---------------------------------------------------------------------------
+let cmpChart = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+  ['cmp-t1', 'cmp-t2'].forEach(function(id) {
+    var inp = document.getElementById(id);
+    if (inp) inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadCompare(); });
+  });
+});
+
+async function loadCompare() {
+  const t1 = document.getElementById('cmp-t1').value.trim();
+  const t2 = document.getElementById('cmp-t2').value.trim();
+  if (!t1 || !t2) return;
+  setEl('cmp-result', '<div class="loading"><div class="spinner"></div> Loading…</div>');
+  try {
+    const [d1, d2] = await Promise.all([
+      api(`/api/team/${encodeURIComponent(t1)}`),
+      api(`/api/team/${encodeURIComponent(t2)}`),
+    ]);
+    renderCompare(d1, d2);
+  } catch(e) {
+    setError('cmp-result', e.message);
+  }
+}
+
+// Which side "wins" a comparison row. lowerIsBetter=true for rank fields.
+function _cmpWinner(a, b, lowerIsBetter) {
+  if (a == null || b == null || a === b) return 0;
+  const aWins = lowerIsBetter ? a < b : a > b;
+  return aWins ? 1 : 2;
+}
+
+function _cmpRow(label, v1, v2, disp1, disp2, lowerIsBetter) {
+  const w = _cmpWinner(v1, v2, lowerIsBetter);
+  const c1 = w === 1 ? 'var(--green)' : w === 2 ? 'var(--muted)' : 'var(--text)';
+  const c2 = w === 2 ? 'var(--green)' : w === 1 ? 'var(--muted)' : 'var(--text)';
+  return `
+    <tr>
+      <td style="text-align:right;font-weight:600;color:${c1}">${disp1}</td>
+      <td style="text-align:center;color:var(--muted);font-size:0.78rem;white-space:nowrap;padding:0 14px">${label}</td>
+      <td style="text-align:left;font-weight:600;color:${c2}">${disp2}</td>
+    </tr>`;
+}
+
+function renderCompare(d1, d2) {
+  const wl1 = d1.total_matches > 0 ? `${d1.wins}W ${d1.losses}L (${(d1.wins/d1.total_matches*100).toFixed(0)}%)` : '—';
+  const wl2 = d2.total_matches > 0 ? `${d2.wins}W ${d2.losses}L (${(d2.wins/d2.total_matches*100).toFixed(0)}%)` : '—';
+  const m1 = (d1.wins_3m + d1.losses_3m) > 0 ? `${d1.wins_3m}W ${d1.losses_3m}L` : '—';
+  const m2 = (d2.wins_3m + d2.losses_3m) > 0 ? `${d2.wins_3m}W ${d2.losses_3m}L` : '—';
+  const f1 = d1.form ? `${d1.form.grade} (${d1.form.score})` : '—';
+  const f2 = d2.form ? `${d2.form.grade} (${d2.form.score})` : '—';
+  const p1 = d1.peak && d1.peak.points ? d1.peak.points : null;
+  const p2 = d2.peak && d2.peak.points ? d2.peak.points : null;
+  const pr1 = d1.peak && d1.peak.rank ? d1.peak.rank : null;
+  const pr2 = d2.peak && d2.peak.rank ? d2.peak.rank : null;
+
+  const html = `
+    <div class="card">
+      <div class="h2h-score">
+        <div class="team-side">
+          <div class="name">${d1.name}</div>
+        </div>
+        <div class="dash">vs</div>
+        <div class="team-side">
+          <div class="name">${d2.name}</div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <tbody>
+            ${_cmpRow('Current Rating', d1.points, d2.points, d1.points.toFixed(1), d2.points.toFixed(1), false)}
+            ${_cmpRow('Global Rank', d1.rank, d2.rank, '#' + d1.rank, '#' + d2.rank, true)}
+            ${_cmpRow('Peak Rating', p1, p2, p1 ? p1.toFixed(1) : '—', p2 ? p2.toFixed(1) : '—', false)}
+            ${_cmpRow('Peak Rank', pr1, pr2, pr1 ? '#' + pr1 : '—', pr2 ? '#' + pr2 : '—', true)}
+            ${_cmpRow('Record (All-Time)', d1.wins, d2.wins, wl1, wl2, false)}
+            ${_cmpRow('Record (3 Months)', d1.wins_3m, d2.wins_3m, m1, m2, false)}
+            ${_cmpRow('Rating \u0394 (3 Months)', d1.pts_delta_3m, d2.pts_delta_3m, fmt(d1.pts_delta_3m), fmt(d2.pts_delta_3m), false)}
+            ${_cmpRow('Form (3 Months)', d1.form ? d1.form.score : null, d2.form ? d2.form.score : null, f1, f2, false)}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:12px;font-size:1rem">Rating History (Last 3 Months)</h3>
+      <div class="chart-wrap"><canvas id="cmp-chart"></canvas></div>
+      <div id="cmp-chart-note" style="color:var(--muted);font-size:0.8rem;margin-top:8px"></div>
+    </div>`;
+  setEl('cmp-result', html);
+
+  if (cmpChart) { cmpChart.destroy(); cmpChart = null; }
+
+  const ds1 = d1.daily_series || [];
+  const ds2 = d2.daily_series || [];
+  if (!ds1.length || !ds2.length) {
+    document.getElementById('cmp-chart-note').textContent =
+      'Not enough recent (3-month) match data for one or both teams to chart.';
+    return;
+  }
+
+  // Both daily_series span the same fixed 90-day window ending today, so
+  // dates line up index-for-index between the two teams.
+  const labels = ds1.map(p => p.date);
+  const v1 = ds1.map(p => p.pts);
+  const v2 = ds2.map(p => p.pts);
+
+  const ctx = document.getElementById('cmp-chart').getContext('2d');
+  cmpChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: d1.name,
+          data: v1,
+          borderColor: '#f5a623',
+          backgroundColor: 'rgba(245,166,35,0.08)',
+          borderWidth: 2,
+          pointRadius: ds1.map(p => p.match ? 4 : 0),
+          pointBackgroundColor: ds1.map(p => p.match ? (p.won ? '#4caf82' : '#e05a5a') : 'transparent'),
+          pointBorderColor: '#f5a623',
+          tension: 0,
+          fill: false,
+          spanGaps: false,
+        },
+        {
+          label: d2.name,
+          data: v2,
+          borderColor: '#4a9eff',
+          backgroundColor: 'rgba(74,158,255,0.08)',
+          borderWidth: 2,
+          pointRadius: ds2.map(p => p.match ? 4 : 0),
+          pointBackgroundColor: ds2.map(p => p.match ? (p.won ? '#4caf82' : '#e05a5a') : 'transparent'),
+          pointBorderColor: '#4a9eff',
+          tension: 0,
+          fill: false,
+          spanGaps: false,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: true, labels: { color: '#c7cad1' } },
+        tooltip: {
+          backgroundColor: '#1e2127',
+          borderColor: '#2a2d35',
+          borderWidth: 1,
+        }
+      },
+      scales: {
+        x: {
+          type: 'category',
+          ticks: {
+            color: '#7a7f8e',
+            maxTicksLimit: 10,
+            callback: function(val, idx) { return (ds1[idx] && ds1[idx].match) || (ds2[idx] && ds2[idx].match) ? labels[idx] : null; }
+          },
+          grid: { color: '#2a2d35' }
+        },
+        y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } }
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Analyse Team Form — component breakdown, per-match contribution, trend
+// ---------------------------------------------------------------------------
+attachAutocomplete('fa-input', 'fa-dd', 'team', function(val) {
+  loadFormAnalysis(val);
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  var inp = document.getElementById('fa-input');
+  if (inp) inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadFormAnalysis(); });
+});
+
+async function loadFormAnalysis(name) {
+  name = name || document.getElementById('fa-input').value.trim();
+  if (!name) return;
+  document.getElementById('fa-input').value = name;
+  setEl('fa-result', '<div class="loading"><div class="spinner"></div> Loading…</div>');
+  try {
+    const d = await api(`/api/team/${encodeURIComponent(name)}/form-analysis`);
+    renderFormAnalysis(d);
+  } catch(e) {
+    setError('fa-result', e.message);
+  }
+}
+
+function _faBar(comp) {
+  const pctLabel = comp.compressed ? `${comp.pct.toFixed(0)}%\u2192${comp.pct_compressed.toFixed(0)}%` : `${comp.pct.toFixed(0)}%`;
+  return `
+    <div style="margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;font-size:0.85rem;margin-bottom:4px">
+        <span>${comp.label}</span>
+        <span style="color:var(--muted)">${comp.score.toFixed(1)} / ${comp.weight.toFixed(1)}  ·  ${pctLabel}</span>
+      </div>
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;height:10px;overflow:hidden">
+        <div style="width:${comp.bar_pct}%;height:100%;background:var(--accent)"></div>
+      </div>
+    </div>`;
+}
+
+function renderFormAnalysis(d) {
+  const arrowChar = a => a === 'up' ? '\u2191' : a === 'down' ? '\u2193' : '\u2192';
+  const arrowColor = a => a === 'up' ? 'var(--green)' : a === 'down' ? 'var(--red)' : 'var(--muted)';
+
+  const streakLine = d.streak_bonus_active
+    ? `+${d.streak_bonus.toFixed(1)} Win Streak Bonus (${d.wins_in_window}W/${d.losses_in_window}L in window)  ·  Base: ${d.base_score.toFixed(1)}`
+    : d.streak_wiped
+      ? `Streak Bonus Wiped (consecutive losses)  ·  Base: ${d.base_score.toFixed(1)}`
+      : `No Active Bonus  ·  Base: ${d.base_score.toFixed(1)}`;
+
+  const html = `
+    <div class="team-detail-header" style="margin-top:16px">
+      <h2>${d.team}</h2>
+      <span class="rank-badge">${d.grade}</span>
+      <span class="rank-badge" style="color:var(--accent)">${d.score.toFixed(1)} / ${d.total_form_points.toFixed(1)}</span>
+      <span class="rank-badge" style="font-size:0.78rem">Streak: ${d.streak}</span>
+    </div>
+    <div style="color:var(--muted);font-size:0.82rem;margin:-8px 0 16px 2px">${streakLine}</div>
+
+    <div class="card">
+      <h3 style="margin-bottom:14px;font-size:1rem">Components</h3>
+      ${_faBar(d.components.win)}
+      ${_faBar(d.components.map)}
+      ${_faBar(d.components.comp)}
+    </div>
+
+    ${d.trend.length ? `
+    <div class="card">
+      <h3 style="margin-bottom:12px;font-size:1rem">Trend</h3>
+      <div style="display:flex;gap:24px;flex-wrap:wrap">
+        ${d.trend.map(t => `
+          <div>
+            <div style="color:var(--muted);font-size:0.78rem">Last ${t.window}</div>
+            <div style="font-size:1.05rem;font-weight:600;color:${arrowColor(t.arrow)}">
+              ${t.score.toFixed(1)} ${arrowChar(t.arrow)} ${t.diff >= 0 ? '+' : ''}${t.diff.toFixed(1)}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      <div style="color:var(--muted);font-size:0.75rem;margin-top:10px">vs. base score (excludes streak bonus)</div>
+    </div>` : ''}
+
+    <div class="card">
+      <h3 style="margin-bottom:8px;font-size:1rem">Insights</h3>
+      <ul style="margin:0;padding-left:20px;color:var(--text);font-size:0.88rem;line-height:1.7">
+        ${d.insights.map(i => `<li>${i}</li>`).join('')}
+      </ul>
+    </div>
+
+    <div class="card" style="padding:0">
+      <div style="padding:16px 20px 0;font-size:1rem;font-weight:600">Matches in Window (${d.matches_in_window})</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Date</th><th>Opponent</th><th>Score</th><th>Result</th><th>Form Pts</th></tr></thead>
+          <tbody>
+            ${[...d.matches].reverse().map(m => `
+              <tr>
+                <td style="color:var(--muted);font-size:0.8rem;white-space:nowrap">${m.date}</td>
+                <td class="team-link" onclick="openTeam('${m.opponent.replace(/'/g,"\\'")}')">${m.opponent}</td>
+                <td class="${m.result === 'W' ? 'win-badge' : 'loss-badge'}">${m.score}</td>
+                <td class="${m.result === 'W' ? 'win-badge' : 'loss-badge'}">${m.result}</td>
+                <td>${m.match_form.toFixed(1)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  setEl('fa-result', html);
+}
+
+// ---------------------------------------------------------------------------
 // Elite Over Time
 // ---------------------------------------------------------------------------
 let eliteChart = null;
@@ -1429,33 +3588,39 @@ let eliteChart = null;
 // Distinct colors for up to 20 teams — chosen for visibility on dark bg
 const ELITE_COLORS = [
   '#FFD700', '#C0C0C0', '#CD7F32', '#e6194B', '#3cb44b',
-  '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6',
+  '#4363d8', '#46f0f0', '#911eb4', '#42d4f4', '#f032e6',
   '#bfef45', '#fabed4', '#469990', '#dcbeff', '#9A6324',
   '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1',
 ];
 
-function setElitePreset(preset) {
+async function setElitePreset(preset) {
   const now = new Date();
   const pad = n => String(n).padStart(2, '0');
   const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
   const today = fmt(now);
 
-  document.getElementById('elite-end').value = today;
+  dpSet('elite-end', today);
 
   if (preset === 'all') {
-    document.getElementById('elite-start').value = '2020-01-01';
+    // Always await the shared meta promise — guarantees earliestDataDate is
+    // populated before we call dpSet, even if the user clicks All Time
+    // before the initial loadMeta() call has resolved.
+    await _ensureMetaLoaded();
+    dpSet('elite-start', earliestDataDate || '');
   } else if (preset === '3m') {
     const d = new Date(now); d.setMonth(d.getMonth() - 3);
-    document.getElementById('elite-start').value = fmt(d);
+    dpSet('elite-start', fmt(d));
   } else if (preset === '1m') {
     const d = new Date(now); d.setMonth(d.getMonth() - 1);
-    document.getElementById('elite-start').value = fmt(d);
+    dpSet('elite-start', fmt(d));
   }
+
+  loadElite();
 }
 
 async function loadElite() {
-  const start = document.getElementById('elite-start').value;
-  const end   = document.getElementById('elite-end').value;
+  const start = dpGet('elite-start');
+  const end   = dpGet('elite-end');
   if (!start || !end) return;
 
   setEl('elite-content', '<div class="loading"><div class="spinner"></div> Building chart…</div>');
@@ -1469,8 +3634,8 @@ async function loadElite() {
 }
 
 function normalizeElitePayload(payload) {
-  const startInput = document.getElementById('elite-start')?.value || '—';
-  const endInput = document.getElementById('elite-end')?.value || '—';
+  const startInput = dpGet('elite-start') || '—';
+  const endInput = dpGet('elite-end') || '—';
   const eliteThreshold = Number.isFinite(payload?.elite_threshold)
     ? payload.elite_threshold
     : 850;
@@ -1530,151 +3695,147 @@ function normalizeElitePayload(payload) {
   };
 }
 
-// ── Elite chart state ──────────────────────────────────────────────────────
-// allEliteSeries: full ordered array (solid + barely) used for dataset index
-let allEliteSeries = [];
-
 function renderElite(d) {
   d = normalizeElitePayload(d);
+
   if (eliteChart) { eliteChart.destroy(); eliteChart = null; }
-  allEliteSeries = [];
 
-  // Backend marks above_threshold based on *final* rating only.
-  // We want ALL teams whose peak_in_range >= threshold — they reached elite
-  // even if they couldn't hold it. Split into:
-  //   solidSeries  — still above threshold at end of range
-  //   barelySeries — peaked above but fell back below by end
-  const THRESH = d.elite_threshold;
-  const allReached = (d.series || []).filter(s => s.peak_in_range >= THRESH);
+  // Every team that reached the elite threshold at any point in this range —
+  // including ones who didn't maintain it. Sorted by current global rank so
+  // the legend order matches the # column shown next to each team.
+  const series = (d.series || [])
+    .slice()
+    .sort((a, b) => (a.rank ?? 9999) - (b.rank ?? 9999));
 
-  if (allReached.length === 0) {
+  if (series.length === 0) {
     setEl('elite-content', '<div class="empty-msg">No teams reached 850+ Elo in this date range.</div>');
     return;
   }
 
-  const solidSeries  = allReached.filter(s => s.above_threshold)
-                                  .sort((a, b) => b.final_rating - a.final_rating);
-  const barelySeries = allReached.filter(s => !s.above_threshold)
-                                  .sort((a, b) => b.peak_in_range - a.peak_in_range);
+  const html = `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div>
+          <span style="font-size:0.85rem;color:var(--muted)">${series.length} elite teams · ${d.start_date} → ${d.end_date}</span>
+        </div>
+        <div style="font-size:0.78rem;color:var(--muted)">
+          Threshold: <span style="color:var(--accent);font-weight:600">${d.elite_threshold} pts</span>
+        </div>
+      </div>
+      <div style="position:relative;height:440px"><canvas id="elite-chart"></canvas></div>
+    </div>
+    <div class="card" style="padding:0">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);font-size:0.85rem;font-weight:600">Legend</div>
+      <div class="elite-legend-head">
+        <span style="width:24px;flex-shrink:0"></span>
+        <span style="width:28px">#</span>
+        <span style="flex:1">Team</span>
+        <span style="width:110px;text-align:right">Rating</span>
+        <span style="width:52px;text-align:right">Change</span>
+        <span style="width:70px;text-align:right">Peak</span>
+      </div>
+      <div id="elite-legend" style="padding:8px 0"></div>
+    </div>
+  `;
+  setEl('elite-content', html);
 
-  // Unified dataset order: solid teams first, barely-elite after
-  allEliteSeries = [...solidSeries, ...barelySeries];
+  const ctx = document.getElementById('elite-chart').getContext('2d');
 
-  const labels = d.all_dates && d.all_dates.length
+  // Explicit, chronologically-sorted label list — this is what fixes the
+  // scrambled x-axis. The backend already returns all_dates pre-sorted;
+  // every dataset is plotted against this exact same axis so Chart.js
+  // doesn't have to guess label order from first-appearance.
+  let labels = d.all_dates && d.all_dates.length
     ? d.all_dates
-    : [...new Set(allEliteSeries.flatMap(t => (t.points || []).map(p => p.date)))].sort();
+    : [...new Set(series.flatMap(team => (team.points || []).map(p => p.date)))].sort();
 
-  const datasets = allEliteSeries.map((team, i) => {
-    const color    = ELITE_COLORS[i % ELITE_COLORS.length];
-    const isBarely = i >= solidSeries.length;
+  // Pin the left edge of the x-axis to exactly the selected start date.
+  // Strip any labels that fall before the start date (shouldn't happen but
+  // guards against backend over-returning), then ensure the start date is
+  // always the first label so the origin is always (start_date, y-axis).
+  const startDateStr = document.getElementById('elite-start')?.value;
+  if (startDateStr) {
+    labels = labels.filter(l => l >= startDateStr);
+    if (labels.length === 0 || labels[0] !== startDateStr) {
+      labels = [startDateStr, ...labels];
+    }
+  }
+
+  // Build per-team byDate lookup (used for marker styling and tooltips)
+  const datasets = series.map((team, i) => {
+    const color = ELITE_COLORS[i % ELITE_COLORS.length];
     const hasFlags = team.points.length > 0 && 'match' in team.points[0];
 
     const byDate = {};
     team.points.forEach(p => { byDate[p.date] = p; });
-    const dataPoints = labels.map(l => { const p = byDate[l]; return p ? p.pts : null; });
+    const dataPoints = labels.map(l => (l in byDate ? byDate[l].pts : null));
 
-    const realIdx  = dataPoints.map((v, i) => v !== null ? i : -1).filter(i => i !== -1);
+    const realIdx = dataPoints.map((v, idx) => v !== null ? idx : -1).filter(i => i !== -1);
     const firstIdx = realIdx[0];
     const lastIdx  = realIdx[realIdx.length - 1];
 
-    // Match dots only on match days; start/end get hollow circle
+    // Dots on match days; hollow at start/end like CSRS.py. The last point
+    // also gets a regular solid dot when the line trails off mid-decay, so a
+    // segment never just stops with nothing marking where it ends.
+    const endIsTransition = p => p && p.deprecated;
     const pointRadius = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return 0;
-      if (idx === firstIdx || idx === lastIdx) return 4;
-      if (!hasFlags) return 3;
-      return p.match ? 3 : 0;
+      if (idx === firstIdx || idx === lastIdx) return 5;
+      if (idx === lastIdx && endIsTransition(p)) return 4;
+      if (hasFlags && p.match) return 4;
+      if (hasFlags && p.transition) return 4;
+      return 0;
     });
-
     const pointBg = labels.map((l, idx) => {
       const p = byDate[l];
       if (!p) return 'transparent';
       if (idx === firstIdx || idx === lastIdx) return '#16181c'; // hollow
-      if (hasFlags && !p.match) return 'transparent';
-      return (hasFlags && !p.above) ? color + '66' : color;
+      if (idx === lastIdx && endIsTransition(p)) return color;
+      if (hasFlags && p.match) return color;
+      if (hasFlags && p.transition) return color;
+      return 'transparent';
+    });
+    const pointBorder = labels.map((l, idx) => {
+      const p = byDate[l];
+      if (!p) return color;
+      return color;
     });
 
     return {
-      label: team.name,
-      data: dataPoints,
-      borderColor: isBarely ? color + 'bb' : color,
+      label:    team.name,
+      data:     dataPoints,
+      borderColor: color,
       backgroundColor: 'transparent',
-      borderWidth: isBarely ? 1.5 : 2,
+      borderWidth: 2,
       pointRadius,
       pointStyle: 'circle',
       pointBackgroundColor: pointBg,
-      pointBorderColor: color,
-      pointBorderWidth: 1.5,
-      pointHoverRadius: 6,
+      pointBorderColor: pointBorder,
+      pointBorderWidth: 2,
+      pointHoverRadius: 7,
       tension: 0,
       spanGaps: true,
-      segment: hasFlags ? {
-        borderDash: ctx => {
-          const p = byDate[labels[ctx.p1DataIndex]];
-          // Barely-elite teams always dashed; solid teams dashed while depreciating
-          return (isBarely || (p && p.deprecated)) ? [5, 4] : [];
-        },
-        borderColor: ctx => {
-          const p = byDate[labels[ctx.p1DataIndex]];
-          if (isBarely) return color + 'aa';
-          if (p && p.deprecated) return color + '88';
-          return color;
-        },
-      } : (isBarely ? {
-        borderDash: () => [5, 4],
-        borderColor: () => color + 'aa',
-      } : {}),
+      // Store metadata for tooltip lookups
+      _byDate:   byDate,
+      _hasFlags: hasFlags,
+      _color:    color,
+      _team:     team,
     };
   });
 
-  // Build legend HTML
-  const beHtml = barelySeries.length ? `
-    <div class="barely-elite-section">
-      <div class="barely-elite-header" id="be-toggle" onclick="toggleBarelySection()">
-        <span class="be-chev">&#9662;</span>
-        <span>Briefly Crossed Threshold</span>
-        <span style="margin-left:6px;font-size:0.6rem;opacity:0.7">${barelySeries.length} team${barelySeries.length > 1 ? 's' : ''} — peaked above ${THRESH} but fell back</span>
-      </div>
-      <div class="barely-elite-rows" id="be-rows" style="max-height:800px">
-        ${barelySeries.map((team, i) => legendRow(team, solidSeries.length + i, true)).join('')}
-      </div>
-    </div>` : '';
+  // Hard-floor the y-axis at the elite threshold — anything below 850 is out
+  // of scope for this chart, so we don't extend the axis down to show dips.
+  // The transition marker at a decayed line's end still plots at its true
+  // (possibly sub-850) value; if that's below the floor it sits at/below
+  // the visible bottom edge rather than the axis expanding to fit it.
+  let maxVal = d.elite_threshold;
+  series.forEach(team => team.points.forEach(p => {
+    if (p.pts > maxVal) maxVal = p.pts;
+  }));
+  const yMin = d.elite_threshold;
+  const yMax = Math.ceil((maxVal + 10) / 10) * 10;
 
-  const html = `
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-        <span style="font-size:0.85rem;color:var(--muted)">
-          ${solidSeries.length} elite${barelySeries.length ? ` + <span style="opacity:0.6">${barelySeries.length} briefly</span>` : ''} · ${d.start_date} → ${d.end_date}
-        </span>
-        <span style="font-size:0.78rem;color:var(--muted)">
-          Threshold: <span style="color:var(--accent);font-weight:600">${THRESH} pts</span>
-        </span>
-      </div>
-      <div style="position:relative;height:460px"><canvas id="elite-chart"></canvas></div>
-    </div>
-    <div class="card" style="padding:0">
-      <div style="padding:12px 20px 10px;border-bottom:1px solid var(--border);font-size:0.85rem;font-weight:600;display:flex;align-items:center;justify-content:space-between">
-        <span>Teams</span>
-        <span style="font-size:0.7rem;color:var(--muted);font-weight:400">hover row → ✕ to remove · click to toggle</span>
-      </div>
-      <div class="elite-legend-head">
-        <span style="width:28px;flex-shrink:0"></span>
-        <span style="width:32px">#</span>
-        <span style="flex:1">Team</span>
-        <span style="width:110px;text-align:right">Start → End</span>
-        <span style="width:52px;text-align:right">Δ</span>
-        <span style="width:66px;text-align:right">Peak</span>
-        <span style="width:20px"></span>
-      </div>
-      <div id="elite-legend" style="padding:2px 0">
-        ${solidSeries.map((team, i) => legendRow(team, i, false)).join('')}
-      </div>
-      ${beHtml}
-    </div>`;
-
-  setEl('elite-content', html);
-
-  const ctx = document.getElementById('elite-chart').getContext('2d');
   eliteChart = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets },
@@ -1691,16 +3852,18 @@ function renderElite(d) {
           titleColor: '#e8eaf0',
           bodyColor: '#7a7f8e',
           filter: item => item.parsed.y !== null && item.parsed.y !== undefined,
+          // Sort rows by this date's actual value (highest first), not by
+          // each team's final/end-of-range rank.
+          itemSort: (a, b) => b.parsed.y - a.parsed.y,
           callbacks: {
             title: items => items[0].label,
+            labelColor: item => {
+              const dsColor = item.dataset.borderColor;
+              return { borderColor: dsColor, backgroundColor: dsColor };
+            },
             label: item => {
-              const team = allEliteSeries[item.datasetIndex];
-              const p    = team?.points?.find(pt => pt.date === item.label);
-              const isB  = item.datasetIndex >= solidSeries.length;
-              const sym  = item.parsed.y >= THRESH ? '●' : '○';
-              const tag  = isB ? ' [briefly elite]' : '';
-              const dep  = (p && p.deprecated) ? ' ~decay' : '';
-              return ` ${sym} ${item.dataset.label}${tag}: ${item.parsed.y.toFixed(1)}${dep}`;
+              const elite = item.parsed.y >= d.elite_threshold ? '●' : '○';
+              return ` ${elite} ${item.dataset.label}: ${item.parsed.y.toFixed(1)}`;
             }
           }
         },
@@ -1708,72 +3871,51 @@ function renderElite(d) {
       scales: {
         x: {
           type: 'category',
-          labels,
+          labels: labels,
           ticks: { color: '#7a7f8e', maxTicksLimit: 10 },
-          grid:  { color: '#2a2d35' },
+          grid: { color: '#2a2d35' },
         },
         y: {
-          min: THRESH - 40,
+          min: yMin,
+          max: yMax,
           ticks: { color: '#7a7f8e' },
-          grid:  { color: '#2a2d35' },
+          grid: { color: '#2a2d35' },
           title: { display: true, text: 'CSRS Rating', color: '#7a7f8e', font: { size: 11 } },
         }
       }
     },
-    plugins: [{
-      afterDraw(chart) {
-        const { ctx: c, scales: { x, y } } = chart;
-        const ty = y.getPixelForValue(THRESH);
-        c.save();
-        c.strokeStyle = '#f5a62344';
-        c.lineWidth = 1;
-        c.setLineDash([6, 4]);
-        c.beginPath(); c.moveTo(x.left, ty); c.lineTo(x.right, ty); c.stroke();
-        c.setLineDash([]);
-        c.fillStyle = '#f5a623bb';
-        c.font = '10px sans-serif';
-        c.fillText(`${THRESH}`, x.left + 4, ty - 4);
-        c.restore();
-      }
-    }]
   });
+
+  // Legend — ranked by peak rating
+  const legendEl = document.getElementById('elite-legend');
+  legendEl.innerHTML = series.map((team, i) => legendRow(team, i)).join('');
 }
 
-function legendRow(team, dsIndex, isBarely) {
-  const color     = ELITE_COLORS[dsIndex % ELITE_COLORS.length];
-  const sign      = team.diff >= 0 ? '+' : '';
+function legendRow(team, idx) {
+  const color = ELITE_COLORS[idx % ELITE_COLORS.length];
+  const sign = team.diff >= 0 ? '+' : '';
   const diffColor = team.diff >= 0 ? 'var(--green)' : 'var(--red)';
+  // Gold/silver/bronze for the team's actual current global rank (#1/#2/#3)
   const RANK_COLORS = { 1: '#FFD700', 2: '#C0C0C0', 3: '#CD7F32' };
-  const nameColor = isBarely ? 'var(--muted)' : (RANK_COLORS[team.rank] || 'var(--text)');
-  const rankStr   = team.rank ? `#${team.rank}` : '—';
-
-  // Swatch: dashed line for barely-elite, solid for confirmed elite
-  const swatch = isBarely
-    ? `<span style="display:inline-block;width:24px;height:0;border-top:2px dashed ${color};opacity:0.7;vertical-align:middle"></span>`
-    : `<span style="display:inline-block;width:24px;height:3px;background:${color};border-radius:2px"></span>`;
-
-  // For barely-elite, show peak instead of final (since final is below threshold)
-  const ratingDisplay = isBarely
-    ? `peak <span style="color:var(--accent)">${Math.round(team.peak_in_range)}</span>`
-    : `${Math.round(team.initial_rating)} → ${Math.round(team.final_rating)}`;
+  const nameColor = RANK_COLORS[team.rank] || 'var(--text)';
+  const rankStr = team.rank ? `#${team.rank}` : '—';
+  // Teams that peaked above 850 but didn't hold it by the end of the range
+  // get dimmed + a small marker, so it's clear at a glance they dropped off
+  const droppedOff = !team.above_threshold;
+  const rowOpacity = droppedOff ? 0.55 : 1;
+  const dropMarker = droppedOff
+    ? `<span style="font-size:0.65rem;color:var(--red);margin-left:4px" title="Below 850 by end of range">▼</span>`
+    : '';
 
   return `
-    <div class="elite-legend-row" id="elite-leg-${dsIndex}"
-         onclick="handleLegendClick(event,${dsIndex})"
-         style="${isBarely ? 'opacity:0.65' : ''}">
-      <span style="width:28px;flex-shrink:0;display:flex;align-items:center">${swatch}</span>
-      <span style="width:32px;font-size:0.72rem;color:var(--muted)">${rankStr}</span>
-      <span style="flex:1;font-size:0.82rem;font-weight:600;color:${nameColor}">${team.name}</span>
-      <span style="width:110px;text-align:right;font-size:0.75rem;color:var(--muted);font-family:monospace">${ratingDisplay}</span>
+    <div class="elite-legend-row" onclick="toggleEliteLine(${idx})" id="elite-leg-${idx}" style="opacity:${rowOpacity}">
+      <span style="width:24px;flex-shrink:0"><span style="display:inline-block;width:24px;height:3px;background:${color};border-radius:2px"></span></span>
+      <span style="width:28px;font-size:0.72rem;color:var(--muted)">${rankStr}</span>
+      <span style="flex:1;font-size:0.82rem;font-weight:600;color:${nameColor}">${team.name}${dropMarker}</span>
+      <span style="width:110px;text-align:right;font-size:0.78rem;color:var(--muted);font-family:monospace">${Math.round(team.initial_rating)} → ${Math.round(team.final_rating)}</span>
       <span style="width:52px;text-align:right;font-size:0.78rem;font-weight:600;color:${diffColor}">${sign}${Math.round(team.diff)}</span>
-      <span style="width:66px;text-align:right;font-size:0.72rem;color:var(--muted)">⌃ ${Math.round(team.peak_in_range)}</span>
-      <span class="legend-close-btn" onclick="dismissEliteLine(event,${dsIndex})" title="Remove">✕</span>
+      <span style="width:70px;text-align:right;font-size:0.72rem;color:var(--muted)">peak ${Math.round(team.peak_in_range)}</span>
     </div>`;
-}
-
-function handleLegendClick(event, dsIndex) {
-  if (event.target.classList.contains('legend-close-btn')) return;
-  toggleEliteLine(dsIndex);
 }
 
 function toggleEliteLine(index) {
@@ -1782,26 +3924,9 @@ function toggleEliteLine(index) {
   meta.hidden = !meta.hidden;
   eliteChart.update();
   const el = document.getElementById(`elite-leg-${index}`);
-  if (!el) return;
-  const wasBarely = el.closest('.barely-elite-rows') !== null;
-  el.style.opacity = meta.hidden ? '0.22' : (wasBarely ? '0.65' : '1');
-}
-
-function dismissEliteLine(event, index) {
-  event.stopPropagation();
-  if (!eliteChart) return;
-  eliteChart.getDatasetMeta(index).hidden = true;
-  eliteChart.update();
-  const el = document.getElementById(`elite-leg-${index}`);
-  if (el) el.classList.add('dismissed');
-}
-
-function toggleBarelySection() {
-  const hdr  = document.getElementById('be-toggle');
-  const rows = document.getElementById('be-rows');
-  if (!hdr || !rows) return;
-  hdr.classList.toggle('be-collapsed');
-  rows.classList.toggle('be-collapsed');
+  const team = eliteChart.data.datasets[index]?._team;
+  const baseOpacity = (team && !team.above_threshold) ? 0.55 : 1;
+  if (el) el.style.opacity = meta.hidden ? '0.2' : baseOpacity;
 }
 
 
@@ -1810,17 +3935,502 @@ function toggleBarelySection() {
   const now = new Date();
   const pad = n => String(n).padStart(2, '0');
   const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-  document.getElementById('elite-end').value = fmt(now);
+  dpSet('elite-end', fmt(now));
   const start = new Date(now); start.setMonth(start.getMonth() - 3);
-  document.getElementById('elite-start').value = fmt(start);
+  dpSet('elite-start', fmt(start));
 })();
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 loadMeta();
+loadHome();
 loadRankings();
 setInterval(loadMeta, 60000); // refresh meta every minute
+// ---------------------------------------------------------------------------
+// Mobile bottom nav + "More" sheet
+// ---------------------------------------------------------------------------
+function openMoreSheet() {
+  document.getElementById('more-sheet').classList.add('open');
+  document.getElementById('more-sheet-overlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeMoreSheet() {
+  document.getElementById('more-sheet').classList.remove('open');
+  document.getElementById('more-sheet-overlay').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+document.getElementById('bottom-nav-more').addEventListener('click', openMoreSheet);
+document.getElementById('more-sheet-overlay').addEventListener('click', closeMoreSheet);
+
+// Swipe down to close
+(function() {
+  let startY = 0;
+  const sheet = document.getElementById('more-sheet');
+  sheet.addEventListener('touchstart', e => { startY = e.touches[0].clientY; }, { passive: true });
+  sheet.addEventListener('touchend', e => {
+    if (e.changedTouches[0].clientY - startY > 60) closeMoreSheet();
+  }, { passive: true });
+})();
+
+document.querySelectorAll('.more-sheet-item[data-page]').forEach(a => {
+  a.addEventListener('click', () => {
+    const page = a.dataset.page;
+    if (!page) return; // WIP placeholder — no page to show yet
+    closeMoreSheet();
+    showPage(page);
+    if (page === 'rankings')      loadRankings();
+    if (page === 'history')       loadHistory(1);
+    if (page === 'month-summary') loadMonthSummary();
+    if (page === 'event-summary')  initEventSummaryPage();
+    if (page === 'match')           { /* loaded on demand via openMatch() */ }
+    if (page === 'team-details') { setTimeout(() => document.getElementById('td-input').focus(), 50); }
+    if (page === 'rating-graph') { setTimeout(() => document.getElementById('rg-input').focus(), 50); }
+    if (page === 'form-graph')   { setTimeout(() => document.getElementById('fg-input').focus(), 50); }
+    if (page === 'compare')      { setTimeout(() => document.getElementById('cmp-t1').focus(), 50); }
+    if (page === 'form-analysis') { setTimeout(() => document.getElementById('fa-input').focus(), 50); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Generic autocomplete dropdown — wires a text input + dropdown div to the
+// /api/teams endpoint, debounced, with keyboard nav and click-to-select.
+// ---------------------------------------------------------------------------
+function attachAutocomplete(inputId, dropdownId, kind, onSelect) {
+  const input = document.getElementById(inputId);
+  const dd    = document.getElementById(dropdownId);
+  if (!input || !dd) return;
+
+  const endpoint  = kind === 'event' ? '/api/events' : '/api/teams';
+  const dataKey   = kind === 'event' ? 'events' : 'teams';
+  const emptyText = kind === 'event' ? 'No events found' : 'No teams found';
+
+  let debounceTimer = null;
+  let currentItems   = [];
+  let highlightIdx    = -1;
+
+  function closeDropdown() {
+    dd.classList.remove('open');
+    dd.innerHTML = '';
+    highlightIdx = -1;
+  }
+
+  function renderDropdown(items) {
+    currentItems = items;
+    highlightIdx = -1;
+    dd.innerHTML = '';
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'search-dropdown-empty';
+      empty.textContent = emptyText;
+      dd.appendChild(empty);
+      dd.classList.add('open');
+      return;
+    }
+    items.forEach((name, i) => {
+      const row = document.createElement('div');
+      row.className = 'search-dropdown-item';
+      row.dataset.idx = String(i);
+      const span = document.createElement('span');
+      span.textContent = name;  // textContent, not innerHTML — safe for any characters
+      row.appendChild(span);
+      row.addEventListener('click', () => {
+        input.value = name;
+        closeDropdown();
+        onSelect(name);
+      });
+      dd.appendChild(row);
+    });
+    dd.classList.add('open');
+  }
+
+  function highlight(idx) {
+    const items = dd.querySelectorAll('.search-dropdown-item');
+    items.forEach(el => el.style.background = '');
+    if (idx >= 0 && idx < items.length) {
+      items[idx].style.background = 'var(--surface)';
+      items[idx].scrollIntoView({ block: 'nearest' });
+    }
+    highlightIdx = idx;
+  }
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    clearTimeout(debounceTimer);
+    if (!q) { closeDropdown(); return; }
+    debounceTimer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API}${endpoint}?search=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        renderDropdown((data[dataKey] || []).slice(0, 8));
+      } catch (e) {
+        closeDropdown();
+      }
+    }, 180);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    const items = dd.querySelectorAll('.search-dropdown-item');
+    if (!dd.classList.contains('open') || !items.length) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      highlight(Math.min(highlightIdx + 1, items.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      highlight(Math.max(highlightIdx - 1, 0));
+    } else if (e.key === 'Enter' && highlightIdx >= 0) {
+      e.preventDefault();
+      const name = currentItems[highlightIdx];
+      input.value = name;
+      closeDropdown();
+      onSelect(name);
+    } else if (e.key === 'Escape') {
+      closeDropdown();
+    }
+  });
+
+  input.addEventListener('blur', () => {
+    // Delay so click on a dropdown item still registers before it closes
+    setTimeout(closeDropdown, 150);
+  });
+
+  input.addEventListener('focus', () => {
+    if (input.value.trim()) input.dispatchEvent(new Event('input'));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Team Details page
+// ---------------------------------------------------------------------------
+attachAutocomplete('td-input', 'td-dd', 'team', function(val) {
+  loadTeamDetails(val);
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  var inp = document.getElementById('td-input');
+  if (inp) inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadTeamDetails(); });
+
+  // Init elite date pickers (no onChange — user clicks Generate manually)
+  dpInit('elite-start', null);
+  dpInit('elite-end', null);
+});
+
+// ---------------------------------------------------------------------------
+// Results / Simulate / Head to Head — team name autocomplete
+// ---------------------------------------------------------------------------
+attachAutocomplete('hist-team', 'hist-team-dd', 'team', function(val) {
+  loadHistory(1);
+});
+
+attachAutocomplete('es-search', 'es-dd', 'event', function(val) {
+  if (val) esSelectEvent(val);
+});
+attachAutocomplete('hist-event', 'hist-event-dd', 'event', function(val) {
+  loadHistory(1);
+});
+
+attachAutocomplete('sim-t1', 'sim-t1-dd', 'team', function(val) {});
+attachAutocomplete('sim-t2', 'sim-t2-dd', 'team', function(val) {});
+
+attachAutocomplete('h2h-t1', 'h2h-t1-dd', 'team', function(val) {});
+attachAutocomplete('h2h-t2', 'h2h-t2-dd', 'team', function(val) {});
+attachAutocomplete('cmp-t1', 'cmp-t1-dd', 'team', function(val) {});
+attachAutocomplete('cmp-t2', 'cmp-t2-dd', 'team', function(val) {});
+
+async function loadTeamDetails(name) {
+  name = name || document.getElementById('td-input').value.trim();
+  if (!name) return;
+  document.getElementById('td-input').value = name;
+  var el = document.getElementById('td-result');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> Loading\u2026</div>';
+  try {
+    var d = await api('/api/team/' + encodeURIComponent(name));
+    ratingChartRange = '3m';
+    positionChartRange = '3m';
+    formChartRange = '3m';
+    recordRange = '3m';
+    renderTeamDetail(d);
+  } catch(e) {
+    el.innerHTML = '<div class="error-msg">' + e.message + '</div>';
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Rating Graph — single-team rating-over-time, last 3 months
+// ---------------------------------------------------------------------------
+let rgChart = null;
+
+attachAutocomplete('rg-input', 'rg-dd', 'team', function(val) {
+  loadRatingGraph(val);
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  var inp = document.getElementById('rg-input');
+  if (inp) inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadRatingGraph(); });
+});
+
+async function loadRatingGraph(name) {
+  name = name || document.getElementById('rg-input').value.trim();
+  if (!name) return;
+  document.getElementById('rg-input').value = name;
+  var el = document.getElementById('rg-result');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> Loading…</div>';
+  try {
+    var d = await api('/api/team/' + encodeURIComponent(name));
+    renderRatingGraph(d);
+  } catch(e) {
+    el.innerHTML = '<div class="error-msg">' + e.message + '</div>';
+  }
+}
+
+function renderRatingGraph(d) {
+  if (rgChart) { rgChart.destroy(); rgChart = null; }
+
+  var pts_delta_sign = d.pts_delta_3m >= 0 ? '+' : '';
+  var pts_delta_col  = d.pts_delta_3m >= 0 ? 'var(--green)' : 'var(--red)';
+
+  var html =
+    '<div class="team-detail-header" style="margin-top:16px">' +
+      '<h2>' + d.name + '</h2>' +
+      '<span class="rank-badge">#' + d.rank + '</span>' +
+      '<span class="rank-badge" style="color:var(--accent)">' + d.points.toFixed(2) + ' pts</span>' +
+    '</div>' +
+    '<div class="stat-grid">' +
+      '<div class="stat-card"><div class="label">Current Rating</div><div class="value">' + d.points.toFixed(1) + '</div></div>' +
+      '<div class="stat-card"><div class="label">Peak Rating</div><div class="value">' + (d.peak && d.peak.points ? d.peak.points.toFixed(1) : '\u2014') + '</div></div>' +
+      '<div class="stat-card"><div class="label">Rating Change (3 months)</div>' +
+        '<div class="value" style="color:' + pts_delta_col + '">' + pts_delta_sign + d.pts_delta_3m.toFixed(1) + '</div></div>' +
+    '</div>' +
+    '<div class="card"><h3 style="margin-bottom:12px;font-size:1rem">Rating History (Last 3 Months)</h3>' +
+      '<div class="chart-wrap"><canvas id="rg-chart"></canvas></div></div>';
+
+  document.getElementById('rg-result').innerHTML = html;
+
+  var ds = d.daily_series || [];
+  if (!ds.length) return;
+
+  var labels   = ds.map(function(p) { return p.date; });
+  var values   = ds.map(function(p) { return p.pts; });
+  var ptRadius = ds.map(function(p) { return p.match ? 5 : p.transition ? 4 : 0; });
+  var ptBg     = ds.map(function(p) {
+    if (p.match)      return p.won ? '#4caf82' : '#e05a5a';
+    if (p.transition) return '#16181c';
+    return 'transparent';
+  });
+
+  function nearestDs(idx) {
+    for (var i = idx; i >= 0; i--) { if (ds[i].match) return ds[i]; }
+    return null;
+  }
+
+  var ctx = document.getElementById('rg-chart').getContext('2d');
+  rgChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Rating',
+        data: values,
+        borderColor: '#f5a623',
+        backgroundColor: 'rgba(245,166,35,0.08)',
+        borderWidth: 2,
+        pointRadius: ptRadius,
+        pointBackgroundColor: ptBg,
+        pointBorderColor: '#f5a623',
+        pointBorderWidth: 1.5,
+        pointHoverRadius: 7,
+        tension: 0,
+        fill: true,
+        spanGaps: false,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1e2127',
+          borderColor: '#2a2d35',
+          borderWidth: 1,
+          callbacks: {
+            title: function(i) { return ds[i[0].dataIndex].date; },
+            label: function(i) {
+              var p = nearestDs(i.dataIndex);
+              var sign = p && p.pts_delta >= 0 ? '+' : '';
+              return ' ' + ds[i.dataIndex].pts.toFixed(1) + ' pts' +
+                (p && p.match ? '  vs ' + p.opponent + '  ' + p.score + '  (' + sign + p.pts_delta.toFixed(2) + ')' : '  (decaying)');
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'category',
+          ticks: {
+            color: '#7a7f8e',
+            maxTicksLimit: 10,
+            callback: function(val, idx) { return ds[idx] && ds[idx].match ? ds[idx].date : null; }
+          },
+          grid: { color: '#2a2d35' }
+        },
+        y: { ticks: { color: '#7a7f8e' }, grid: { color: '#2a2d35' } }
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Form Graph — single-team form-score-over-time, last 3 months
+// ---------------------------------------------------------------------------
+let fgChart = null;
+
+attachAutocomplete('fg-input', 'fg-dd', 'team', function(val) {
+  loadFormGraph(val);
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  var inp = document.getElementById('fg-input');
+  if (inp) inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadFormGraph(); });
+});
+
+function tdFormColor(grade) {
+  return { S: '#FFD700', A: '#4caf82', B: '#5b9cf6', C: '#f5a623', D: '#e05a5a' }[grade] || '#7a7f8e';
+}
+
+async function loadFormGraph(name) {
+  name = name || document.getElementById('fg-input').value.trim();
+  if (!name) return;
+  document.getElementById('fg-input').value = name;
+  var el = document.getElementById('fg-result');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> Loading…</div>';
+  try {
+    var d = await api('/api/team/' + encodeURIComponent(name));
+    renderFormGraph(d);
+  } catch(e) {
+    el.innerHTML = '<div class="error-msg">' + e.message + '</div>';
+  }
+}
+
+function renderFormGraph(d) {
+  if (fgChart) { fgChart.destroy(); fgChart = null; }
+
+  var formHtml = '<div class="empty-msg" style="padding:20px">Not enough recent matches for a form score.</div>';
+  if (d.form) {
+    var f = d.form;
+    var fc = tdFormColor(f.grade);
+    var recentDots = f.recent.split('').map(function(c) {
+      return '<span style="display:inline-block;width:22px;height:22px;border-radius:50%;background:' +
+        (c === 'W' ? 'var(--green)' : 'var(--red)') +
+        ';font-size:0.6rem;font-weight:700;color:#fff;line-height:22px;text-align:center">' + c + '</span>';
+    }).join('');
+    formHtml =
+      '<div class="stat-card">' +
+        '<div class="label">Form (last 15 matches)</div>' +
+        '<div style="display:flex;align-items:center;gap:16px;padding-top:6px">' +
+          '<span style="font-size:2rem;font-weight:700;color:' + fc + '">' + f.grade + '</span>' +
+          '<span style="font-size:1.1rem;color:var(--muted)">' + f.score.toFixed(1) + ' / 100</span>' +
+          '<div style="display:flex;gap:5px;margin-left:8px">' + recentDots + '</div>' +
+        '</div>' +
+      '</div>';
+  }
+
+  var html =
+    '<div class="team-detail-header" style="margin-top:16px">' +
+      '<h2>' + d.name + '</h2>' +
+      '<span class="rank-badge">#' + d.rank + '</span>' +
+      '<span class="rank-badge" style="color:var(--accent)">' + d.points.toFixed(2) + ' pts</span>' +
+    '</div>' +
+    '<div class="stat-grid">' + formHtml + '</div>' +
+    '<div class="card"><h3 style="margin-bottom:12px;font-size:1rem">Form History (Last 3 Months)</h3>' +
+      '<div class="chart-wrap"><canvas id="fg-chart"></canvas></div></div>';
+
+  document.getElementById('fg-result').innerHTML = html;
+
+  var ds = d.daily_series || [];
+  if (!ds.length) return;
+
+  var labels   = ds.map(function(p) { return p.date; });
+  var ptRadius = ds.map(function(p) { return p.match ? 5 : p.transition ? 4 : 0; });
+  var ptBg     = ds.map(function(p) {
+    if (p.match)      return p.won ? '#4caf82' : '#e05a5a';
+    if (p.transition) return '#16181c';
+    return 'transparent';
+  });
+
+  function nearestDs(idx) {
+    for (var i = idx; i >= 0; i--) { if (ds[i].match) return ds[i]; }
+    return null;
+  }
+
+  var ctx = document.getElementById('fg-chart').getContext('2d');
+  fgChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Form Score',
+        data: ds.map(function(p) { return p.form_score != null ? p.form_score : null; }),
+        borderColor: '#f5a623',
+        backgroundColor: 'rgba(245,166,35,0.07)',
+        borderWidth: 2,
+        pointRadius: ptRadius,
+        pointBackgroundColor: ptBg,
+        pointBorderColor: '#f5a623',
+        pointBorderWidth: 1.5,
+        pointHoverRadius: 7,
+        tension: 0,
+        fill: true,
+        spanGaps: true,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1e2127',
+          borderColor: '#2a2d35',
+          borderWidth: 1,
+          callbacks: {
+            title: function(i) { return ds[i[0].dataIndex].date; },
+            label: function(i) {
+              var p = nearestDs(i.dataIndex);
+              var score = ds[i.dataIndex].form_score;
+              var grade = ds[i.dataIndex].form_grade || '—';
+              return [
+                '  Form: ' + (score != null ? score : '—') + '  (Grade ' + grade + ')',
+                p && p.match ? '  ' + (p.won ? '✓ WIN' : '✗ LOSS') + ' vs ' + p.opponent + '  ' + p.score : '  (between matches)',
+              ];
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'category',
+          ticks: {
+            color: '#7a7f8e',
+            maxTicksLimit: 10,
+            callback: function(val, idx) { return ds[idx] && ds[idx].match ? ds[idx].date : null; }
+          },
+          grid: { color: '#2a2d35' }
+        },
+        y: {
+          min: 0, max: 100,
+          grid: { color: '#2a2d35' },
+          ticks: { color: '#7a7f8e' }
+        }
+      }
+    }
+  });
+}
+
 </script>
 </body>
 </html>

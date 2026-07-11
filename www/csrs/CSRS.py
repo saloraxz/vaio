@@ -14,13 +14,15 @@ import base64
 import zlib
 import sys
 import os
+import re
 import subprocess
 import logging
 import bisect
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from tkinter import Tk
-from typing import Dict, List, Tuple, Optional, Any # pyright: ignore[reportMissingImports]
+from typing import Dict, List, Tuple, Optional, Any
 
 # =============================================================================
 # === DEPENDENCY MANAGEMENT ===
@@ -38,11 +40,35 @@ def check_and_install_dependencies() -> bool:
     
     # Check playwright
     try:
-        from playwright.sync_api import sync_playwright # pyright: ignore[reportMissingImports]
+        from playwright.sync_api import sync_playwright
         print("[OK] playwright is installed")
     except ImportError:
         missing_deps.append("playwright")
         print("[!] playwright is NOT installed")
+
+    # Check camoufox
+    try:
+        import camoufox
+        print("[OK] camoufox is installed")
+    except ImportError:
+        missing_deps.append("camoufox")
+        print("[!] camoufox is NOT installed")
+
+    # Check beautifulsoup4
+    try:
+        from bs4 import BeautifulSoup
+        print("[OK] beautifulsoup4 is installed")
+    except ImportError:
+        missing_deps.append("beautifulsoup4")
+        print("[!] beautifulsoup4 is NOT installed")
+
+    # Check sortedcontainers
+    try:
+        from sortedcontainers import SortedList
+        print("[OK] sortedcontainers is installed")
+    except ImportError:
+        missing_deps.append("sortedcontainers")
+        print("[!] sortedcontainers is NOT installed")
     
     if not missing_deps:
         return True
@@ -92,11 +118,18 @@ def check_and_install_dependencies() -> bool:
 # === LOGGING SETUP ===
 # =============================================================================
 
+_LOG_DIR     = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "normal")
+_ERR_LOG_DIR = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "errors")
+_FAIL_LOG_DIR= os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "fails")
+os.makedirs(_LOG_DIR,      exist_ok=True)
+os.makedirs(_ERR_LOG_DIR,  exist_ok=True)
+os.makedirs(_FAIL_LOG_DIR, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("csrs.log", encoding='utf-8'),
+        logging.FileHandler(os.path.join(_LOG_DIR, "csrs.log"), encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -125,8 +158,8 @@ aliases: Dict[str, str] = {}
 unsaved_changes: bool = False
 STARTING_TEAMS: Dict[str, float] = {}
 SAVE_VERSION: int = 1
-SAVE_FILE: str = "data.save"
-ERROR_LOG: str = "csrs_error.log"
+SAVE_FILE: str = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "main", "data.save")
+ERROR_LOG: str = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "errors", "csrs_error.log")
 
 # =============================================================================
 # === CONFIGURATION ===
@@ -167,14 +200,29 @@ DEFAULT_CONFIG = {
     "PITY_MAX_PERCENT": 0.65,
     "PITY_MAX_POINTS": 9,
     "PITY_MIN_POINTS": 6,
+    "MISMATCH_REFERENCE_RATING": 1000,
+    # === SLIDING GAP THRESHOLDS (mirrored between mismatch and pity) ===
+    # At/above SLIDING_THRESHOLD_ANCHOR_HIGH elo, thresholds behave exactly as their normal
+    # values above (MISMATCH_ZERO_POINT_PERCENT=0.70, PITY_THRESHOLD_PERCENT=0.75). At/below
+    # SLIDING_THRESHOLD_ANCHOR_LOW elo, both thresholds ease toward their *_LOW_ELO value —
+    # requiring a bigger relative gap before either the mismatch penalty or the pity bonus
+    # triggers at all. This is mirrored deliberately: at low elo a modest absolute Elo gap is
+    # already a big relative gap (see MISMATCH_REFERENCE_RATING above), so both the
+    # win-punishing and loss-softening mechanisms are dialed down together rather than one
+    # side of the squeeze getting relief while the other doesn't.
+    "SLIDING_THRESHOLD_ANCHOR_LOW": 400,
+    "MISMATCH_ZERO_POINT_PERCENT_LOW_ELO": 0.50,
+    "PITY_THRESHOLD_PERCENT_LOW_ELO": 0.50,
     "DEPRECIATION_THRESHOLD": 14,
+    "INACTIVE_ARCHIVE_DAYS": 180,
 }
 
 # Load Configuration
 CONFIG = DEFAULT_CONFIG.copy()
-if os.path.exists("config.json"):
+_CONFIG_FILE = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "data", "config.json")
+if os.path.exists(_CONFIG_FILE):
     try:
-        with open("config.json", "r", encoding='utf-8') as f:
+        with open(_CONFIG_FILE, "r", encoding='utf-8') as f:
             user_config = json.load(f)
             CONFIG.update(user_config)
         logger.info("Loaded custom config.json")
@@ -228,19 +276,90 @@ PITY_THRESHOLD_PERCENT = CONFIG.get("PITY_THRESHOLD_PERCENT", DEFAULT_CONFIG["PI
 PITY_MAX_PERCENT = CONFIG.get("PITY_MAX_PERCENT", DEFAULT_CONFIG["PITY_MAX_PERCENT"])
 PITY_MAX_POINTS = CONFIG.get("PITY_MAX_POINTS", DEFAULT_CONFIG["PITY_MAX_POINTS"])
 PITY_MIN_POINTS = CONFIG.get("PITY_MIN_POINTS", DEFAULT_CONFIG["PITY_MIN_POINTS"])
+
+# Fixed reference rating used to convert mismatch/pity gaps into a "percent" figure.
+# BUG THIS FIXES: mismatch/pity used to divide by the team's OWN live rating
+# (opponent_points/team_points and team_points/opponent_points). That makes the exact same
+# absolute Elo-point gap look like a much bigger "mismatch" for a low-rated team than for a
+# high-rated one (e.g. a 100pt gap is 20% of a 500-rated team's rating but only ~7% of a
+# 1500-rated team's), which one-sidedly punished wins for low-rated teams (mismatch decay
+# starts at ANY weaker opponent) without giving them equivalent extra protection on losses
+# (pity only starts past a 25% gap) — low-rated clusters drifted downward even at a break-even
+# win rate. Using a single fixed reference rating instead means the same Elo-point gap is
+# treated the same way everywhere on the ladder.
+MISMATCH_REFERENCE_RATING = CONFIG.get("MISMATCH_REFERENCE_RATING", DEFAULT_CONFIG["MISMATCH_REFERENCE_RATING"])
+
+# === SLIDING GAP THRESHOLDS (mirrored between mismatch and pity) ===
+# MISMATCH_ZERO_POINT_PERCENT (0.70) and PITY_THRESHOLD_PERCENT (0.75) are the "how big a
+# relative gap is needed" thresholds. Rather than leaving them fixed, they slide between
+# their normal value (used at/above SLIDING_THRESHOLD_ANCHOR_HIGH, which reuses
+# MISMATCH_REFERENCE_RATING) and a more lenient *_LOW_ELO value (used at/below
+# SLIDING_THRESHOLD_ANCHOR_LOW) — requiring a bigger relative gap before either mechanism
+# triggers at all when the higher-rated team in the match is itself low elo. Both slide the
+# same direction on purpose: at low elo a modest absolute gap already reads as a big relative
+# gap, so both the win-punishing (mismatch) and loss-softening (pity) mechanisms get muted
+# together rather than one easing up while the other stays strict.
+SLIDING_THRESHOLD_ANCHOR_LOW = CONFIG.get("SLIDING_THRESHOLD_ANCHOR_LOW", DEFAULT_CONFIG["SLIDING_THRESHOLD_ANCHOR_LOW"])
+SLIDING_THRESHOLD_ANCHOR_HIGH = MISMATCH_REFERENCE_RATING
+MISMATCH_ZERO_POINT_PERCENT_LOW_ELO = CONFIG.get("MISMATCH_ZERO_POINT_PERCENT_LOW_ELO", DEFAULT_CONFIG["MISMATCH_ZERO_POINT_PERCENT_LOW_ELO"])
+PITY_THRESHOLD_PERCENT_LOW_ELO = CONFIG.get("PITY_THRESHOLD_PERCENT_LOW_ELO", DEFAULT_CONFIG["PITY_THRESHOLD_PERCENT_LOW_ELO"])
+
+def _sliding_threshold(higher_elo: float, strict_value: float, lenient_value: float) -> float:
+    """
+    Interpolate a gap-threshold between its lenient value (at/below
+    SLIDING_THRESHOLD_ANCHOR_LOW elo) and its strict/normal value (at/above
+    SLIDING_THRESHOLD_ANCHOR_HIGH elo), based on the higher-rated team in the match.
+    """
+    span = SLIDING_THRESHOLD_ANCHOR_HIGH - SLIDING_THRESHOLD_ANCHOR_LOW
+    if span <= 0:
+        return strict_value
+    position = (higher_elo - SLIDING_THRESHOLD_ANCHOR_LOW) / span
+    position = max(0.0, min(1.0, position))
+    return lenient_value + position * (strict_value - lenient_value)
+
 DEPRECIATION_THRESHOLD = CONFIG.get("DEPRECIATION_THRESHOLD", DEFAULT_CONFIG.get("DEPRECIATION_THRESHOLD", 14))
 
-SAVE_VERSION = 1
-SAVE_FILE = "data.save"
-ERROR_LOG = "csrs_error.log"
+# Preserve the original spacing between "where the penalty starts" and "where it caps out"
+# as both thresholds slide together (see _sliding_threshold above).
+_MISMATCH_ZERO_TO_MAXPENALTY_GAP = MISMATCH_ZERO_POINT_PERCENT - MISMATCH_MAX_PENALTY_PERCENT
+_PITY_THRESHOLD_TO_MAX_GAP = PITY_THRESHOLD_PERCENT - PITY_MAX_PERCENT
 
-# =============================================================================
-# === SAVE/LOAD SYSTEM (ENCODING & BACKUPS) ===
+# === INACTIVE-TEAM ARCHIVING (VRS-style rolling window, layered ON TOP of depreciation) ===
+# Depreciation (above) discounts an inactive team's rating by up to 25%, then holds — it
+# never fully clears them out. INACTIVE_ARCHIVE_DAYS is a separate, much longer threshold
+# (default 180 days, mirroring Valve's own ~6-month VRS window) past which a team is
+# considered "archived": hidden from the default rankings/graphs view so the visible list
+# doesn't grow forever, but never deleted, still fully depreciated as normal, and it
+# automatically reappears the instant it plays a new match. See is_team_archived().
+INACTIVE_ARCHIVE_DAYS = CONFIG.get("INACTIVE_ARCHIVE_DAYS", DEFAULT_CONFIG.get("INACTIVE_ARCHIVE_DAYS", 180))
+
+# Pre-baked lookup table for the base depreciation decay curve. The curve
+# is a pure function of days_inactive (clamped to [0, 75]) and the fixed
+# DEPRECIATION_THRESHOLD/DEPRECIATION_CAP_DAYS constants above, so it's
+# computed once here instead of re-evaluating the quadratic expression on
+# every calculate_depreciation() call (which happens for both teams on
+# every match during resimulation, plus every get_sorted_rankings call).
+_DEPRECIATION_CAP_DAYS = 75
+_BASE_DECAY_TABLE = [0.0] * (_DEPRECIATION_CAP_DAYS + 1)
+for _d in range(_DEPRECIATION_CAP_DAYS + 1):
+    if _d > DEPRECIATION_THRESHOLD:
+        _BASE_DECAY_TABLE[_d] = (((_d - DEPRECIATION_THRESHOLD) / (_DEPRECIATION_CAP_DAYS - DEPRECIATION_THRESHOLD)) ** 2) * 0.25
+del _d
+
+
+def _base_decay_for(days_inactive: int) -> float:
+    """O(1) lookup for the base depreciation decay curve (days_inactive clamped to 75)."""
+    return _BASE_DECAY_TABLE[min(max(days_inactive, 0), _DEPRECIATION_CAP_DAYS)]
+
+
+SAVE_VERSION = 1
+SAVE_FILE = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "main", "data.save")
+ERROR_LOG = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "errors", "csrs_error.log")
 # =============================================================================
 
 SAVE_VERSION = 1  # Increment this if data structure changes
-SAVE_FILE = "data.save"
-ERROR_LOG = "csrs_error.log"
+SAVE_FILE = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "main", "data.save")
+ERROR_LOG = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "errors", "csrs_error.log")
 
 # Legacy file names - used only for one-time migration on first run
 _LEGACY_DEFAULT  = "default.txt"
@@ -248,22 +367,12 @@ _LEGACY_ALIASES  = "aliases.json"
 _LEGACY_HISTORY  = "match_history.json"
 
 # Initial Team Ratings (Starting Points)
-# These are the baseline CSRS Elo ratings for all tracked teams
-teams = {
-    "The MongolZ": 820.5, "Vitality": 1000, "Aurora": 888, "Falcons": 891.5, "Natus Vincere": 903.5,
-    "Mouz": 939.5, "Furia": 917.5, "Spirit": 870.5, "FUT": 819.5, "Astralis": 843.5,
-    "GamerLegion": 773.5, "G2": 786.5, "Parivision": 899.5, "NRG": 688.5, "B8": 696,
-    "FaZe": 744.5, "TYLOO": 488, "Ninjas in Pyjamas": 706, "Liquid": 658.5, "9z": 731
-}
+# Empty — all ratings are established through match history via VRS lookup.
+teams = {}
 
-# Baseline points used for resimulation - mirrors the teams dict above
-# Used when recalculating all ratings from scratch to ensure consistency
-STARTING_TEAMS = {
-    "The MongolZ": 820.5, "Vitality": 1000, "Aurora": 888, "Falcons": 891.5, "Natus Vincere": 903.5,
-    "Mouz": 939.5, "Furia": 917.5, "Spirit": 870.5, "FUT": 819.5, "Astralis": 843.5,
-    "GamerLegion": 773.5, "G2": 786.5, "Parivision": 899.5, "NRG": 688.5, "B8": 696,
-    "FaZe": 744.5, "TYLOO": 488, "Ninjas in Pyjamas": 706, "Liquid": 658.5, "9z": 731
-}
+# Baseline points used for resimulation — built at registration time and
+# persisted in data.save. Empty on a fresh start.
+STARTING_TEAMS = {}
 
 # Dynamic Data Structures (Loaded from save)
 # These are populated when loading save files and updated during runtime
@@ -273,6 +382,19 @@ peak_ratings = {}         # team_name -> {"points": float, "date": str, "rank": 
 event_tiers = {}          # event_name -> tier (S+/S/A/B/C/D) for auto-assignment
 adjustments = []          # List of manual point adjustment records for audit trail
 unsaved_changes = False   # Tracks if data has been modified since last manual save
+total_imports = 0         # Persistent running count of imports (drives tiered backups)
+
+# Tiered backup schedule: maps tier number -> import interval.
+# On each import, only the HIGHEST tier whose interval divides total_imports
+# is written — so import #20 (divisible by 5, 10, and 20) only writes to
+# backup_3 (interval 20), not backup_1 or backup_2.
+BACKUP_TIERS = {
+    1: 5,
+    2: 10,
+    3: 20,
+    4: 50,
+    5: 100,
+}
 
 def mark_unsaved():
     """Flag that data has been modified and needs saving."""
@@ -284,7 +406,7 @@ def error_log(message: str) -> None:
     logger.error(message)
 
 def _build_save_code(t, a, h):
-    """Encode teams, aliases, history, peaks, event_tiers, adjustments, provisional_teams into base64."""
+    """Encode teams, aliases, history, peaks, event_tiers, adjustments, provisional_teams, total_imports into base64."""
     try:
         payload = json.dumps({
             "version": SAVE_VERSION,
@@ -295,6 +417,7 @@ def _build_save_code(t, a, h):
             "event_tiers": event_tiers,
             "adjustments": adjustments,
             "provisional_teams": provisional_teams,
+            "total_imports": total_imports,
         })
         return base64.b64encode(zlib.compress(payload.encode())).decode()
     except Exception as e:
@@ -302,7 +425,7 @@ def _build_save_code(t, a, h):
         return None
 
 def _parse_save_code(raw_code):
-    """Decode a save code. Returns (teams, aliases, history, peaks, event_tiers, adjustments, provisional_teams) or raises."""
+    """Decode a save code. Returns (teams, aliases, history, peaks, event_tiers, adjustments, provisional_teams, total_imports) or raises."""
     try:
         decoded = zlib.decompress(base64.b64decode(raw_code)).decode()
         data = json.loads(decoded)
@@ -311,7 +434,7 @@ def _parse_save_code(raw_code):
             print(f">>> WARNING: Save version mismatch (File: {data.get('version', 0)}, Expected: {SAVE_VERSION})")
         
         if isinstance(data, dict) and "teams" not in data:
-            return data, {}, [], {}, {}, [], {}
+            return data, {}, [], {}, {}, [], {}, 0
         # Migrate legacy 'event_name' key to 'event' on all history records
         history = data.get("history", [])
         for m in history:
@@ -326,63 +449,83 @@ def _parse_save_code(raw_code):
                 data.get("peaks", {}),
                 data.get("event_tiers", {}),
                 data.get("adjustments", []),
-                data.get("provisional_teams", {}))
+                data.get("provisional_teams", {}),
+                data.get("total_imports", 0))
     except Exception as e:
         error_log(f"Failed to parse save code: {e}")
         raise
 
+def _backup_path(tier: int) -> str:
+    _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
+    return os.path.join(_backup_dir, f"backup_{tier}.save")
+
 def _rotate_backups():
     """
-    Rotate backups before saving. backup_1 = most recent.
-    
-    Maintains up to 5 backup files for recovery purposes.
+    Write to the single highest backup tier whose interval divides total_imports.
+
+      backup_1.save — every   5 imports
+      backup_2.save — every  10 imports  (supersedes backup_1 when both qualify)
+      backup_3.save — every  20 imports  (supersedes backup_1 and backup_2)
+      backup_4.save — every  50 imports
+      backup_5.save — every 100 imports  (supersedes all lower tiers)
+
+    Called AFTER data.save has been written so the backup reflects the
+    just-committed state. Does nothing if total_imports is 0 or no tier
+    interval divides it.
     """
+    if total_imports <= 0:
+        return
+    _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
+    os.makedirs(_backup_dir, exist_ok=True)
     try:
-        for i in range(4, 0, -1):
-            src = f"backup_{i}.save"
-            dst = f"backup_{i+1}.save"
-            if os.path.exists(src):
-                os.replace(src, dst)
-        if os.path.exists(SAVE_FILE):
-            import shutil
-            shutil.copy2(SAVE_FILE, "backup_1.save")
+        # Find the highest tier (largest interval) that divides total_imports
+        qualifying = [
+            (tier, interval)
+            for tier, interval in BACKUP_TIERS.items()
+            if interval > 0 and total_imports % interval == 0
+        ]
+        if not qualifying:
+            return
+        best_tier, _ = max(qualifying, key=lambda x: x[1])
+        import shutil
+        shutil.copy2(SAVE_FILE, _backup_path(best_tier))
     except Exception as e:
         error_log(f"Backup rotation failed: {e}")
 
 def save_all(silent: bool = False) -> bool:
     """
-    Write all state to data.save with backup rotation and verification.
-    Uses atomic save (temp file + rename) to prevent corruption.
+    Write all state to data.save (atomic), then update the tiered backup
+    if total_imports has reached a tier threshold.
     """
     global unsaved_changes
+    os.makedirs(os.path.dirname(SAVE_FILE), exist_ok=True)
     temp_file = SAVE_FILE + ".tmp"
     
     try:
-        # 1. Rotate backups before overwriting
-        _rotate_backups()
-        
-        # 2. Build save code
+        # 1. Build save code
         save_code = _build_save_code(teams, aliases, history)
         if not save_code:
             if not silent:
                 logger.error("Failed to generate save data.")
             return False
         
-        # 3. Write to TEMP file first (atomic save)
+        # 2. Write to TEMP file first (atomic save)
         with open(temp_file, "w", encoding='utf-8') as f:
             f.write(save_code)
             f.flush()
             os.fsync(f.fileno())
         
-        # 4. Verify temp file
+        # 3. Verify temp file
         if os.path.exists(temp_file):
             file_size = os.path.getsize(temp_file)
             if file_size > 100:
-                # 5. Atomic rename (replaces old file safely)
+                # 4. Atomic rename (replaces old file safely)
                 os.replace(temp_file, SAVE_FILE)
                 if not silent:
                     logger.info(f"Save successful! ({file_size} bytes)")
                 unsaved_changes = False
+                # 5. Update tiered backup now that new state is committed
+                _rotate_backups()
                 return True
             else:
                 logger.error(f"Save file too small: {file_size} bytes")
@@ -410,9 +553,12 @@ def save_all(silent: bool = False) -> bool:
 
 def load_all():
     """Load state from data.save. Auto-recovers from backup if corrupted."""
-    global teams, aliases, history, peak_ratings, event_tiers, adjustments, unsaved_changes
+    global teams, aliases, history, peak_ratings, event_tiers, adjustments, unsaved_changes, total_imports
     
-    files_to_try = [SAVE_FILE, "backup_1.save", "backup_2.save", "backup_3.save"]
+    _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
+    files_to_try = [SAVE_FILE] + [
+        os.path.join(_backup_dir, f"backup_{i}.save") for i in range(1, 4)
+    ]
     
     for filename in files_to_try:
         if not os.path.exists(filename):
@@ -424,7 +570,7 @@ def load_all():
                 if not content:
                     continue
                     
-                t, a, h, pk, et, adj, prov = _parse_save_code(content)
+                t, a, h, pk, et, adj, prov, ti = _parse_save_code(content)
                 
                 teams.clear(); teams.update(t)
                 aliases.clear(); aliases.update(a)
@@ -433,6 +579,7 @@ def load_all():
                 event_tiers.clear(); event_tiers.update(et)
                 adjustments[:] = adj
                 provisional_teams.clear(); provisional_teams.update({k: int(v) for k, v in prov.items()})
+                total_imports = ti
                 
                 if filename == SAVE_FILE:
                     print(f">>> Loaded {len(history)} matches from {filename}")
@@ -453,9 +600,9 @@ def load_logic(raw_code):
     
     Used when importing save codes from other users or backup files.
     """
-    global teams, aliases, history, peak_ratings, event_tiers, adjustments, provisional_teams
+    global teams, aliases, history, peak_ratings, event_tiers, adjustments, provisional_teams, total_imports
     try:
-        t, a, h, pk, et, adj, prov = _parse_save_code(raw_code)
+        t, a, h, pk, et, adj, prov, ti = _parse_save_code(raw_code)
         teams.clear(); teams.update(t)
         aliases.clear(); aliases.update(a)
         history.clear(); history.extend(h)
@@ -463,6 +610,7 @@ def load_logic(raw_code):
         event_tiers.clear(); event_tiers.update(et)
         adjustments[:] = adj
         provisional_teams.clear(); provisional_teams.update({k: int(v) for k, v in prov.items()})
+        total_imports = ti
     except Exception as e:
         error_log(f"Load logic failed: {e}")
         raise
@@ -713,12 +861,16 @@ def pick_date_range():
             print("  [!] Invalid option. Select 1-5 or 0.")
 
 
-def update_peak(name, pts, date_str):
+def update_peak(name, pts, date_str, rank: int = 0):
     """
     Update peak rating for a team if current points exceed recorded peak.
+    rank can be passed directly to avoid O(N) get_sorted_rankings() call
+    (e.g. from _do_resimulation which already tracks rank incrementally).
+    If rank is 0 (default), falls back to get_sorted_rankings() as before.
     """
-    ranked = get_sorted_rankings()
-    rank = ranked.index(name) + 1 if name in ranked else 0
+    if rank == 0:
+        ranked = get_sorted_rankings(include_archived=True)
+        rank = ranked.index(name) + 1 if name in ranked else 0
     if name not in peak_ratings or pts > peak_ratings[name]["points"]:
         peak_ratings[name] = {"points": pts, "date": date_str, "rank": rank}
 
@@ -790,8 +942,47 @@ def increment_provisional(team_name: str) -> None:
         print(f"  >>> '{team_name}' has graduated from provisional status and entered the rankings.")
 
 
-def get_sorted_rankings():
-    """Return list of team names sorted by points (High to Low)."""
+def is_team_archived(team_name: str, today=None, index: Optional[Dict[str, List[datetime]]] = None) -> bool:
+    """
+    Return True if a team hasn't played a match in INACTIVE_ARCHIVE_DAYS+ days.
+
+    This sits ON TOP of (not instead of) the existing depreciation curve. Depreciation
+    still discounts an inactive team's rating for match-calculation purposes (capped at
+    ~25% off, held forever after ~75 days — see calculate_depreciation), but that alone
+    never actually clears anyone out: the team stays in `teams` and in every ranking/graph
+    forever. Valve's own VRS avoids this by recomputing each team's score from only a
+    rolling ~6-month window of results, so a team with nothing left in that window just
+    scores ~0 and falls off the list — not deleted, just not shown.
+
+    is_team_archived() reproduces that "falls off the list" behavior on top of CSRS's
+    rating math: past INACTIVE_ARCHIVE_DAYS (default 180, matching VRS's window) a team is
+    treated as archived and excluded from the default rankings/graphs view by
+    get_sorted_rankings()/display_rankings(). It is never deleted, its rating and history
+    are untouched, and it automatically becomes active again the moment it plays a new
+    match (there is no separate "restore" step).
+
+    A team with no match history at all (freshly created, never played) is NOT archived —
+    there's nothing to have gone stale.
+    """
+    if today is None:
+        today = datetime.now().date()
+    last_match = get_team_last_match_date_before(team_name, index=index)
+    if last_match is None:
+        return False
+    return (today - last_match.date()).days > INACTIVE_ARCHIVE_DAYS
+
+
+def get_sorted_rankings(include_archived: bool = False):
+    """
+    Return list of team names sorted by points (High to Low).
+
+    By default, teams archived for long-term inactivity (see is_team_archived) are
+    excluded — mirroring how Valve's VRS drops teams with nothing left in its rolling
+    window instead of listing them forever at a discounted rating. Pass
+    include_archived=True for callers that need a specific team's rank/position
+    regardless of its activity status (e.g. compare_teams, simulate_match), to avoid
+    'team not found in rankings' errors for archived teams.
+    """
     # Consider depreciation for accurate ranking
     today = datetime.now().date()
     team_ratings = []
@@ -803,6 +994,8 @@ def get_sorted_rankings():
         
         if last_match:
             days_inactive = (today - last_match.date()).days
+            if not include_archived and days_inactive > INACTIVE_ARCHIVE_DAYS:
+                continue
             if days_inactive > DEPRECIATION_THRESHOLD:
                 display_rating = calculate_depreciation(points, days_inactive, name)
         
@@ -833,6 +1026,16 @@ def select_environment():
         if raw.strip() in env_map:
             return env_map[raw.strip()]
         print("  Invalid choice. Enter 1 or 2.")
+
+def _format_duration(seconds: float) -> str:
+    """Format seconds as Xh Ym Zs."""
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h: return f"{h}h {m:02d}m {s:02d}s"
+    if m: return f"{m}m {s:02d}s"
+    return f"{s}s"
+
 
 def print_progress(current: int, total: int, prefix: str = '', length: int = 40) -> None:
     """
@@ -946,7 +1149,7 @@ def _print_match_entry(index, m):
     """
     fmt_shift = lambda s: f"(+{s})" if s > 0 else (f"({s})" if s < 0 else "(-)")
     fmt_pts = lambda a, b: f"(+{int(round(a-b))})" if a > b else (f"({int(round(a-b))})" if a < b else "(-)")
-    gf_tag = " [GRAND FINAL]" if m.get('grand_final', False) else ""
+    gf_tag = f" [{m.get('match_stage')}]" if m.get('match_stage') else (" [GRAND FINAL]" if m.get('grand_final', False) else "")
     ff_tag = ""
     if m.get('forfeit') == 'team1':
         ff_tag = f" [FORFEIT: {m.get('t1', {}).get('name', '?')}]"
@@ -968,7 +1171,7 @@ def _print_match_entry(index, m):
     else:
         winner = "Draw"
         
-    event_name = m.get('event_name', 'N/A')
+    event_name = m.get('event', 'N/A')
     match_date = m.get('date', 'N/A')
     tier = m.get('tier', '?')
     env = m.get('env', '?')
@@ -1179,12 +1382,17 @@ def import_save_file() -> None:
 def restore_from_backup() -> None:
     """Restore data from a backup file."""
     print("\n--- Restore from Backup ---")
-    backups = [f"backup_{i}.save" for i in range(1, 6) if os.path.exists(f"backup_{i}.save")]
+    _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
+    backups = [
+        os.path.join(_backup_dir, f"backup_{i}.save")
+        for i in range(1, 6)
+        if os.path.exists(os.path.join(_backup_dir, f"backup_{i}.save"))
+    ]
     if not backups:
         print(">>> No backup files found.")
         return
     for i, b in enumerate(backups, 1):
-        print(f"  {i}. {b}")
+        print(f"  {i}. {os.path.basename(b)}")
     print("  0. Back")
     try:
         sel_raw = check_cmd(input("Select backup to restore: "))
@@ -1192,7 +1400,7 @@ def restore_from_backup() -> None:
             return
         sel = int(sel_raw) - 1
         if 0 <= sel < len(backups):
-            confirm = get_cmd(check_cmd(input(f"Restore from {backups[sel]}? This will overwrite current data. (y/n): ")))
+            confirm = get_cmd(check_cmd(input(f"Restore from {os.path.basename(backups[sel])}? This will overwrite current data. (y/n): ")))
             if confirm == 'y':
                 with open(backups[sel], "r", encoding='utf-8') as f:
                     load_logic(f.read().strip())
@@ -1205,13 +1413,21 @@ def restore_from_backup() -> None:
 
 
 def list_save_files() -> None:
-    """List all .save files in directory."""
+    """List all .save files in the structured save directories."""
+    _data_dir = os.environ.get("CSRS_DATA_DIR", ".")
+    _main_dir   = os.path.join(_data_dir, "save", "main")
+    _backup_dir = os.path.join(_data_dir, "save", "backup")
     print("\nAvailable Save Files:")
-    files = [f for f in os.listdir() if f.endswith('.save')]
-    if files:
-        for f in files: 
-            print(f"  - {f} ({os.path.getsize(f)} bytes)")
-    else:
+    found = False
+    for d in [_main_dir, _backup_dir]:
+        if os.path.isdir(d):
+            for f in sorted(os.listdir(d)):
+                if f.endswith('.save'):
+                    full = os.path.join(d, f)
+                    rel  = os.path.relpath(full, _data_dir)
+                    print(f"  - {rel} ({os.path.getsize(full)} bytes)")
+                    found = True
+    if not found:
         print("  - No .save files found.")
 
 
@@ -1319,7 +1535,7 @@ def calculate_depreciation(current_rating: float, days_inactive: int, team_name:
         return current_rating
 
     # Base decay calculation (quadratic curve, capped at 75 days, max 25% loss)
-    base_decay = (((min(days_inactive, 75) - DEPRECIATION_THRESHOLD) / (75 - DEPRECIATION_THRESHOLD)) ** 2) * 0.25
+    base_decay = _base_decay_for(days_inactive)
 
     # Form modifier (better form = slower depreciation)
     form_modifier = 1.0
@@ -1465,8 +1681,8 @@ def calculate_points(team_points, opponent_points, result, map_diff, tier='A', e
     # === Use effective K based on result ===
     K = k_win if result == 1 else k_loss
     
-    tiers = {'S+': 1.5, 'S': 1.4, 'A': 1.2, 'B': 1.0, 'C': 0.8, 'D': 0.55, 'E': 0.35}
-    maps = {1: 0.8, 2: 1.0, 3: 1.2}
+    tiers = {'S+': 1.5, 'S': 1.4, 'A': 1.2, 'B': 1.0, 'C': 0.85, 'D': 0.7, 'E': 0.55}
+    maps = {1: 0.8, 2: 1.0, 3: 1.4}
     # LAN is the new unified environment (replaces STUDIO/STAGE split).
     # STUDIO/STAGE kept as aliases for backward compatibility with existing history records.
     environments = {'ONLINE': 0.8, 'LAN': 1.1, 'STUDIO': 1.1, 'STAGE': 1.1}
@@ -1500,12 +1716,23 @@ def calculate_points(team_points, opponent_points, result, map_diff, tier='A', e
     # === PITY POINTS: For heavy underdog losses (Option B - Underdog Reward) ===
     pity_bonus = 0.0
     if PITY_POINTS_ENABLED and result == 0:
-        # Calculate THIS team's rating as percentage of opponent's rating
-        team_rating_percent = team_points / opponent_points if opponent_points > 0 else 0
-        
-        if team_rating_percent <= PITY_THRESHOLD_PERCENT:  # This team is <=80% of opponent
+        # This team's rating gap vs opponent, expressed as a percent of a reference rating.
+        # The reference floors at MISMATCH_REFERENCE_RATING (protects low-rated brackets,
+        # same as before) but grows to match whichever team is actually higher-rated once
+        # that clears the floor — so elite matchups, which naturally spread further apart in
+        # raw Elo, need a proportionally bigger gap before pity/mismatch fully kicks in.
+        pity_reference = max(team_points, opponent_points, MISMATCH_REFERENCE_RATING)
+        team_rating_percent = 1.0 - ((opponent_points - team_points) / pity_reference)
+
+        # Sliding threshold: at low elo, require a bigger relative gap before pity triggers
+        # at all (mirrors the mismatch penalty's sliding threshold below).
+        higher_elo = max(team_points, opponent_points)
+        effective_pity_threshold = _sliding_threshold(higher_elo, PITY_THRESHOLD_PERCENT, PITY_THRESHOLD_PERCENT_LOW_ELO)
+        effective_pity_max = effective_pity_threshold - _PITY_THRESHOLD_TO_MAX_GAP
+
+        if team_rating_percent <= effective_pity_threshold:  # This team is far enough below opponent
             # Scale pity points based on gap severity
-            gap_factor = min(1.0, (PITY_THRESHOLD_PERCENT - team_rating_percent) / (PITY_THRESHOLD_PERCENT - PITY_MAX_PERCENT))
+            gap_factor = min(1.0, (effective_pity_threshold - team_rating_percent) / (effective_pity_threshold - effective_pity_max))
             pity_base = {1: 9, 2: 6, 3: 3}.get(map_diff, 3)
             pity_bonus = pity_base * gap_factor * m_tier * m_env * gf_mult
             
@@ -1515,8 +1742,8 @@ def calculate_points(team_points, opponent_points, result, map_diff, tier='A', e
             
             # === NATURAL NET GAIN CURVE: 0 at threshold -> Max at cap ===
             # Calculate position in pity range (0.0 to 1.0)
-            gap_from_threshold = PITY_THRESHOLD_PERCENT - team_rating_percent
-            total_range = PITY_THRESHOLD_PERCENT - PITY_MAX_PERCENT
+            gap_from_threshold = effective_pity_threshold - team_rating_percent
+            total_range = effective_pity_threshold - effective_pity_max
             scale_position = min(1.0, gap_from_threshold / total_range)
             
             # Define net gain bounds
@@ -1533,17 +1760,28 @@ def calculate_points(team_points, opponent_points, result, map_diff, tier='A', e
 
     # === MISMATCH PENALTY: Smooth decay for beating much weaker teams (percentage-based) ===
     mismatch_multiplier = 1.0
-    if MISMATCH_PENALTY_ENABLED and result == 1 and team_points > 0:
-        opponent_percent = opponent_points / team_points
-        
+    if MISMATCH_PENALTY_ENABLED and result == 1:
+        # Opponent's rating relative to this team, as a percent of a reference rating that
+        # floors at MISMATCH_REFERENCE_RATING but scales up with whichever team is actually
+        # higher-rated once that clears the floor — see the matching comment in the pity
+        # block above.
+        mismatch_reference = max(team_points, opponent_points, MISMATCH_REFERENCE_RATING)
+        opponent_percent = 1.0 - ((team_points - opponent_points) / mismatch_reference)
+
+        # Sliding threshold: at low elo, require a bigger relative gap before the mismatch
+        # penalty fully zeroes out (or flips negative), mirroring the pity block above.
+        higher_elo = max(team_points, opponent_points)
+        effective_zero_point = _sliding_threshold(higher_elo, MISMATCH_ZERO_POINT_PERCENT, MISMATCH_ZERO_POINT_PERCENT_LOW_ELO)
+        effective_max_penalty_percent = effective_zero_point - _MISMATCH_ZERO_TO_MAXPENALTY_GAP
+
         if opponent_percent <= MISMATCH_DECAY_PERCENT:
-            if opponent_percent > MISMATCH_ZERO_POINT_PERCENT:
+            if opponent_percent > effective_zero_point:
                 # Decay from 1.0 to 0.0
-                position = (opponent_percent - MISMATCH_DECAY_PERCENT) / (MISMATCH_ZERO_POINT_PERCENT - MISMATCH_DECAY_PERCENT)
+                position = (opponent_percent - MISMATCH_DECAY_PERCENT) / (effective_zero_point - MISMATCH_DECAY_PERCENT)
                 mismatch_multiplier = 1.0 - position
-            elif opponent_percent > MISMATCH_MAX_PENALTY_PERCENT:
+            elif opponent_percent > effective_max_penalty_percent:
                 # Decay from 0.0 to max penalty
-                position = (opponent_percent - MISMATCH_ZERO_POINT_PERCENT) / (MISMATCH_MAX_PENALTY_PERCENT - MISMATCH_ZERO_POINT_PERCENT)
+                position = (opponent_percent - effective_zero_point) / (effective_max_penalty_percent - effective_zero_point)
                 mismatch_multiplier = 0.0 - (position * abs(MISMATCH_MAX_PENALTY_VALUE))
             else:
                 # Cap at maximum penalty
@@ -1562,36 +1800,22 @@ def calculate_points(team_points, opponent_points, result, map_diff, tier='A', e
 # === FORM & STATISTICS (TRENDS, HISTORY) ===
 # =============================================================================
 
-def calculate_form(team_name: str, n: int, history: List[Dict[str, Any]]) -> Optional[Tuple[str, float, str]]:
+def _compute_form_from_recent(recent) -> Optional[Tuple[str, float, str]]:
     """
-    Calculate form rating across last n matches.
-    
+    Core form computation, shared by calculate_form() (which scans full
+    history to build `recent`) and the incremental per-team deque tracker
+    used during resimulation (which already maintains `recent` directly,
+    with no history scan needed).
+
     Parameters:
-    - team_name: The team to calculate form for
-    - n: Number of recent matches to consider
-    - history: List of match records (REQUIRED - no global fallback)
-    
+    - recent: list of (side, match) tuples in chronological order
+      (oldest first), already capped to the desired window size (e.g. 15).
+
     Returns: (grade, score, streak) or None if insufficient data
     """
-    if not history:
+    if len(recent) < 3:
         return None
 
-    team_matches = []
-    for m in history:
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        if t1_name == team_name:
-            team_matches.append(('t1', m))
-        elif t2_name == team_name:
-            team_matches.append(('t2', m))
-
-    if not team_matches:
-        return None
-
-    if len(team_matches) < 3:
-        return None
-
-    recent = team_matches[-n:]
     total_weight = 0.0
     win_weighted = 0.0
     map_wins_weighted = 0.0
@@ -1651,7 +1875,10 @@ def calculate_form(team_name: str, n: int, history: List[Dict[str, Any]]) -> Opt
 
     base_score = win_score + map_score + comp_score
 
-    streak = ''.join(streak_chars[-n:])
+    # streak_chars already has exactly len(recent) entries (recent is
+    # pre-capped to the desired window by the caller), so no further
+    # slicing is needed here.
+    streak = ''.join(streak_chars)
     streak_bonus = 0.0
     consecutive_losses = 0
 
@@ -1682,6 +1909,46 @@ def calculate_form(team_name: str, n: int, history: List[Dict[str, Any]]) -> Opt
     else:                                   grade = 'D'
 
     return grade, round(score, 1), streak
+
+
+def calculate_form(team_name: str, n: int, history: List[Dict[str, Any]]) -> Optional[Tuple[str, float, str]]:
+    """
+    Calculate form rating across last n matches.
+
+    Parameters:
+    - team_name: The team to calculate form for
+    - n: Number of recent matches to consider
+    - history: List of match records (REQUIRED - no global fallback)
+
+    Returns: (grade, score, streak) or None if insufficient data
+
+    NOTE: This scans the full `history` list to find this team's matches,
+    which is O(len(history)) per call. During resimulation (where this
+    would otherwise be called twice per match against an ever-growing,
+    freshly-sliced history — O(N^2) overall), use a FormTracker /
+    _compute_form_from_recent directly against an incrementally
+    maintained per-team deque instead. See _do_resimulation.
+    """
+    if not history:
+        return None
+
+    team_matches = []
+    for m in history:
+        t1_name = m.get('t1', {}).get('name')
+        t2_name = m.get('t2', {}).get('name')
+        if t1_name == team_name:
+            team_matches.append(('t1', m))
+        elif t2_name == team_name:
+            team_matches.append(('t2', m))
+
+    if not team_matches:
+        return None
+
+    if len(team_matches) < 3:
+        return None
+
+    return _compute_form_from_recent(team_matches[-n:])
+
 
 def calculate_form_at_match_index(team_name: str, match_index: int, history: List[Dict[str, Any]]) -> Optional[Tuple[str, float, str]]:
     """
@@ -2003,10 +2270,6 @@ def analyze_team_form() -> None:
     map_total_weighted = 0.0
     comp_weighted = 0.0
     
-    team_rating = teams.get(team, 1000)
-    threshold = team_rating * 0.90
-    buffer = team_rating * 0.10
-    
     raw_match_data = []
     
     for idx, (side, m) in enumerate(recent):
@@ -2029,11 +2292,12 @@ def analyze_team_form() -> None:
         map_wins_weighted += t_score * recency
         map_total_weighted += (t_score + opp_score) * recency
         
-        if opp_pts >= threshold:
-            comp_value = 1.0
-        else:
-            buffered_rating = opp_pts + buffer
-            comp_value = min(1.0, max(0.0, buffered_rating / DIMINISHING_MAX))
+        # Same flat linear formula as _compute_form_from_recent (the function
+        # that actually produces the team's real, displayed form score) —
+        # previously this used a team-rating-relative threshold/buffer that
+        # didn't match, so this breakdown's numbers didn't sum to the real
+        # score shown above them.
+        comp_value = opp_pts / DIMINISHING_MAX
         
         comp_weighted += comp_value * recency
         total_weight += recency
@@ -2150,11 +2414,7 @@ def analyze_team_form() -> None:
                 w_mt += (t.get('score', 0) + opp.get('score', 0)) * r
                 
                 opp_pts = opp.get('pts_before', 500)
-                if opp_pts >= threshold:
-                    comp_value = 1.0
-                else:
-                    buffered_rating = opp_pts + buffer
-                    comp_value = min(1.0, max(0.0, buffered_rating / DIMINISHING_MAX))
+                comp_value = opp_pts / DIMINISHING_MAX
                 
                 w_c += comp_value * r
                 w_t += r
@@ -2304,6 +2564,8 @@ def display_rankings():
     """
     Print current team rankings with 30-day trends and depreciated ratings.
     Teams inactive {DEPRECIATION_THRESHOLD}+ days show their current depreciated rating.
+    Teams inactive {INACTIVE_ARCHIVE_DAYS}+ days are moved to a separate Archived
+    section (see is_team_archived) instead of cluttering the main table forever.
     """
     print("\n=== CURRENT RANKINGS ===")
     print(f"  {'#':<4} {'Team':<26} {'Rating':<10} {'30D Trend':<12} {'Depreciation Punishment'}")
@@ -2314,6 +2576,7 @@ def display_rankings():
     # === FIX: Calculate depreciated ratings FIRST, then sort ===
     team_ratings = []
     provisional_list = []
+    archived_list = []
     date_index = build_match_date_index(history)
     for name, points in teams.items():
         if is_provisional(name):
@@ -2322,6 +2585,7 @@ def display_rankings():
             continue
 
         last_match = get_team_last_match_date_before(name, index=date_index)
+        has_last_match = last_match is not None
         display_rating = int(points)
         dep_loss = 0
         days_inactive = 0
@@ -2332,20 +2596,24 @@ def display_rankings():
                 depreciated = calculate_depreciation(points, days_inactive, name)
                 dep_loss = points - depreciated
                 display_rating = int(depreciated)
+
+            if days_inactive > INACTIVE_ARCHIVE_DAYS:
+                archived_list.append((name, display_rating, days_inactive))
+                continue
         
-        team_ratings.append((name, points, display_rating, dep_loss, days_inactive))
+        team_ratings.append((name, points, display_rating, dep_loss, days_inactive, has_last_match))
     
     # === FIX: Sort by display_rating (depreciated) instead of raw points ===
     team_ratings.sort(key=lambda x: x[2], reverse=True)
     
-    for i, (name, points, display_rating, dep_loss, days_inactive) in enumerate(team_ratings, 1):
+    for i, (name, points, display_rating, dep_loss, days_inactive, has_last_match) in enumerate(team_ratings, 1):
         # Get 30-day trend
         trend, diff = get_team_trend(name, days=30)
         
         # Build depreciation string
         if days_inactive > DEPRECIATION_THRESHOLD:
             dep_str = f"-{int(dep_loss):>3} pts ({days_inactive:>2}d)"
-        elif last_match:
+        elif has_last_match:
             dep_str = f"{'':>8} ({days_inactive:>2}d)"
         else:
             dep_str = f"{'':>8} (--)"
@@ -2361,6 +2629,13 @@ def display_rankings():
         for name, rating, matches_done in sorted(provisional_list, key=lambda x: x[1], reverse=True):
             remaining = PROVISIONAL_MATCH_THRESHOLD - matches_done
             print(f"  {'[P]':<4} {name:<26} {rating:<10} {matches_done}/{PROVISIONAL_MATCH_THRESHOLD} matches  ({remaining} to establish)")
+
+    if archived_list:
+        print(f"\n  --- Archived Teams (inactive {INACTIVE_ARCHIVE_DAYS}+ days, excluded from rankings) ---")
+        for name, rating, days_inactive in sorted(archived_list, key=lambda x: x[2]):
+            print(f"  {'[A]':<4} {name:<26} {rating:<10} {days_inactive}d inactive")
+        print(f"  (Archived teams reappear automatically the moment they play a new match.")
+        print(f"   See Team Management > Archived / Inactive Teams to review or delete them.)")
 
 def display_elite_teams_over_time() -> None:
     """
@@ -2861,7 +3136,7 @@ def _show_elite_teams_graph(team_history: Dict[str, List[Tuple[str, float]]], al
                 elite_split_idx = len(legend_data)
             
             # Build global rank lookup from full rankings (excluding provisional)
-            all_ranked = [t for t in get_sorted_rankings() if not is_provisional(t)]
+            all_ranked = [t for t in get_sorted_rankings(include_archived=True) if not is_provisional(t)]
             global_rank_map = {t: i + 1 for i, t in enumerate(all_ranked)}
 
             rank_colors = {0: '#FFD700', 1: '#C0C0C0', 2: '#CD7F32'}
@@ -3101,6 +3376,106 @@ def manage_aliases_menu() -> None:
             else:
                 print("  [!] No aliases defined.")
 
+def get_archived_teams(today=None) -> List[Tuple[str, int, int]]:
+    """
+    Return [(team_name, depreciated_rating, days_inactive), ...] for every
+    non-provisional team past INACTIVE_ARCHIVE_DAYS, sorted by days inactive
+    (longest-gone first). Shared by manage_archived_teams_menu() and anything
+    else that wants the archived list without re-deriving it.
+    """
+    if today is None:
+        today = datetime.now().date()
+    date_index = build_match_date_index(history)
+    archived = []
+    for name, points in teams.items():
+        if is_provisional(name):
+            continue
+        last_match = get_team_last_match_date_before(name, index=date_index)
+        if last_match is None:
+            continue
+        days_inactive = (today - last_match.date()).days
+        if days_inactive > INACTIVE_ARCHIVE_DAYS:
+            rating = int(calculate_depreciation(points, days_inactive, name)) if days_inactive > DEPRECIATION_THRESHOLD else int(points)
+            archived.append((name, rating, days_inactive))
+    archived.sort(key=lambda x: x[2], reverse=True)
+    return archived
+
+
+def manage_archived_teams_menu() -> None:
+    """
+    View and optionally bulk-delete teams that have been archived for
+    long-term inactivity (INACTIVE_ARCHIVE_DAYS+, see is_team_archived).
+
+    Archiving itself needs no action here — it's automatic and reversible
+    (a team leaves this list the instant it plays a new match). This menu
+    exists purely so the roster doesn't have to grow forever: if you want to
+    actually prune teams that have been gone for a very long time, you can
+    do it here without hunting them down one at a time in Delete Team.
+    """
+    archived = get_archived_teams()
+
+    if not archived:
+        print(f"\n>>> No archived teams. (Teams inactive {INACTIVE_ARCHIVE_DAYS}+ days show up here.)")
+        return
+
+    print(f"\n=== ARCHIVED / INACTIVE TEAMS ({len(archived)}) ===")
+    print(f"  Inactive {INACTIVE_ARCHIVE_DAYS}+ days — hidden from rankings/graphs, but not deleted.")
+    print(f"  They reappear automatically the moment they play a new match.\n")
+    print(f"  {'#':<4} {'Team':<26} {'Rating':<10} {'Days Inactive'}")
+    print(f"  {'-'*55}")
+    for i, (name, rating, days_inactive) in enumerate(archived, 1):
+        print(f"  {i:<4} {name:<26} {rating:<10} {days_inactive}")
+
+    print_menu(
+        "ARCHIVED TEAMS",
+        [
+            ("1", "Delete One (by number)"),
+            ("2", "Delete All Archived Teams"),
+            (None, None),
+            ("0", "Back"),
+        ],
+    )
+    choice = get_cmd(check_cmd(input("Select: ")))
+    if choice in ['0', 'back']:
+        return
+
+    if choice == '1':
+        try:
+            idx_raw = check_cmd(input(f"Enter number to delete (1-{len(archived)}) or '0' to cancel: "))
+            if get_cmd(idx_raw) in ['back', '0']:
+                return
+            idx = int(idx_raw) - 1
+            if not (0 <= idx < len(archived)):
+                print("  [!] Invalid number.")
+                return
+            target_name = archived[idx][0]
+        except ValueError:
+            print("  [!] Invalid input.")
+            return
+
+        confirm = get_cmd(check_cmd(input(f"Confirm delete '{target_name}'? Type 'DELETE' to confirm: ")))
+        if confirm != 'delete':
+            print(">>> Cancelled.")
+            return
+        del teams[target_name]
+        mark_unsaved()
+        print(f">>> Deleted '{target_name}'. Match history is untouched.")
+
+    elif choice == '2':
+        print(f"  [!] WARNING: This will permanently remove all {len(archived)} archived team(s) from the roster.")
+        print("      Match history involving them is NOT removed and will remain in Match History.")
+        confirm = get_cmd(check_cmd(input(f"Type 'DELETE ALL' to confirm: ")))
+        if confirm != 'delete all':
+            print(">>> Cancelled.")
+            return
+        for name, _, _ in archived:
+            teams.pop(name, None)
+        mark_unsaved()
+        print(f">>> Deleted {len(archived)} archived team(s).")
+    else:
+        print("  [!] Invalid option.")
+
+
 # =============================================================================
 # === MENU: TEAM MANAGEMENT ===
 # =============================================================================
@@ -3114,6 +3489,7 @@ def team_management_menu() -> None:
         ('4', 'Manage Aliases', manage_aliases_menu),
         ('5', 'Custom Point Adjustments', custom_point_adjustments),
         ('6', 'Simulate Depreciation', simulate_depreciation_menu),
+        ('7', 'Archived / Inactive Teams', manage_archived_teams_menu),
         ('0', 'Back', None),
     ]
     
@@ -3128,6 +3504,7 @@ def team_management_menu() -> None:
                 (None, None),
                 ("5", "Custom Point Adjustments"),
                 ("6", "Simulate Depreciation"),
+                ("7", "Archived / Inactive Teams"),
                 (None, None),
                 ("0", "Back"),
             ],
@@ -3154,15 +3531,17 @@ def team_management_menu() -> None:
 
 def _create_backup():
     """Create a rotated backup of data.save (backup_1.save most recent)."""
+    _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
+    os.makedirs(_backup_dir, exist_ok=True)
     try:
         for i in range(2, 0, -1):
-            src = f"backup_{i}.save"
-            dst = f"backup_{i+1}.save"
+            src = os.path.join(_backup_dir, f"backup_{i}.save")
+            dst = os.path.join(_backup_dir, f"backup_{i+1}.save")
             if os.path.exists(src):
                 os.replace(src, dst)
         if os.path.exists(SAVE_FILE):
             import shutil
-            shutil.copy2(SAVE_FILE, "backup_1.save")
+            shutil.copy2(SAVE_FILE, os.path.join(_backup_dir, "backup_1.save"))
     except Exception:
         pass
 
@@ -3170,8 +3549,26 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
     """
     Internal: fully resimulate ratings from the given history list.
     DEPRECIATION IS APPLIED BETWEEN MATCHES BASED ON TIME GAPS.
+    PROVISIONAL-TEAM HANDLING IS APPLIED IDENTICALLY TO THE IMPORT-TIME PATH
+    (see _import_url_list): capped rating differential vs provisional
+    opponents, boosted K-factor for a provisional team's own change, and
+    graduation after PROVISIONAL_MATCH_THRESHOLD matches.
+
+    NOTE on provisional inference: provisional registration is normally
+    decided at scrape time by a live VRS lookup (see scrape_vrs_points /
+    "register as provisional" elsewhere in this file), which isn't
+    available during a pure history replay. We instead infer it from data
+    already in the history record: a team is treated as having started
+    provisional if its pts_before on its very first chronological match
+    equals exactly PROVISIONAL_STARTING_RATING (400) — the fixed value
+    only ever assigned when no VRS rating was found at original import
+    time. From there, match counts and graduation are reconstructed
+    chronologically using the same PROVISIONAL_MATCH_THRESHOLD /
+    PROVISIONAL_K_FACTORS as the live importer, so a team's provisional
+    window during resimulation lines up with what actually happened at
+    import time.
     """
-    global teams, peak_ratings
+    global teams, peak_ratings, provisional_teams
     
     if not history_list:
         if verbose:
@@ -3190,11 +3587,41 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
             print(f">>> Last match: {last.get('date')} | {last.get('t1', {}).get('name')} vs {last.get('t2', {}).get('name')}")
 
     sim_teams: Dict[str, float] = dict(STARTING_TEAMS)
-    
+
+    # Local, isolated provisional-status tracker for this resimulation run —
+    # mirrors the global provisional_teams dict's shape (team_name -> matches
+    # played while provisional) but never touches the real global mid-loop,
+    # exactly like sim_teams vs. the real teams dict above. Only written
+    # back to the real global once, at the very end of resimulation.
+    sim_provisional: Dict[str, int] = {}
+
     chronologically_sorted: List[Dict[str, Any]] = sorted(history_list, key=lambda m: (m.get('date') == 'N/A', m.get('date', '')))
-    
+
+    # Pre-parse every match date once up front instead of re-parsing the
+    # same string with datetime.strptime() inside the hot loop below —
+    # strptime is comparatively slow and this ran once per match every
+    # single resimulation.
+    parsed_dates: List[datetime] = []
+    for m in chronologically_sorted:
+        raw = m.get('date', 'N/A')
+        try:
+            parsed_dates.append(datetime.strptime(raw[:10], "%Y-%m-%d"))
+        except Exception:
+            parsed_dates.append(datetime.now())
+
     # Track last match date per team for depreciation calculation
     team_last_match: Dict[str, datetime] = {}
+
+    # Per-team sliding window of (side, match) tuples for incremental form
+    # tracking. Replaces the old approach of calling calculate_form() with
+    # a freshly-sliced history_list[:match_idx] on every single match
+    # (O(N) list copy + O(N) scan, done twice per match => O(N^2) overall).
+    # Since matches are processed strictly in chronological order here, we
+    # can just append each match to the relevant teams' deques right after
+    # it's processed and use the current deque contents (already capped at
+    # the last 15) to compute form directly — O(1) maintenance, O(15) form
+    # calc, so O(N) overall.
+    team_recent_matches: Dict[str, deque] = {}
     
     teams_first_pts_before: Dict[str, float] = {}
     for m in chronologically_sorted:
@@ -3209,33 +3636,64 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
     
     for team_name, start_pts in teams_first_pts_before.items():
         sim_teams[team_name] = start_pts
-        if verbose:
-            old_rating = pre_resim_ratings.get(team_name, 0)
-            change = start_pts - old_rating
-            change_str = f"{'+' if change >= 0 else ''}{int(change)}"
-            print(f"  [OK] {team_name}: Starting at {int(start_pts)} (change: {change_str})")
-    
+        if start_pts == PROVISIONAL_STARTING_RATING:
+            sim_provisional[team_name] = 0
+
     for name, pts in teams.items():
         if name not in sim_teams:
             sim_teams[name] = pts
-            if verbose:
-                print(f"  [!] {name}: Starting at {int(pts)} (current rating - NO HISTORY DATA)")
     
     if verbose:
         print(f"\n>>> Total teams in resimulation: {len(sim_teams)}")
         if teams_first_pts_before:
             print(f">>> Teams with starting ratings from history: {len(teams_first_pts_before)}")
+        if sim_provisional:
+            print(f">>> Teams inferred provisional at history start: {len(sim_provisional)}")
 
     if verbose:
         print(f"\n>>> Processing matches...")
-    
+
+    resim_start = time.monotonic()
+    resim_durations: list = []
+
     peak_ratings.clear()
+
+    # Incremental rank tracker: rank_shift is purely cosmetic (stored in
+    # the history record only, never fed back into rating math), so
+    # instead of doing two full O(K log K) sorts of every team on every
+    # single match, maintain one running sorted list of all current
+    # ratings and use O(log K) bisect lookups to find a team's rank
+    # (count of teams with a strictly higher rating, + 1), with O(K)
+    # insert/remove on rating changes (still cheaper in practice than
+    # re-sorting all K teams from scratch twice per match).
+    try:
+        from sortedcontainers import SortedList as _SL
+        sim_points_sorted = _SL(sim_teams.values())
+        def _rank_of(value: float) -> int:
+            return len(sim_points_sorted) - sim_points_sorted.bisect_right(value) + 1
+        def _resort_update(old_value: float, new_value: float) -> None:
+            sim_points_sorted.discard(old_value)
+            sim_points_sorted.add(new_value)
+    except ImportError:
+        sim_points_sorted: List[float] = sorted(sim_teams.values())
+        def _rank_of(value: float) -> int:
+            return len(sim_points_sorted) - bisect.bisect_right(sim_points_sorted, value) + 1
+        def _resort_update(old_value: float, new_value: float) -> None:
+            idx = bisect.bisect_left(sim_points_sorted, old_value)
+            if idx < len(sim_points_sorted) and sim_points_sorted[idx] == old_value:
+                del sim_points_sorted[idx]
+            else:
+                sim_points_sorted.remove(old_value)
+            bisect.insort(sim_points_sorted, new_value)
     
     for match_idx, m in enumerate(chronologically_sorted, 1):
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        t1_score = m.get('t1', {}).get('score', 0)
-        t2_score = m.get('t2', {}).get('score', 0)
+        _match_t0 = time.monotonic()
+        t1_data = m.get('t1') or {}
+        t2_data = m.get('t2') or {}
+        t1_name = t1_data.get('name')
+        t2_name = t2_data.get('name')
+        t1_score = t1_data.get('score', 0)
+        t2_score = t2_data.get('score', 0)
         tier = m.get('tier', 'A')
         env = m.get('env', 'LAN')
         is_gf = m.get('grand_final', False)
@@ -3246,23 +3704,38 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
                 print_warning(f"Skipping match {match_idx}: Missing team names")
             continue
         
-        # Parse match date
-        try:
-            match_date = datetime.strptime(match_date_str[:10], "%Y-%m-%d")
-        except:
-            match_date = datetime.now()
+        match_date = parsed_dates[match_idx - 1]
         
         # Handle orphaned teams (in history but not in roster)
         if t1_name not in sim_teams:
             logger.warning(f"Team '{t1_name}' in history but not in roster. Assigning 1000 pts.")
             sim_teams[t1_name] = 1000
+            bisect.insort(sim_points_sorted, 1000)
         if t2_name not in sim_teams:
             logger.warning(f"Team '{t2_name}' in history but not in roster. Assigning 1000 pts.")
             sim_teams[t2_name] = 1000
+            bisect.insort(sim_points_sorted, 1000)
         
-        # === FORM (calculated from past-only slice — must be before depreciation) ===
-        form1 = calculate_form(t1_name, n=15, history=history_list[:match_idx])
-        form2 = calculate_form(t2_name, n=15, history=history_list[:match_idx])
+        # === FORM (calculated from a window that INCLUDES this match's own
+        # already-known score) ===
+        # NOTE: the original implementation computed this via
+        # calculate_form(team, n=15, history=history_list[:match_idx]).
+        # Since match_idx is 1-based, that slice's exclusive upper bound
+        # lands one past the current match's own 0-based index — i.e. it
+        # includes the current match itself (its score fields are already
+        # present in the record even though pts_before/pts_after for this
+        # match haven't been computed yet). To reproduce that exactly, the
+        # current match is pushed onto each team's window before form is
+        # computed, not after.
+        if t1_name not in team_recent_matches:
+            team_recent_matches[t1_name] = deque(maxlen=15)
+        team_recent_matches[t1_name].append(('t1', m))
+        if t2_name not in team_recent_matches:
+            team_recent_matches[t2_name] = deque(maxlen=15)
+        team_recent_matches[t2_name].append(('t2', m))
+
+        form1 = _compute_form_from_recent(team_recent_matches[t1_name])
+        form2 = _compute_form_from_recent(team_recent_matches[t2_name])
         form_adj_1 = (form1[1] - 50) if form1 else 0
         form_adj_2 = (form2[1] - 50) if form2 else 0
         form_score_1 = form1[1] if form1 else None
@@ -3276,43 +3749,70 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         if t1_name in team_last_match:
             days_inactive_1 = (match_date - team_last_match[t1_name]).days
             if days_inactive_1 > DEPRECIATION_THRESHOLD:
-                p1_before = calculate_depreciation(p1_before, days_inactive_1, t1_name, form_score=form_score_1)
-                if verbose and match_idx % 20 == 0:
-                    print(f"  [Dep] {t1_name}: -{int(sim_teams[t1_name] - p1_before)} pts ({days_inactive_1}d inactive)")
+                p1_before = calculate_depreciation(p1_before, days_inactive_1, team_name=None, form_score=form_score_1)
 
         # Team 2 depreciation
         if t2_name in team_last_match:
             days_inactive_2 = (match_date - team_last_match[t2_name]).days
             if days_inactive_2 > DEPRECIATION_THRESHOLD:
-                p2_before = calculate_depreciation(p2_before, days_inactive_2, t2_name, form_score=form_score_2)
-                if verbose and match_idx % 20 == 0:
-                    print(f"  [Dep] {t2_name}: -{int(sim_teams[t2_name] - p2_before)} pts ({days_inactive_2}d inactive)")
+                p2_before = calculate_depreciation(p2_before, days_inactive_2, team_name=None, form_score=form_score_2)
         
         t1_won = 1 if t1_score > t2_score else 0
         t2_won = 1 if t2_score > t1_score else 0
         map_diff = abs(t1_score - t2_score)
 
+        # === PROVISIONAL STATUS (inferred chronologically, see docstring) ===
+        t1_prov = t1_name in sim_provisional
+        t2_prov = t2_name in sim_provisional
+        t1_k = PROVISIONAL_K_FACTORS.get(sim_provisional.get(t1_name, 0) + 1, 1.0) if t1_prov else 1.0
+        t2_k = PROVISIONAL_K_FACTORS.get(sim_provisional.get(t2_name, 0) + 1, 1.0) if t2_prov else 1.0
+
         forfeit = m.get('forfeit')  # 'team1', 'team2', or None
         if forfeit == 'team1':
-            new_p1 = calculate_points(p1_before, p2_before, 0, map_diff or 1, tier, env, is_gf, form_adj_1, form_adj_2)
-            new_p2 = p2_before
+            raw_p1 = calculate_points(p1_before, p2_before, 0, map_diff or 1, tier, env, is_gf, form_adj_1, form_adj_2, opp_is_provisional=t2_prov)
+            raw_p2 = p2_before
         elif forfeit == 'team2':
-            new_p1 = p1_before
-            new_p2 = calculate_points(p2_before, p1_before, 0, map_diff or 1, tier, env, is_gf, form_adj_2, form_adj_1)
+            raw_p1 = p1_before
+            raw_p2 = calculate_points(p2_before, p1_before, 0, map_diff or 1, tier, env, is_gf, form_adj_2, form_adj_1, opp_is_provisional=t1_prov)
         else:
-            new_p1 = calculate_points(p1_before, p2_before, t1_won, map_diff, tier, env, is_gf, form_adj_1, form_adj_2)
-            new_p2 = calculate_points(p2_before, p1_before, t2_won, map_diff, tier, env, is_gf, form_adj_2, form_adj_1)
+            raw_p1 = calculate_points(p1_before, p2_before, t1_won, map_diff, tier, env, is_gf, form_adj_1, form_adj_2, opp_is_provisional=t2_prov)
+            raw_p2 = calculate_points(p2_before, p1_before, t2_won, map_diff, tier, env, is_gf, form_adj_2, form_adj_1, opp_is_provisional=t1_prov)
+
+        # Apply provisional K-multiplier to the team's own rating change
+        # (not the opponent's), clamped to RATING_FLOOR/RATING_CAP — same
+        # math as the live importer.
+        if t1_prov:
+            new_p1 = min(max(RATING_FLOOR, p1_before + (raw_p1 - p1_before) * t1_k), RATING_CAP)
+        else:
+            new_p1 = raw_p1
+        if t2_prov:
+            new_p2 = min(max(RATING_FLOOR, p2_before + (raw_p2 - p2_before) * t2_k), RATING_CAP)
+        else:
+            new_p2 = raw_p2
+
+        # Increment / graduate provisional status — same rule as
+        # increment_provisional(): the forfeiting team doesn't get credit
+        # for a match it forfeited.
+        if t1_prov and (not forfeit or forfeit == 'team1'):
+            sim_provisional[t1_name] = sim_provisional.get(t1_name, 0) + 1
+            if sim_provisional[t1_name] >= PROVISIONAL_MATCH_THRESHOLD:
+                del sim_provisional[t1_name]
+        if t2_prov and (not forfeit or forfeit == 'team2'):
+            sim_provisional[t2_name] = sim_provisional.get(t2_name, 0) + 1
+            if sim_provisional[t2_name] >= PROVISIONAL_MATCH_THRESHOLD:
+                del sim_provisional[t2_name]
         
-        old_order = sorted(sim_teams.keys(), key=lambda x: sim_teams[x], reverse=True)
-        t1_old_rank = old_order.index(t1_name) + 1
-        t2_old_rank = old_order.index(t2_name) + 1
-        
+        t1_old_rank = _rank_of(sim_teams[t1_name])
+        t2_old_rank = _rank_of(sim_teams[t2_name])
+
+        _resort_update(sim_teams[t1_name], new_p1)
+        _resort_update(sim_teams[t2_name], new_p2)
+
         sim_teams[t1_name] = new_p1
         sim_teams[t2_name] = new_p2
-        
-        new_order = sorted(sim_teams.keys(), key=lambda x: sim_teams[x], reverse=True)
-        t1_new_rank = new_order.index(t1_name) + 1
-        t2_new_rank = new_order.index(t2_name) + 1
+
+        t1_new_rank = _rank_of(new_p1)
+        t2_new_rank = _rank_of(new_p2)
         
         t1_rank_shift = t1_old_rank - t1_new_rank
         t2_rank_shift = t2_old_rank - t2_new_rank
@@ -3325,21 +3825,45 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         m['t2']['pts_after'] = new_p2
         m['t2']['rank_shift'] = t2_rank_shift
         
-        update_peak(t1_name, new_p1, match_date_str)
-        update_peak(t2_name, new_p2, match_date_str)
+        update_peak(t1_name, new_p1, match_date_str, rank=t1_new_rank)
+        update_peak(t2_name, new_p2, match_date_str, rank=t2_new_rank)
         
         # Update last match date for depreciation tracking
         team_last_match[t1_name] = match_date
         team_last_match[t2_name] = match_date
         
-        if verbose and match_idx % 20 == 0:
-            print(f"  Processed {match_idx}/{len(chronologically_sorted)} matches...")
-        
-        if match_idx % 10 == 0 or match_idx == len(chronologically_sorted):
-            print_progress(match_idx, len(chronologically_sorted), prefix='  Resimulating')
+        resim_durations.append(time.monotonic() - _match_t0)
+        pct = match_idx * 100 // len(chronologically_sorted)
+        prev_pct = (match_idx - 1) * 100 // len(chronologically_sorted)
+        if pct != prev_pct or match_idx == len(chronologically_sorted):
+            total_elapsed = time.monotonic() - resim_start
+            window = resim_durations[-50:]
+            avg = sum(window) / len(window)
+            remaining_count = max(0, len(chronologically_sorted) - match_idx)
+            eta_sec = avg * remaining_count
+            finish_dt = datetime.now().astimezone() + timedelta(seconds=eta_sec)
+            print(
+                f'\r  Resimulating: {pct:3d}% ({match_idx}/{len(chronologically_sorted)}) | '
+                f'elapsed: {_format_duration(total_elapsed)} | '
+                f'remaining: {_format_duration(eta_sec)} | '
+                f'ETA: {finish_dt.strftime("%H:%M:%S")}',
+                end='', flush=True
+            )
+            if match_idx == len(chronologically_sorted):
+                print()
 
     teams.clear()
     teams.update(sim_teams)
+
+    # Write back inferred provisional state to the real global, same as
+    # teams above — only done once, after the full chronological replay,
+    # so any team still mid-provisional-window at the end of history
+    # correctly stays provisional going forward.
+    provisional_teams.clear()
+    provisional_teams.update(sim_provisional)
+    if verbose and sim_provisional:
+        print(f">>> {len(sim_provisional)} team(s) still provisional at end of resimulation: "
+              f"{', '.join(sorted(sim_provisional.keys()))}")
     
     if verbose:
         print(f"\n>>> Resimulation complete! {len(chronologically_sorted)} matches processed.")
@@ -3357,7 +3881,7 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         
         print(f"  {'Team':<25} {'Before':<10} {'After':<10} {'Change':<10}")
         print(f"  {'-'*55}")
-        for team_name, old_rating, new_rating, change in changes[:15]:
+        for team_name, old_rating, new_rating, change in changes:
             change_str = f"{'+' if change >= 0 else ''}{int(change)}"
             print(f"  {team_name:<25} {int(old_rating):<10} {int(new_rating):<10} {change_str:<10}")
         
@@ -3381,6 +3905,35 @@ def resimulate():
     
     _do_resimulation(history, verbose=True)
     history = load_history()
+
+def run_resimulate_command(skip_confirm: bool = False) -> None:
+    """
+    CLI entry point for `python CSRS.py --resimulate`.
+    Loads all data, resimulates the full match history from scratch using
+    the current formula/config, and saves. No menu involved.
+    """
+    global history
+    load_all()
+
+    if not history:
+        print("\n>>> No match history to resimulate.")
+        return
+
+    print(f">>> Current history contains {len(history)} matches")
+    if not skip_confirm:
+        confirm = input(
+            f"Resimulate {len(history)} matches with current formula "
+            f"(including form adjustments)? This will overwrite current "
+            f"team points and history. (y/n): "
+        ).strip().lower()
+        if confirm != 'y':
+            print(">>> Cancelled.")
+            return
+
+    mark_unsaved()
+    _do_resimulation(history, verbose=True)
+    history = load_history()
+    print(">>> Resimulation complete.")
 
 def delete_and_resimulate(matches_to_delete):
     """
@@ -3889,9 +4442,9 @@ def edit_match_details():
         s2 = m.get('t2', {}).get('score', 0)
         date = m.get('date', 'N/A')
         env = m.get('env', 'N/A')
-        event = m.get('event_name', 'N/A')
+        event = m.get('event', 'N/A')
         tier = m.get('tier', 'N/A')
-        gf_tag = " [GRAND FINAL]" if m.get('grand_final') else ""
+        gf_tag = f" [{m.get('match_stage')}]" if m.get('match_stage') else (" [GRAND FINAL]" if m.get('grand_final') else "")
         print(f"  {i}. {date}{gf_tag}: {t1_name} {s1} - {s2} {t2_name} | Env: {env} | Tier: {tier} | Event: {event}")
 
     try:
@@ -3913,7 +4466,7 @@ def edit_match_details():
 
         print(f"\nEditing Match #{global_idx + 1}: {match_to_edit.get('t1', {}).get('name')} vs {match_to_edit.get('t2', {}).get('name')} ({match_to_edit.get('date', 'N/A')})")
         print(f"  Current Environment: {match_to_edit.get('env', 'N/A')}")
-        print(f"  Current Event: {match_to_edit.get('event_name', 'N/A')}")
+        print(f"  Current Event: {match_to_edit.get('event', 'N/A')}")
         print(f"  Current Tier: {match_to_edit.get('tier', 'N/A')}")
         print(f"  Current Grand Final: {match_to_edit.get('grand_final', False)}")
 
@@ -3932,8 +4485,8 @@ def edit_match_details():
 
         event_choice = get_cmd(check_cmd(input("New Event Name (skip=unchanged): ")))
         if event_choice not in ['skip', '']:
-            history[global_idx]['event_name'] = event_choice
-            print(f"  [OK] Event updated to {history[global_idx]['event_name']}")
+            history[global_idx]['event'] = event_choice
+            print(f"  [OK] Event updated to {history[global_idx]['event']}")
             changes_made = True
 
         tier_choice = get_cmd(check_cmd(input("New Tier (S+/S/A/B/C/D, skip=unchanged): ")).strip().upper())
@@ -4110,7 +4663,7 @@ def simulate_match() -> None:
     t1_prov = is_provisional(t1)
     t2_prov = is_provisional(t2)
 
-    old_order = [t for t in get_sorted_rankings() if not is_provisional(t)]
+    old_order = [t for t in get_sorted_rankings(include_archived=True) if not is_provisional(t)]
     r1_old = old_order.index(t1) + 1 if t1 in old_order else '?'
     r2_old = old_order.index(t2) + 1 if t2 in old_order else '?'
 
@@ -4135,9 +4688,10 @@ def simulate_match() -> None:
     fmt_pts   = lambda a, b: f"({int(round(a-b)):>+3})" if a != b else "( ─ )"
 
     bo_label = f"Best of {bo}"
+    stage_label = "Grand Final  |  " if is_gf else ""
     print(f"\n{'═'*68}")
     print(f"  SIMULATION: {t1}  vs  {t2}  [{bo_label}]")
-    print(f"  Tier: {tier_raw}  |  Env: {env_raw}  |  {'Grand Final  |  ' if is_gf else ''}Ratings: {int(p1d)} vs {int(p2d)}")
+    print(f"  Tier: {tier_raw}  |  Env: {env_raw}  |  {stage_label}Ratings: {int(p1d)} vs {int(p2d)}")
     if days_inactive > DEPRECIATION_THRESHOLD:
         print(f"  [Depreciation: {t1} {int(p1)}→{int(p1d)}  |  {t2} {int(p2)}→{int(p2d)}]")
     print(f"  Series Win Probability:  {t1} {series_win_prob*100:.1f}%  |  {t2} {(1-series_win_prob)*100:.1f}%")
@@ -4205,7 +4759,7 @@ def compare_teams() -> None:
         print("  [!] Cannot compare a team against itself.")
         return
 
-    ranked = get_sorted_rankings()
+    ranked = get_sorted_rankings(include_archived=True)
     r1 = ranked.index(t1) + 1
     r2 = ranked.index(t2) + 1
     p1, p2 = teams[t1], teams[t2]
@@ -6517,7 +7071,7 @@ def duplicate_match_detection():
         for local_idx, (global_idx, m) in enumerate(matches, 1):
             t1_data = m.get('t1', {})
             t2_data = m.get('t2', {})
-            gf_tag = "[GRAND FINAL]" if m.get('grand_final') else ""
+            gf_tag = f"[{m.get('match_stage')}]" if m.get('match_stage') else ("[GRAND FINAL]" if m.get('grand_final') else "")
             url_tag = f"URL: {m.get('url', 'N/A')}" if m.get('url') else ""
             print(f"    {local_idx}. (Index {global_idx+1}) {t1_data.get('name')} {t1_data.get('score')} - {t2_data.get('score')} {t2_data.get('name')} {gf_tag} {url_tag}")
 
@@ -7220,96 +7774,52 @@ def compare_csrs_vrs_rankings():
     vrs_fetch_date = datetime.now().strftime("%Y-%m-%d")
     
     try:
-        from playwright.sync_api import sync_playwright # pyright: ignore[reportMissingImports]
         from datetime import date as date_cls
-        
         today = date_cls.today()
         vrs_url = f"https://www.hltv.org/valve-ranking/teams/{today.year}/{today.strftime('%B').lower()}/{today.day}"
-        
-        p = None
-        browser = None
-        page = None
-        
-        try:
-            p = sync_playwright().start()
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
-            )
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                viewport={"width": 1920, "height": 1080}
-            )
-            page = context.new_page()
-            
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-            
-            page.goto(vrs_url, timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
-            
-            # FIXED: Use HLTV's ACTUAL VRS page structure from your HTML dump
-            vrs_data = page.evaluate("""() => {
-                const results = {};
-                
-                // Each team is in a .ranking-header div
-                const entries = document.querySelectorAll('.ranking-header');
-                
-                console.log('Found ranking-header entries:', entries.length);
-                
-                for (let i = 0; i < entries.length; i++) {
-                    const entry = entries[i];
-                    
-                    // Skip old rosters
-                    if (entry.innerHTML.indexOf('old-roster') !== -1) continue;
-                    
-                    // Get rank from .position span
-                    const positionEl = entry.querySelector('.position');
-                    if (!positionEl) continue;
-                    
-                    const rankText = positionEl.textContent.trim();
-                    const rankMatch = rankText.match(/#?(\\d+)/);
-                    if (!rankMatch) continue;
-                    const rank = parseInt(rankMatch[1]);
-                    
-                    // Get team name from .teamLine .name span
-                    const nameEl = entry.querySelector('.teamLine .name');
-                    if (!nameEl) continue;
-                    
-                    const teamName = nameEl.textContent.trim().toLowerCase();
-                    if (!teamName || teamName.length < 2) continue;
-                    
-                    // Get points from .points span
-                    const pointsEl = entry.querySelector('.points');
-                    if (!pointsEl) continue;
-                    
-                    const pointsText = pointsEl.textContent.trim();
-                    const pointsMatch = pointsText.match(/(\\d+)\\s*(?:Valve\\s*points)?/);
-                    if (!pointsMatch) continue;
-                    const points = parseFloat(pointsMatch[1]);
-                    
-                    if (rank && teamName && points) {
-                        results[teamName] = {'rank': rank, 'points': points};
-                        console.log(`Found: ${teamName} = #${rank} (${points} pts)`);
-                    }
-                }
-                
-                console.log('Total teams extracted:', Object.keys(results).length);
-                return results;
-            }""")
-            
-            for team_name_lower, data in vrs_data.items():
-                vrs_full_rankings[team_name_lower] = data['rank']
-            
-            print(f"  [OK] Fetched {len(vrs_full_rankings)} teams from VRS\n")
-            
-        finally:
+
+        with BrowserSession() as sess:
+            page = sess.new_page()
             try:
-                if page: page.close()
-                if context: context.close()
-                if browser: browser.close()
-                if p: p.stop()
-            except: pass
-            
+                page.goto(vrs_url, timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+
+                vrs_data = page.evaluate("""() => {
+                    const results = {};
+                    const entries = document.querySelectorAll('.ranking-header');
+                    console.log('Found ranking-header entries:', entries.length);
+                    for (let i = 0; i < entries.length; i++) {
+                        const entry = entries[i];
+                        if (entry.innerHTML.indexOf('old-roster') !== -1) continue;
+                        const positionEl = entry.querySelector('.position');
+                        if (!positionEl) continue;
+                        const rankMatch = positionEl.textContent.trim().match(/#?(\\d+)/);
+                        if (!rankMatch) continue;
+                        const rank = parseInt(rankMatch[1]);
+                        const nameEl = entry.querySelector('.teamLine .name');
+                        if (!nameEl) continue;
+                        const teamName = nameEl.textContent.trim().toLowerCase();
+                        if (!teamName || teamName.length < 2) continue;
+                        const pointsEl = entry.querySelector('.points');
+                        if (!pointsEl) continue;
+                        const pointsMatch = pointsEl.textContent.trim().match(/(\\d+)\\s*(?:Valve\\s*points)?/);
+                        if (!pointsMatch) continue;
+                        const points = parseFloat(pointsMatch[1]);
+                        if (rank && teamName && points) {
+                            results[teamName] = {'rank': rank, 'points': points};
+                        }
+                    }
+                    return results;
+                }""")
+
+                for team_name_lower, data in vrs_data.items():
+                    vrs_full_rankings[team_name_lower] = data['rank']
+
+                print(f"  [OK] Fetched {len(vrs_full_rankings)} teams from VRS\n")
+            finally:
+                try: page.close()
+                except: pass
+
     except Exception as e:
         print(f"  [!] VRS scrape error: {e}")
         log_scrape_error("VRS Rankings", vrs_url if 'vrs_url' in locals() else "Unknown", str(e))
@@ -7390,8 +7900,24 @@ def compare_csrs_vrs_rankings():
 
 _BROWSER_DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
+
+# Pool of realistic UAs rotated per BrowserSession to avoid fingerprint
+# consistency that Cloudflare flags on repeated headless visits.
+_BROWSER_UA_POOL = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+]
+
+def _pick_ua() -> str:
+    """Pick a random UA from the pool each call."""
+    import random
+    return random.choice(_BROWSER_UA_POOL)
 
 _BROWSER_DEFAULT_LAUNCH_ARGS = [
     "--no-sandbox",
@@ -7402,23 +7928,102 @@ _BROWSER_DEFAULT_LAUNCH_ARGS = [
     "--disable-dev-shm-usage",
     "--no-first-run",
     "--no-default-browser-check",
+    "--disable-infobars",
+    "--disable-features=IsolateOrigins,site-per-process",
+    "--window-size=1920,1080",
+    "--start-maximized",
 ]
+
+_CAMOUFOX_HEADLESS = True
+
+# Path to a JSON cookie file exported from a real logged-in HLTV browser
+# session (e.g. via the "Cookie-Editor" extension → Export → JSON).
+# If the file exists, cookies are loaded into every BrowserSession, which
+# makes Cloudflare treat the scraper as an authenticated user.
+# Leave as None or point to a non-existent path to skip.
+HLTV_COOKIE_FILE = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "data", "hltv_cookies.json")
+
+def _load_hltv_cookies() -> list:
+    """Load HLTV cookies from JSON file if it exists, else return empty list."""
+    import json
+    if not os.path.exists(HLTV_COOKIE_FILE):
+        return []
+    try:
+        with open(HLTV_COOKIE_FILE) as f:
+            raw = json.load(f)
+        # Normalise both Cookie-Editor format and plain list-of-dicts
+        cookies = []
+        for c in raw:
+            cookie = {
+                "name":   c.get("name", ""),
+                "value":  c.get("value", ""),
+                "domain": c.get("domain", ".hltv.org"),
+                "path":   c.get("path", "/"),
+            }
+            if cookie["name"] and cookie["value"]:
+                cookies.append(cookie)
+        if cookies:
+            print(f"[Browser] Loaded {len(cookies)} HLTV cookies from {HLTV_COOKIE_FILE}")
+        return cookies
+    except Exception as e:
+        print(f"[Browser] Failed to load cookie file: {e}")
+        return []
+
+
+
+
+
+class _ThreadSafeProxy:
+    """
+    Wraps a Camoufox/Playwright object (context, page, etc.) so that every
+    attribute access that returns a callable is automatically dispatched
+    through the BrowserSession worker thread.  This lets all existing code
+    that calls context.new_page(), page.goto(), page.evaluate(), etc. work
+    unchanged even when the real object lives on a different thread.
+    """
+    def __init__(self, obj, run_in_thread):
+        # Use object.__setattr__ to avoid triggering our own __setattr__
+        object.__setattr__(self, "_obj",           obj)
+        object.__setattr__(self, "_run_in_thread", run_in_thread)
+
+    def __getattr__(self, name):
+        obj          = object.__getattribute__(self, "_obj")
+        run_in_thread = object.__getattribute__(self, "_run_in_thread")
+        attr = getattr(obj, name)
+        if not callable(attr):
+            return attr
+        def _dispatch(*args, **kwargs):
+            result = run_in_thread(lambda: getattr(obj, name)(*args, **kwargs))
+            # Wrap returned contexts/pages/etc. in the same proxy
+            _proxiable = ("BrowserContext", "Page", "Frame", "ElementHandle",
+                          "JSHandle", "Response", "Request", "Route",
+                          "WebSocket", "Worker", "CDPSession", "Browser")
+            if result is not None and type(result).__name__ in _proxiable:
+                return _ThreadSafeProxy(result, run_in_thread)
+            return result
+        return _dispatch
+
+    # Forward item access (e.g. dict-like results) transparently
+    def __getitem__(self, key):
+        return object.__getattribute__(self, "_obj")[key]
+
+    def __iter__(self):
+        return iter(object.__getattribute__(self, "_obj"))
+
+    def __bool__(self):
+        return bool(object.__getattribute__(self, "_obj"))
+
+    def __repr__(self):
+        return f"<_ThreadSafeProxy wrapping {object.__getattribute__(self, '_obj')!r}>"
 
 
 class BrowserSession:
     """
-    Holds one Playwright instance + browser + context, reused across
-    many page loads. Call start()/stop() directly, or use as a context
-    manager (`with BrowserSession() as session:`).
+    Holds one browser instance + context, reused across many page loads.
+    Uses Camoufox (Firefox-based, randomised fingerprint) to bypass
+    Cloudflare TLS/JA3 fingerprinting that blocks Playwright Chromium.
 
-    Problem: every scraper currently does its own
-    sync_playwright().start() -> browser.launch() -> ... -> browser.close()
-    per call. Launching Chromium takes the majority of the 5-18s seen per
-    scrape. For a single interactive match import this is fine, but for a
-    batch run processing many matches it's the dominant cost.
-
-    Fix: launch ONE browser + context for the whole batch, and have each
-    scraper open/close only a `page` on that shared context.
+    Falls back to Playwright Chromium if Camoufox is not installed.
 
     Usage:
         with BrowserSession() as session:
@@ -7428,59 +8033,221 @@ class BrowserSession:
     """
 
     def __init__(self, headless: bool = True):
-        self.headless = headless
-        self._playwright = None
-        self.browser = None
-        self.context = None
+        self.headless        = headless
+        self._camoufox       = None   # Camoufox context manager
+        self._playwright     = None   # fallback
+        self.browser         = None
+        self.context         = None
+        self._stealth_fn     = None
+        self._cf_thread      = None   # persistent thread owning Camoufox
+        self._cf_queue       = None   # queue to send callables into that thread
+        self._cf_stop_event  = None   # signals thread to exit
+
+    def _run_in_cf_thread(self, fn):
+        """Submit a callable to the persistent Camoufox thread and return its result."""
+        import queue
+        result_q = queue.Queue()
+        def _task():
+            try:
+                result_q.put(("ok", fn()))
+            except Exception as exc:
+                result_q.put(("err", exc))
+        self._cf_queue.put(_task)
+        tag, val = result_q.get()
+        if tag == "err":
+            raise val
+        return val
 
     def start(self) -> "BrowserSession":
         if self.context is not None:
-            return self  # already started — no-op, safe to call twice
+            return self  # already started
 
-        from playwright.sync_api import sync_playwright # pyright: ignore[reportMissingImports]
+        # ── Try Camoufox first ──
+        # Camoufox's sync API must live entirely on one thread. If we're inside
+        # an asyncio loop (which owns the main thread) we spin up a *persistent*
+        # worker thread that never exits until stop() is called, so Camoufox's
+        # internal event loop always finds its home thread alive.
+        _inside_asyncio = False
+        try:
+            import asyncio
+            asyncio.get_running_loop()
+            _inside_asyncio = True
+        except RuntimeError:
+            pass
 
-        self._playwright = sync_playwright().start()
-        self.browser = self._playwright.chromium.launch(
-            headless=self.headless,
-            args=_BROWSER_DEFAULT_LAUNCH_ARGS,
-        )
-        self.context = self.browser.new_context(
-            user_agent=_BROWSER_DEFAULT_USER_AGENT,
-            viewport={"width": 1920, "height": 1080},
-            locale="en-US",
-            timezone_id="America/New_York",
-        )
-        self.context.add_cookies([{
-            "name": "cookieConsent",
-            "value": "1",
-            "domain": ".hltv.org",
-            "path": "/",
-        }])
-        self.context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-        )
+        try:
+            import queue, threading
+            from camoufox.sync_api import Camoufox
+
+            # Cookies to load — fetch on main thread before handing off
+            cookies = _load_hltv_cookies()
+            if not cookies:
+                cookies = [{"name": "cookieConsent", "value": "1",
+                            "domain": ".hltv.org", "path": "/"}]
+
+            if _inside_asyncio:
+                cf_queue      = queue.Queue()
+                stop_event    = threading.Event()
+                self._cf_queue      = cf_queue
+                self._cf_stop_event = stop_event
+
+                def _cf_worker():
+                    # Use local refs — self attrs may be None'd by stop() before
+                    # this loop checks them again.
+                    while not stop_event.is_set():
+                        try:
+                            task = cf_queue.get(timeout=0.2)
+                            task()
+                        except queue.Empty:
+                            continue
+
+                self._cf_thread = threading.Thread(target=_cf_worker, daemon=True)
+                self._cf_thread.start()
+
+                _cookies = cookies  # capture for closure
+                def _launch():
+                    cf  = Camoufox(headless=self.headless, os=("windows", "macos", "linux"))
+                    b   = cf.__enter__()
+                    ctx = b.new_context()
+                    ctx.add_cookies(_cookies)   # must happen on this thread
+                    return cf, b, ctx
+
+                self._camoufox, self.browser, self.context = self._run_in_cf_thread(_launch)
+                # Wrap context in a proxy so callers on the main thread are
+                # automatically dispatched to the worker thread
+                self.context = _ThreadSafeProxy(self.context, self._run_in_cf_thread)
+            else:
+                # No asyncio loop — launch directly on the current thread
+                self._camoufox = Camoufox(headless=self.headless, os=("windows", "macos", "linux"))
+                self.browser   = self._camoufox.__enter__()
+                self.context   = self.browser.new_context()
+                self.context.add_cookies(cookies)
+
+            print("[Browser] Using Camoufox (anti-fingerprint Firefox)")
+            return self
+        except ImportError:
+            pass
+        except Exception as e:
+            # Clean up thread if launch failed
+            if self._cf_stop_event:
+                self._cf_stop_event.set()
+            if self._cf_thread and self._cf_thread.is_alive():
+                self._cf_thread.join(timeout=3)
+            self._cf_thread = self._cf_queue = self._cf_stop_event = None
+            print(f"[Browser] Camoufox failed ({e}), falling back to Playwright")
+
+        # ── Fallback: Playwright Chromium (run in thread to avoid asyncio conflict) ──
+        import threading
+        import concurrent.futures
+
+        def _launch_playwright():
+            from playwright.sync_api import sync_playwright
+            pw = sync_playwright().start()
+            b = pw.chromium.launch(
+                headless=self.headless,
+                args=_BROWSER_DEFAULT_LAUNCH_ARGS,
+            )
+            ua = _pick_ua()
+            ctx = b.new_context(
+                user_agent=ua,
+                viewport={"width": 1920, "height": 1080},
+                locale="en-US",
+                timezone_id="America/New_York",
+                color_scheme="dark",
+                java_script_enabled=True,
+                extra_http_headers={
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "sec-ch-ua": '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                },
+            )
+            return pw, b, ctx
+
+        # Run outside any asyncio loop
+        try:
+            import asyncio
+            asyncio.get_running_loop()
+            # We're inside an asyncio loop — launch in a separate thread
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                self._playwright, self.browser, self.context = ex.submit(_launch_playwright).result()
+        except RuntimeError:
+            # No running loop — safe to launch directly
+            self._playwright, self.browser, self.context = _launch_playwright()
+
+        cookies = _load_hltv_cookies()
+        if not cookies:
+            cookies = [{"name": "cookieConsent", "value": "1",
+                        "domain": ".hltv.org", "path": "/"}]
+        self.context.add_cookies(cookies)
+        self.context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            window.chrome = { runtime: {} };
+        """)
+        try:
+            from playwright_stealth import stealth_sync as _stealth
+            self._stealth_fn = _stealth
+        except ImportError:
+            pass
+        print("[Browser] Using Playwright Chromium (Camoufox not available)")
         return self
 
     def new_page(self):
-        """Convenience: get a fresh page on the shared context."""
+        """Get a fresh page with stealth applied and a random human-like delay."""
+        import random, time
         if self.context is None:
             self.start()
-        return self.context.new_page()
+        page = self.context.new_page()
+        if self._stealth_fn:
+            self._stealth_fn(page)
+        time.sleep(random.uniform(1.5, 4.0))
+        return page
 
     def stop(self) -> None:
-        """Close context, browser, and stop Playwright. Safe to call multiple times."""
-        for closer in (
-            lambda: self.context.close() if self.context else None,
-            lambda: self.browser.close() if self.browser else None,
-            lambda: self._playwright.stop() if self._playwright else None,
-        ):
+        """Close everything. Safe to call multiple times."""
+        if self._cf_thread is not None:
+            # All Camoufox teardown must happen on the worker thread.
+            # Unwrap proxy to get the real underlying context object.
+            _raw_ctx = (object.__getattribute__(self.context, "_obj")
+                        if isinstance(self.context, _ThreadSafeProxy) else self.context)
+            ctx, browser, cf = _raw_ctx, self.browser, self._camoufox
+            def _teardown():
+                for fn in (
+                    lambda: ctx.close()               if ctx     else None,
+                    lambda: browser.close()           if browser else None,
+                    lambda: cf.__exit__(None,None,None) if cf    else None,
+                ):
+                    try: fn()
+                    except Exception: pass
             try:
-                closer()
+                self._run_in_cf_thread(_teardown)
             except Exception:
                 pass
-        self.context = None
-        self.browser = None
-        self._playwright = None
+            # Now signal the worker to exit and wait for it
+            if self._cf_stop_event:
+                self._cf_stop_event.set()
+            if self._cf_thread.is_alive():
+                self._cf_thread.join(timeout=5)
+        else:
+            # No worker thread — close directly
+            for closer in (
+                lambda: self.context.close()               if self.context    else None,
+                lambda: self.browser.close()               if self.browser    else None,
+                lambda: self._camoufox.__exit__(None,None,None) if self._camoufox else None,
+                lambda: self._playwright.stop()            if self._playwright else None,
+            ):
+                try: closer()
+                except Exception: pass
+        self.context        = None
+        self.browser        = None
+        self._camoufox      = None
+        self._playwright    = None
+        self._cf_thread     = None
+        self._cf_queue      = None
+        self._cf_stop_event = None
 
     def __enter__(self) -> "BrowserSession":
         self.start()
@@ -7495,6 +8262,7 @@ class BrowserSession:
         return self.context is not None
 
 
+
 # === WEB SCRAPING (VRS & HLTV) ===
 # =============================================================================
 
@@ -7507,7 +8275,7 @@ def log_scrape_error(source, url, error):
     """Log scraping errors to file for debugging."""
     try:
         from datetime import datetime
-        with open("scrape_errors.log", "a", encoding="utf-8") as f:
+        with open(os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "errors", "scrape_errors.log"), "a", encoding="utf-8") as f:
             f.write(f"[{datetime.now()}] {source} | {url} | {error}\n")
     except Exception:
         pass
@@ -7545,38 +8313,15 @@ def scrape_vrs_points(team_name, match_date=None, context=None):
                     return pts
             return None
 
-        p = None
-        browser = None
-        page = None
         owns_browser = context is None
+        _sess = None
         try:
-            from playwright.sync_api import sync_playwright # pyright: ignore[reportMissingImports]
             if owns_browser:
-                p = sync_playwright().start()
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-extensions",
-                        "--disable-gpu",
-                        "--disable-dev-shm-usage",
-                    ]
-                )
-                context = browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    viewport={"width": 1920, "height": 1080},
-                    locale="en-US",
-                )
+                _sess = BrowserSession()
+                _sess.start()
+                context = _sess.context
             page = context.new_page()
-            
-            page.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-            """)
-            
+
             page.goto(vrs_url, timeout=30000, wait_until="domcontentloaded")
             page.wait_for_selector(".ranked-team", state="attached", timeout=15000)
             page.wait_for_timeout(2000)
@@ -7612,7 +8357,6 @@ def scrape_vrs_points(team_name, match_date=None, context=None):
                 return results;
             }""")
             
-            # FIXED: Store cache with version and timestamp
             _vrs_cache[cache_key] = {
                 'version': VRS_CACHE_VERSION,
                 'timestamp': datetime.now().isoformat(),
@@ -7629,16 +8373,8 @@ def scrape_vrs_points(team_name, match_date=None, context=None):
             try:
                 if page: page.close()
             except: pass
-            if owns_browser:
-                try:
-                    if context: context.close()
-                except: pass
-                try:
-                    if browser: browser.close()
-                except: pass
-                try:
-                    if p: p.stop()
-                except: pass
+            if owns_browser and _sess:
+                _sess.stop()
             
     except Exception as e:
         # FIXED: Log error to file
@@ -7646,16 +8382,125 @@ def scrape_vrs_points(team_name, match_date=None, context=None):
         print(f"  [!] VRS scrape error: {e}")
     return None
 
-def auto_register_team(team_name, match_date=None, teams_dict=None, context=None):
+def _scrape_vrs_with_players(match_date=None, context=None):
+    """
+    Fetch the VRS rankings page and return a dict of:
+        { team_name_lower: { 'pts': float, 'players': [nick, ...] } }
+    Used by _find_vrs_team_by_roster for roster-based matching.
+    """
+    from datetime import timedelta, date as date_cls
+    if match_date:
+        day_before = match_date - timedelta(days=1)
+    else:
+        day_before = date_cls.today()
+
+    vrs_url = (f"https://www.hltv.org/valve-ranking/teams/"
+               f"{day_before.year}/{day_before.strftime('%B').lower()}/{day_before.day}")
+
+    owns_browser = context is None
+    _sess = None
+    try:
+        if owns_browser:
+            _sess = BrowserSession()
+            _sess.start()
+            context = _sess.context
+        page = context.new_page()
+        page.goto(vrs_url, timeout=30000, wait_until="domcontentloaded")
+        page.wait_for_selector(".ranked-team", state="attached", timeout=15000)
+        page.wait_for_timeout(2000)
+
+        rankings = page.evaluate("""() => {
+            const results = {};
+            const entries = document.querySelectorAll('.ranked-team');
+            for (const entry of entries) {
+                if (entry.innerHTML.indexOf('old-roster') !== -1) continue;
+                const ptsEl = entry.querySelector('span.points');
+                if (!ptsEl) continue;
+                const ptsMatch = ptsEl.textContent.trim().match(/\\((\\d+)\\s*Valve\\s*points\\)/);
+                if (!ptsMatch) continue;
+                const pts = parseFloat(ptsMatch[1]);
+                const fullText = entry.textContent.trim();
+                const nameMatch = fullText.match(/#\\d+\\s+([^(]+)\\s*\\(/);
+                if (!nameMatch) continue;
+                const name = nameMatch[1].trim().toLowerCase();
+                // Player nicks live in the always-visible summary row
+                // ('.playersLine .rankingNicknames span'). The full lineup
+                // table ('.lineup-con .nick') is present in the DOM for every
+                // team but stays class="lineup-con hidden" and only gets
+                // populated/expanded for whichever single team the page has
+                // currently opened — so relying on '.nick' (or any
+                // '[class*="nick"]' catch-all, which also matches it) only
+                // works for that one team and silently returns nothing for
+                // everyone else.
+                const playerEls = entry.querySelectorAll('.playersLine .rankingNicknames span');
+                const players = Array.from(playerEls)
+                    .map(el => el.textContent.trim().toLowerCase())
+                    .filter(n => n.length > 0)
+                    .slice(0, 5);
+                if (name && pts) results[name] = { pts, players };
+            }
+            return results;
+        }""")
+        return rankings
+    except Exception as e:
+        print(f"  [!] VRS roster scrape error: {e}")
+        return {}
+    finally:
+        try:
+            if page: page.close()
+        except Exception:
+            pass
+        if owns_browser and _sess:
+            _sess.stop()
+
+
+def _find_vrs_team_by_roster(player_nicks, match_date=None, context=None, min_matches=3):
+    """
+    When a team can't be found by name in VRS, scrape the VRS rankings page
+    and compare player rosters. If a VRS team shares >= min_matches players
+    with player_nicks, return (vrs_team_name, vrs_pts). Otherwise None.
+
+    Parameters:
+    - player_nicks: list of lowercase player nick strings scraped from the match page
+    - match_date:   date object for the match (we use the day-before VRS page)
+    - context:      optional BrowserContext to reuse
+    - min_matches:  minimum overlapping players to count as a match (default 3)
+    """
+    if not player_nicks:
+        return None
+
+    player_set = set(player_nicks)
+    vrs_data = _scrape_vrs_with_players(match_date, context)
+    if not vrs_data:
+        return None
+
+    best_name = None
+    best_pts  = None
+    best_count = 0
+
+    for vrs_name, info in vrs_data.items():
+        vrs_players = set(info.get('players', []))
+        overlap = len(player_set & vrs_players)
+        if overlap >= min_matches and overlap > best_count:
+            best_count = overlap
+            best_name  = vrs_name
+            best_pts   = info['pts']
+
+    if best_name is not None:
+        return best_name, best_pts
+    return None
+
+
+def auto_register_team(team_name, match_date=None, teams_dict=None, context=None, player_nicks=None):
     """
     Look up VRS points for a brand‑new team and register it.
     The function now ALWAYS prints the raw VRS points that were used,
     no matter which source supplied the value.
 
     Parameters:
-    - context: optional Playwright BrowserContext to reuse for the VRS lookup
-               (from BrowserSession). If None, scrape_vrs_points
-               launches its own browser as before.
+    - context:      optional Playwright BrowserContext to reuse for the VRS lookup
+    - player_nicks: optional list of player nick strings scraped from the match page,
+                    used as a fallback when name lookup fails (roster matching)
     """
     # ------------------------------------------------------------------
     # 1️⃣  Try the *match‑page forecast* first – this is the most accurate
@@ -7676,13 +8521,25 @@ def auto_register_team(team_name, match_date=None, teams_dict=None, context=None
         vrs = scrape_vrs_points(team_name, match_date, context=context)
         source = "official VRS page"
 
-        # Store the result in the *session* cache so that subsequent teams on
-        # the same day reuse the same HTTP request.
         if vrs is not None:
             _vrs_session_cache.setdefault(cache_key, {})[team_name.lower()] = vrs
 
     # ------------------------------------------------------------------
-    # 3️⃣  No VRS found — register as provisional at 400 CSRS
+    # 3️⃣  Name lookup failed — try roster matching by player nicks
+    # ------------------------------------------------------------------
+    if vrs is None and player_nicks:
+        print(f"  [VRS] Name lookup failed for '{team_name}' — trying roster match ({len(player_nicks)} players)…")
+        result = _find_vrs_team_by_roster(player_nicks, match_date, context)
+        if result:
+            vrs_name, vrs = result
+            source = f"roster match (VRS name: '{vrs_name}')"
+            print(f"  [VRS] Roster match found: '{vrs_name}' → '{team_name}' ({len(player_nicks)} players checked)")
+            _vrs_session_cache.setdefault(cache_key, {})[team_name.lower()] = vrs
+        else:
+            print(f"  [VRS] Roster match failed for '{team_name}' — no VRS team shares ≥3 players")
+
+    # ------------------------------------------------------------------
+    # 4️⃣  No VRS found — register as provisional at 400 CSRS
     # ------------------------------------------------------------------
     if vrs is None:
         csrs = PROVISIONAL_STARTING_RATING
@@ -7696,15 +8553,12 @@ def auto_register_team(team_name, match_date=None, teams_dict=None, context=None
         return True
 
     # ------------------------------------------------------------------
-    # 4️⃣  Convert VRS → CSRS and store the new team
+    # 5️⃣  Convert VRS → CSRS and store the new team
     # ------------------------------------------------------------------
     csrs = vrs / 2
     if teams_dict is not None:
         teams_dict[team_name] = csrs
 
-    # ------------------------------------------------------------------
-    # 5️⃣  **Unified, always‑shown output**
-    # ------------------------------------------------------------------
     print(
         f"  >>> Auto‑registered '{team_name}': "
         f"{int(vrs)} VRS ({source}) → {int(csrs)} CSRS Elo"
@@ -7784,53 +8638,19 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
     - Tuple of (t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final)
     - Returns None if scraping fails
     """
-    p = None
-    browser = None
-    page = None
     owns_browser = context is None
-    
+    _sess = None
+
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout # type: ignore
-        
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
         if owns_browser:
             print("  Starting browser...")
-            p = sync_playwright().start()
-            
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-extensions",
-                    "--disable-gpu",
-                    "--disable-dev-shm-usage",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                ]
-            )
-            
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                viewport={"width": 1920, "height": 1080},
-                locale="en-US",
-                timezone_id="America/New_York",
-            )
-            
-            context.add_cookies([{
-                "name": "cookieConsent",
-                "value": "1",
-                "domain": ".hltv.org",
-                "path": "/"
-            }])
-        
+            _sess = BrowserSession()
+            _sess.start()
+            context = _sess.context
+
         page = context.new_page()
-        
-        page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-        """)
         
         print("  Connecting to HLTV...")
         page.goto(url, timeout=30000, wait_until="domcontentloaded")
@@ -7965,6 +8785,32 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
                 result.is_bo1 = bodyText.includes('best of 1');
             }
 
+            // === MATCH STAGE ===
+            // Try the dedicated stage element first, then fall back to veto text
+            const stageEl = document.querySelector('.matchpage-versus-head-stagename, .stage-name, .match-stage');
+            const stageText = stageEl ? stageEl.textContent.trim() : vetoTextRaw;
+            const stageLower = stageText.toLowerCase();
+            const STAGES = [
+                'grand final',
+                'upper bracket final',
+                'lower bracket final',
+                'consolidation final',
+                '3rd place decider',
+                'upper bracket semi-final',
+                'lower bracket semi-final',
+                'semi-final',
+                'upper bracket quarter-final',
+                'lower bracket quarter-final',
+                'quarter-final',
+            ];
+            result.match_stage = null;
+            for (const s of STAGES) {
+                if (stageLower.includes(s)) {
+                    result.match_stage = s.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                    break;
+                }
+            }
+
             // === ENVIRONMENT DETECTION ===
             // HLTV writes "Best of X (LAN)" or "Best of X (Online)" at the start of the veto text
             const vetoLower = vetoTextRaw.toLowerCase();
@@ -8020,6 +8866,42 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
                 }
             });
 
+            // === MATCH COMPLETION CHECK ===
+            // HLTV shows a .countdown element on the match page. For finished
+            // matches it reads "Match over". For live/upcoming matches it shows
+            // a live indicator or a countdown timer instead. We use this as the
+            // authoritative signal that a match has actually been played —
+            // results-listing pages can occasionally include in-progress
+            // matches before HLTV finalises them, so this is a second check
+            // done on the match page itself (a different page than the results
+            // listing) to be certain.
+            const countdownEl = document.querySelector('.countdown');
+            result.countdown_text = countdownEl ? countdownEl.textContent.trim() : null;
+            result.match_over = result.countdown_text
+                ? result.countdown_text.toLowerCase().includes('match over')
+                : null;  // null = no countdown element found at all (treat cautiously)
+
+            // Also check for the live-match indicator HLTV uses while a match
+            // is actively being played
+            const liveEl = document.querySelector('.matchpage-live-bar, .live-match-status, .countdown.live');
+            result.is_live = !!liveEl;
+
+            // === PLAYER LINEUPS (for roster-based VRS matching) ===
+            // Scrape up to 5 player nicks per team from the lineup section.
+            // Used as a fallback when a team can't be found by name in VRS.
+            try {
+                result.lineups = [[], []];
+                const lineupBoxes = document.querySelectorAll('.lineup');
+                lineupBoxes.forEach((box, i) => {
+                    if (i >= 2) return;
+                    const nicks = Array.from(box.querySelectorAll('.player-nick, .nick, [class*="nick"]'))
+                        .map(el => el.textContent.trim().toLowerCase())
+                        .filter(n => n.length > 0)
+                        .slice(0, 5);
+                    result.lineups[i] = nicks;
+                });
+            } catch(e) { result.lineups = [[], []]; }
+
             return result;
         }""")
         
@@ -8037,7 +8919,30 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
             log_scrape_error("Match", url, f"Could not find 2 scores. Found: {data.get('scores', [])}")
             print_error("Could not find match scores on the page.")
             return None
-        
+
+        # === REJECT UNFINISHED MATCHES ===
+        # Only "Match over" on the .countdown element confirms the match has
+        # actually concluded. is_live or any other countdown text (a running
+        # timer, "LIVE", etc.) means the match isn't finished yet — scores
+        # shown could still change, so we must not import it.
+        countdown_text = data.get('countdown_text')
+        match_over     = data.get('match_over')
+        is_live        = data.get('is_live', False)
+
+        if is_live or match_over is False:
+            reason = f"countdown='{countdown_text}', is_live={is_live}"
+            log_scrape_error("Match", url, f"Skipped — match not finished ({reason})")
+            _batch_log(f"  [SKIP] Not finished — {url} ({reason})")
+            print_error(f"Match not finished yet, skipping ({reason})")
+            return None
+
+        if match_over is None:
+            # No countdown element found at all — log it but don't block the
+            # import outright, since older/archived matches sometimes don't
+            # render this element. We just want visibility into when this
+            # happens for debugging.
+            _batch_log(f"  [WARN] No countdown element found — {url} (importing anyway)")
+
         t1_name, t2_name = data['teams'][0], data['teams'][1]
         
         try:
@@ -8067,6 +8972,8 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
         vrs_before = data.get('vrs_before', {})
         forfeit_team = data.get('forfeit_team', None)  # 'team1', 'team2', or None
         match_env = data.get('match_env', None)  # 'LAN', 'ONLINE', or None
+        match_stage = data.get('match_stage') or False  # False = scraped but no stage found; None = never attempted
+        lineups = data.get('lineups', [[], []])  # [[t1_player_nicks], [t2_player_nicks]]
         
         print_info(f"Successfully scraped: {t1_name} vs {t2_name}")
         if vrs_before:
@@ -8074,7 +8981,18 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
         if forfeit_team:
             forfeit_name = t1_name if forfeit_team == 'team1' else t2_name
             print_info(f"  [!] Forfeit detected: {forfeit_name} forfeited the match")
-        return t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env
+
+        # Debug log: date/time/event/completion info for every successfully
+        # scraped match — makes it easy to audit a batch_import.log afterwards
+        # for date ordering issues or matches that shouldn't have been there.
+        _batch_log(
+            f"  [MATCH] {t1_name} {s1}-{s2} {t2_name} | "
+            f"date={match_date} | event='{event_name}' | "
+            f"countdown='{countdown_text}' | match_over={match_over} | "
+            f"url={url}"
+        )
+
+        return t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env, match_stage, lineups
         
     except PlaywrightTimeout:
         error_msg = f"Page load timeout for URL: {url}"
@@ -8122,29 +9040,11 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
         print("  4. Check csrs.log for detailed error information")
         return None
     finally:
-        # Clean up resources. If we reused a shared context (owns_browser=False),
-        # only close the page we opened — leave context/browser for the caller.
         try:
-            if page:
-                page.close()
-        except:
-            pass
-        if owns_browser:
-            try:
-                if context:
-                    context.close()
-            except:
-                pass
-            try:
-                if browser:
-                    browser.close()
-            except:
-                pass
-            try:
-                if p:
-                    p.stop()
-            except:
-                pass
+            if page: page.close()
+        except: pass
+        if owns_browser and _sess:
+            _sess.stop()
 
 def scrape_event_tier(event_href: str, event_name: str = '', context=None) -> Tuple[str, dict]:
     """
@@ -8167,32 +9067,18 @@ def scrape_event_tier(event_href: str, event_name: str = '', context=None) -> Tu
         D   : >= 3 VRS Top 30 teams  OR  >= 20% of ranked teams are Top 30
         E   : At least 1 ranked team present but below D threshold (catch-all)
     """
-    p = None
-    browser = None
-    page = None
     owns_browser = context is None
+    _sess = None
+    page = None
 
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout # type: ignore
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
         if owns_browser:
             print("  Scraping event page for tier detection...")
-            p = sync_playwright().start()
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox", "--disable-setuid-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-gpu", "--disable-dev-shm-usage",
-                ]
-            )
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                viewport={"width": 1920, "height": 1080},
-                locale="en-US",
-                timezone_id="America/New_York",
-            )
-            context.add_cookies([{"name": "cookieConsent", "value": "1", "domain": ".hltv.org", "path": "/"}])
+            _sess = BrowserSession()
+            _sess.start()
+            context = _sess.context
 
         page = context.new_page()
         page.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
@@ -8248,16 +9134,7 @@ def scrape_event_tier(event_href: str, event_name: str = '', context=None) -> Tu
                 return 'S+', details
             return 'S', details
 
-        # Minimum 60% of teams must be VRS ranked for tier detection to be valid
         pct_ranked = (ranked_count / total_teams) if total_teams > 0 else 0.0
-        if pct_ranked < 0.60:
-            details = {
-                'total_teams': total_teams,
-                'ranked_count': ranked_count,
-                'pct_ranked': pct_ranked,
-                'insufficient_vrs': True,
-            }
-            return None, details
 
         top10 = sum(1 for r in vrs_ranks if r <= 10)
         top20 = sum(1 for r in vrs_ranks if r <= 20)
@@ -8280,19 +9157,18 @@ def scrape_event_tier(event_href: str, event_name: str = '', context=None) -> Tu
             'vrs_ranks': sorted(vrs_ranks),
         }
 
-        # Apply tier rules (S+/S are manual-only — never auto-detected)
+        # Apply tier rules based on VRS field composition.
+        # Run on whatever ranked teams are present — E catches small/regional events.
         if top10 >= 6 or pct_top10 >= 0.75:
             tier = 'A'
         elif top20 >= 8 or pct_top10 >= 0.50:
             tier = 'B'
-        elif top20 >= 4 or pct_top20 >= 0.50:
+        elif top20 >= 2 or pct_top20 >= 0.25:
             tier = 'C'
         elif top30 >= 3 or pct_top30 >= 0.20:
             tier = 'D'
-        elif ranked_count >= 1:
-            tier = 'E'
         else:
-            tier = None  # No VRS-ranked teams at all — should be caught by 60% check above
+            tier = 'E'  # Doesn't meet D — catches all below-D and zero-ranked events
 
         return tier, details
 
@@ -8306,15 +9182,9 @@ def scrape_event_tier(event_href: str, event_name: str = '', context=None) -> Tu
     finally:
         try:
             if page: page.close()
-        except Exception:
-            pass
-        if owns_browser:
-            try:
-                if context: context.close()
-                if browser: browser.close()
-                if p: p.stop()
-            except Exception:
-                pass
+        except Exception: pass
+        if owns_browser and _sess:
+            _sess.stop()
 
 
 def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, Any]], find_team_func, save_func, 
@@ -8329,6 +9199,7 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
                each scrape launches and tears down its own browser as before.
     """
     import time
+    global total_imports
 
     while True:
         import_counter = 0
@@ -8368,7 +9239,7 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
             continue
 
         scrape_time_ms = int((time.time() - scrape_start) * 1000)
-        t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env = match_data
+        t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env, match_stage, lineups = match_data
 
         if not match_date or match_date == 'N/A':
             print("  [WARN] Could not automatically determine match date from page.")
@@ -8405,8 +9276,10 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
         print(f"\n  Scraped in {scrape_time_ms}ms:")
         if match_date and match_date != 'N/A':
             print(f"  Date: {match_date}")
-        if is_grand_final:
+        if is_grand_final and not match_stage:
             print("  [GRAND FINAL]")
+        if match_stage:
+            print(f"  [{match_stage}]")
         print(f"  Team 1: {t1_name} ({s1} maps)")
         print(f"  Team 2: {t2_name} ({s2} maps)")
         print(f"  Result: {t1_name} {s1} - {s2} {t2_name}")
@@ -8427,7 +9300,8 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
                     teams_dict[name] = csrs
                     print(f"  >>> Auto-registered '{name}': {int(page_vrs)} VRS (match page) -> {int(csrs)} CSRS Elo")
                 else:
-                    ok = auto_register_team(name, match_dt, teams_dict, context=context)
+                    player_nicks = lineups[0] if name == t1_name else lineups[1]
+                    ok = auto_register_team(name, match_dt, teams_dict, context=context, player_nicks=player_nicks)
                     if not ok:
                         print(f">>> Skipping match - '{name}' could not be registered.")
                         registration_failed = True
@@ -8501,14 +9375,6 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
                 if auto_tier in ('S+', 'S'):
                     print(f"  (Detected via event name{'/venue' if auto_tier == 'S+' else ''}: '{event_name}')")
                 tier_raw = auto_tier
-            elif auto_tier is None and details.get('insufficient_vrs'):
-                # Below 60% VRS ranked — cannot assign tier
-                print(f"\n  --- Event Field Analysis ---")
-                print(f"  Teams attending : {details.get('total_teams', '?')}")
-                print(f"  VRS ranked      : {details.get('ranked_count', '?')} ({details.get('pct_ranked', 0)*100:.0f}%)")
-                print(f"\n  [!] Only {details.get('pct_ranked', 0)*100:.0f}% of teams are VRS ranked (minimum 60% required).")
-                print(f"  This event cannot be assigned a tier. Match will be skipped.")
-                continue
             else:
                 # Scrape failed entirely — fall back to manual
                 print(f"  [!] Could not auto-detect tier. Please enter manually.")
@@ -8542,8 +9408,17 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
 
         is_gf = is_grand_final
 
-        # Build depreciated baseline — use match_dt for precise same-day ordering
-        today_date = datetime.now().date()
+        # Build depreciated baseline — use match_dt for precise same-day ordering.
+        # This must use the match's own date as the depreciation reference point,
+        # NOT real wall-clock "now" — otherwise, during a backfill of historical
+        # matches, every team gets depreciated based on (today - their last
+        # historical match date), which is a huge, almost-uniform gap unrelated
+        # to the actual point-in-time standings being reconstructed. That made
+        # this ranking snapshot diverge from the actual stored ratings (which
+        # correctly depreciate relative to match_dt via apply_depreciation_to_rating
+        # below), producing rank orderings that contradicted the printed point
+        # totals.
+        as_of_date = match_dt.date() if match_dt else datetime.now().date()
         dep_base = {}
         date_index = build_match_date_index(history)
         for name, pts in teams_dict.items():
@@ -8551,7 +9426,7 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
                 continue
             last = get_team_last_match_date_before(name, before_date=match_dt, index=date_index) if match_dt else get_team_last_match_date_before(name, index=date_index)
             if last:
-                d = (today_date - last.date()).days
+                d = (as_of_date - last.date()).days
                 dep_base[name] = calculate_depreciation(pts, d, name) if d > DEPRECIATION_THRESHOLD else pts
             else:
                 dep_base[name] = pts
@@ -8636,19 +9511,25 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
         t2_rank_shift = 0
         
         if calculate_points_func is not None:
+            # See matching fix/comment in the batch-import path: dep_base only
+            # contains non-provisional teams, so dep_new must apply that same
+            # rule to t1/t2 instead of force-inserting them unconditionally —
+            # otherwise a still-provisional team gets ranked against the full
+            # established pool while other provisional teams stay excluded,
+            # and old_order.index(t1) raises ValueError outright when t1 was
+            # provisional before this match.
             dep_new = dict(dep_base)
-            dep_new[t1] = new_p1
-            dep_new[t2] = new_p2
+            if t1 in dep_new or not is_provisional(t1):
+                dep_new[t1] = new_p1
+            if t2 in dep_new or not is_provisional(t2):
+                dep_new[t2] = new_p2
             new_order = sorted(dep_new.keys(), key=lambda x: dep_new[x], reverse=True)
-    
-            t1_old_rank = old_order.index(t1) + 1
-            t1_new_rank = new_order.index(t1) + 1
-            t1_rank_shift = t1_old_rank - t1_new_rank
-    
-            t2_old_rank = old_order.index(t2) + 1
-            t2_new_rank = new_order.index(t2) + 1
-            t2_rank_shift = t2_old_rank - t2_new_rank
-    
+
+            if t1 in old_order and t1 in new_order:
+                t1_rank_shift = (old_order.index(t1) + 1) - (new_order.index(t1) + 1)
+            if t2 in old_order and t2 in new_order:
+                t2_rank_shift = (old_order.index(t2) + 1) - (new_order.index(t2) + 1)
+
             for name, pts_before, pts_after, rank_shift in [
                 (t1, p1_before, new_p1, t1_rank_shift),
                 (t2, p2_before, new_p2, t2_rank_shift)
@@ -8660,13 +9541,15 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
                     rank_sign = f"{rank_shift} ↓"
                 else:
                     rank_sign = "─"
-                print(f"  {name}: {int(pts_before)} -> {int(pts_after)} ({pts_sign}{int(pts_after - pts_before)}) | Rank: #{new_order.index(name) + 1} ({rank_sign})")
+                rank_label = f"#{new_order.index(name) + 1}" if name in new_order else "provisional (unranked)"
+                print(f"  {name}: {int(pts_before)} -> {int(pts_after)} ({pts_sign}{int(pts_after - pts_before)}) | Rank: {rank_label} ({rank_sign})")
 
         entry = {
             "date": entry_date,
             "tier": tier_raw,
             "env": env_raw,
             "grand_final": is_gf,
+            "match_stage": match_stage,
             "source": "HLTV Import",
             "url": url_raw,
             "t1": {"name": t1, "score": s1, "pts_before": p1_before, "pts_after": new_p1, "rank_shift": t1_rank_shift},
@@ -8690,13 +9573,14 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
             update_peak_func(t2, teams_dict.get(t2, 1000), entry_date)
 
         mark_unsaved()
+        total_imports += 1
         import_counter += 1
         if import_counter % 5 == 0:
             save_all(silent=True)
 
     _vrs_session_cache.clear()
 
-BATCH_LOG_FILE = "batch_import.log"
+BATCH_LOG_FILE = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "logs", "normal", "batch_import.log")
 
 def _batch_log(msg: str) -> None:
     """Write a timestamped line to the batch import log and stdout."""
@@ -8712,107 +9596,349 @@ def _batch_log(msg: str) -> None:
 HLTV_RESULTS_PAGE_SIZE = 100   # confirmed live: HLTV's own "1 - 100 of N" counter on /results
 HLTV_RESULTS_MAX_PAGES = 500   # circuit breaker (50,000 matches) in case the total-count parse ever fails
 
+# ── Month/date parsing helpers ────────────────────────────────────────────────
 
-def scrape_hltv_results(start_date: str, end_date: str = None, context=None) -> List[str]:
+_MONTH_MAP = {
+    'Jan':1,'Feb':2,'Mar':3,'Apr':4,'May':5,'Jun':6,
+    'Jul':7,'Aug':8,'Sep':9,'Oct':10,'Nov':11,'Dec':12,
+    'January':1,'February':2,'March':3,'April':4,'May':5,'June':6,
+    'July':7,'August':8,'September':9,'October':10,'November':11,'December':12,
+}
+
+def _parse_hltv_end_date(date_str: str, year: int = 2026) -> str | None:
     """
-    Walk HLTV's /results listing for every match URL between start_date and
-    end_date (inclusive), across every tier HLTV lists (no tier filtering —
-    that happens later, per-match, the same way interactive import already
-    auto-detects tier).
-
-    Parameters:
-    - start_date / end_date: 'YYYY-MM-DD' strings. end_date defaults to today.
-    - context: optional Playwright BrowserContext to reuse (from BrowserSession).
-               If None, launches and tears down its own browser.
-
-    HLTV serves this as /results?startDate=...&endDate=...&offset=N, 100
-    results per page, and prints its own "X - Y of Z" counter on the page —
-    we parse that to know when to stop instead of guessing a page count.
-
-    Returns a de-duplicated, order-preserved list of full match URLs
-    (https://www.hltv.org/matches/...).
+    Parse HLTV date range strings like 'Jun 11th-Jun 21st' or 'Jun 25th-Jun 26th'
+    and return the END date as 'YYYY-MM-DD'.
     """
-    if not end_date:
-        end_date = datetime.now().strftime("%Y-%m-%d")
+    parts = date_str.strip().split('-')
+    end_part = parts[-1].strip() if len(parts) > 1 else parts[0].strip()
+    m = re.match(r'(\w+)\s*(\d+)', end_part)
+    if m:
+        month = _MONTH_MAP.get(m.group(1), 0)
+        day   = int(re.sub(r'\D', '', m.group(2)))
+        if month:
+            return f"{year}-{month:02d}-{day:02d}"
+    return None
 
-    owns_browser = context is None
-    p = None
-    browser = None
-    page = None
-    all_urls: List[str] = []
-    seen = set()
+def _parse_hltv_month_year(text: str):
+    """Parse 'June 20261 - 50 of 8019' -> (2026, 6)"""
+    m = re.match(r'(\w+)\s+(\d{4})', text.strip())
+    if m:
+        month = _MONTH_MAP.get(m.group(1), 0)
+        year  = int(m.group(2))
+        return year, month
+    return None, None
+
+
+def scrape_events_archive(
+    start_date: str,
+    cookies: list | None = None,
+    event_index_file: str = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "data", "event_index.json"),
+) -> list[dict]:
+    """
+    Walk /events/archive?offset=0,50,100,... using Camoufox + real cookies,
+    parsing event IDs and end dates. Stops when all events on a page are older
+    than start_date. Caches results in event_index_file so repeat calls are fast.
+
+    Returns list of dicts: [{id, name, end_date}, ...]
+    """
+    import json as _json
+    from bs4 import BeautifulSoup
+
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+
+    # Load existing index
+    index: dict[str, dict] = {}
+    if os.path.exists(event_index_file):
+        try:
+            with open(event_index_file) as f:
+                index = {str(e["id"]): e for e in _json.load(f)}
+        except Exception:
+            index = {}
+
+    if not cookies:
+        cookies = _load_hltv_cookies()
+
+    pw_cookies = [
+        {"name": c.get("name",""), "value": c.get("value",""),
+         "domain": c.get("domain",".hltv.org"), "path": c.get("path","/")}
+        for c in cookies if c.get("name") and c.get("value")
+    ]
+
+    newly_found = []
+    offset = 0
+    stop_early = False
 
     try:
-        from playwright.sync_api import sync_playwright # type: ignore
+        from camoufox.sync_api import Camoufox
+    except ImportError:
+        _batch_log("  [ERROR] Camoufox not installed — cannot scrape events archive")
+        return list(index.values())
 
-        if owns_browser:
-            p = sync_playwright().start()
-            browser = p.chromium.launch(headless=True, args=_BROWSER_DEFAULT_LAUNCH_ARGS)
-            context = browser.new_context(
-                user_agent=_BROWSER_DEFAULT_USER_AGENT,
-                viewport={"width": 1920, "height": 1080},
-                locale="en-US",
-                timezone_id="America/New_York",
-            )
-            context.add_cookies([{
-                "name": "cookieConsent", "value": "1", "domain": ".hltv.org", "path": "/",
-            }])
-
+    with Camoufox(headless=True, os=("windows","macos","linux")) as browser:
+        context = browser.new_context()
+        if pw_cookies:
+            context.add_cookies(pw_cookies)
         page = context.new_page()
-        page.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-        )
 
-        offset = 0
-        total = None
-        _batch_log(f"  Scraping HLTV results {start_date} -> {end_date} ...")
+        # Warm up the session via homepage first — CF is much more likely to
+        # pass subsequent requests after seeing a normal landing page visit
+        _batch_log("  Warming up session via hltv.org homepage...")
+        try:
+            page.goto("https://www.hltv.org", timeout=30000, wait_until="domcontentloaded")
+            page.wait_for_timeout(4000)
+        except Exception:
+            pass
+
+        while not stop_early:
+            url = f"https://www.hltv.org/events/archive?offset={offset}"
+            _batch_log(f"  Scraping events archive offset={offset}...")
+            try:
+                page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+                html = page.content()
+            except Exception as e:
+                _batch_log(f"  [WARN] Archive page failed at offset={offset}: {e}")
+                break
+
+            if "Just a moment" in html or "challenge-platform" in html:
+                _batch_log("  [WARN] Cloudflare challenge on archive page — stopping")
+                break
+
+            soup = BeautifulSoup(html, "html.parser")
+            month_blocks = soup.find_all("div", class_="events-month")
+
+            if not month_blocks:
+                _batch_log("  No events-month blocks found — stopping")
+                break
+
+            page_had_events = False
+            for block in month_blocks:
+                headline = block.find(class_="standard-headline")
+                if not headline:
+                    continue
+                year, month_num = _parse_hltv_month_year(headline.get_text(strip=True))
+                if not year:
+                    continue
+
+                for event_link in block.find_all("a", href=re.compile(r'/events/\d+/')):
+                    href = event_link.get("href", "")
+                    id_m = re.search(r'/events/(\d+)/', href)
+                    if not id_m:
+                        continue
+                    event_id = int(id_m.group(1))
+                    page_had_events = True
+
+                    # Already indexed
+                    if str(event_id) in index:
+                        evt = index[str(event_id)]
+                        if evt.get("end_date") and evt["end_date"] < start_date:
+                            stop_early = True
+                        continue
+
+                    name_el = event_link.find(class_="text-ellipsis")
+                    name = name_el.get_text(strip=True) if name_el else href
+
+                    # Parse end date from col-desc
+                    end_date = None
+                    for d in event_link.find_all(class_="col-desc"):
+                        txt = d.get_text(strip=True)
+                        if re.search(r'\w{3}\s*\d+.*-.*\w{3}\s*\d+', txt):
+                            end_date = _parse_hltv_end_date(txt, year)
+                            break
+
+                    evt = {"id": event_id, "name": name, "end_date": end_date}
+                    index[str(event_id)] = evt
+                    newly_found.append(evt)
+
+                    # Stop if this event ended before our target start
+                    if end_date and end_date < start_date:
+                        stop_early = True
+
+            if not page_had_events:
+                break
+
+            offset += 50
+            import time as _time; _time.sleep(2)
+
+        page.close()
+
+    # Save updated index
+    try:
+        with open(event_index_file, "w") as f:
+            _json.dump(list(index.values()), f, indent=2)
+        _batch_log(f"  Event index saved: {len(index)} total events")
+    except Exception as e:
+        _batch_log(f"  [WARN] Could not save event index: {e}")
+
+    # Return all events ending on or after start_date
+    result = [
+        e for e in index.values()
+        if e.get("end_date") and e["end_date"] >= start_date
+    ]
+    if result:
+        dates = sorted(e["end_date"] for e in result)
+        _batch_log(
+            f"  [EVENT INDEX] {len(result)} events in range | "
+            f"earliest_end={dates[0]} | latest_end={dates[-1]}"
+        )
+    return result
+
+
+def scrape_active_events(cookies: list | None = None) -> list[dict]:
+    """
+    Scrape /events to get currently active/upcoming event IDs.
+    Returns list of dicts: [{id, name}, ...]
+    """
+    import json as _json
+    from bs4 import BeautifulSoup
+
+    if not cookies:
+        cookies = _load_hltv_cookies()
+
+    pw_cookies = [
+        {"name": c.get("name",""), "value": c.get("value",""),
+         "domain": c.get("domain",".hltv.org"), "path": c.get("path","/")}
+        for c in cookies if c.get("name") and c.get("value")
+    ]
+
+    events = []
+    try:
+        from camoufox.sync_api import Camoufox
+        with Camoufox(headless=True, os=("windows","macos","linux")) as browser:
+            context = browser.new_context()
+            if pw_cookies:
+                context.add_cookies(pw_cookies)
+            page = context.new_page()
+            # Warm up session
+            try:
+                page.goto("https://www.hltv.org", timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(4000)
+            except Exception:
+                pass
+            page.goto("https://www.hltv.org/events", timeout=30000, wait_until="domcontentloaded")
+            page.wait_for_timeout(3000)
+            html = page.content()
+            page.close()
+
+        if "Just a moment" in html or "challenge-platform" in html:
+            _batch_log("  [WARN] CF challenge on /events — no active events scraped")
+            return events
+
+        soup = BeautifulSoup(html, "html.parser")
+        for event_link in soup.find_all("a", href=re.compile(r'/events/\d+/')):
+            href = event_link.get("href","")
+            id_m = re.search(r'/events/(\d+)/', href)
+            if not id_m:
+                continue
+            event_id = int(id_m.group(1))
+            name_el = event_link.find(class_="text-ellipsis")
+            name = name_el.get_text(strip=True) if name_el else href
+            if not any(e["id"] == event_id for e in events):
+                events.append({"id": event_id, "name": name})
+
+    except ImportError:
+        _batch_log("  [WARN] Camoufox not installed — cannot scrape active events")
+    except Exception as e:
+        _batch_log(f"  [WARN] Active events scrape failed: {e}")
+
+    return events
+
+
+def scrape_hltv_results_by_event(event_id: int, cookies: list | None = None, page=None) -> list[str]:
+    """
+    Scrape /results?event=<id> for all match URLs for a given event.
+    Uses Camoufox (which bypasses CF with real cookies) for the listing page.
+    Returns de-duplicated list of full match URLs, oldest-first.
+
+    Pass an existing Camoufox page object to reuse a browser session across
+    multiple events (avoids repeated browser launches and warm-ups).
+    """
+    import time as _time, random as _random
+    from bs4 import BeautifulSoup
+
+    if not cookies:
+        cookies = _load_hltv_cookies()
+
+    pw_cookies = [
+        {"name": c.get("name",""), "value": c.get("value",""),
+         "domain": c.get("domain",".hltv.org"), "path": c.get("path","/")}
+        for c in cookies if c.get("name") and c.get("value")
+    ]
+
+    all_urls: list[str] = []
+    seen: set[str] = set()
+
+    owns_browser = page is None
+
+    try:
+        from camoufox.sync_api import Camoufox
+    except ImportError:
+        _batch_log("  [ERROR] Camoufox not installed.")
+        return all_urls
+
+    base_url = f"https://www.hltv.org/results?event={event_id}"
+    offset = 0
+    total  = None
+
+    try:
+        if owns_browser:
+            _browser_ctx = Camoufox(headless=_CAMOUFOX_HEADLESS, os=("windows","macos","linux"))
+            browser = _browser_ctx.__enter__()
+            context = browser.new_context()
+            if pw_cookies:
+                context.add_cookies(pw_cookies)
+            page = context.new_page()
+            # Warm up via homepage
+            try:
+                page.goto("https://www.hltv.org", timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+            except Exception:
+                pass
 
         while True:
-            if offset // HLTV_RESULTS_PAGE_SIZE >= HLTV_RESULTS_MAX_PAGES:
-                _batch_log(f"  [WARN] Hit page safety cap ({HLTV_RESULTS_MAX_PAGES} pages) — stopping early.")
-                break
-
-            list_url = f"https://www.hltv.org/results?startDate={start_date}&endDate={end_date}&offset={offset}"
+            url = base_url if offset == 0 else f"{base_url}&offset={offset}"
             try:
-                page.goto(list_url, timeout=30000, wait_until="domcontentloaded")
-                page.wait_for_selector("a[href*='/matches/']", state="attached", timeout=15000)
-                page.wait_for_timeout(1200)
+                page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(2000)
             except Exception as e:
-                _batch_log(f"  [WARN] Page load failed at offset {offset}: {e}")
+                _batch_log(f"  [WARN] Event {event_id} page failed at offset {offset}: {e}")
                 break
 
-            data = page.evaluate(r"""() => {
-                const out = { hrefs: [], pagination_text: null };
-                document.querySelectorAll('a[href*="/matches/"]').forEach(a => {
-                    const href = a.getAttribute('href');
-                    if (href && /^\/matches\/\d+\//.test(href)) {
-                        out.hrefs.push(href);
-                    }
-                });
-                // HLTV's own counter reads like "1 - 100 of 3482"
-                const bodyText = document.body.innerText || '';
-                const m = bodyText.match(/(\d+)\s*-\s*(\d+)\s*of\s*(\d+)/);
-                if (m) out.pagination_text = m[0];
-                return out;
-            }""")
+            html = page.content()
 
-            hrefs = data.get("hrefs", [])
-            new_count = 0
-            for href in hrefs:
-                full_url = "https://www.hltv.org" + href
+            if "Just a moment" in html or "challenge-platform" in html:
+                _batch_log(f"  [WARN] CF challenge on event {event_id} results — stopping")
+                break
+
+            soup = BeautifulSoup(html, "html.parser")
+
+            if total is None:
+                body_text = soup.get_text()
+                m = re.search(r'(\d+)\s*-\s*(\d+)\s*of\s*(\d+)', body_text)
+                if m:
+                    total = int(m.group(3))
+
+            # IMPORTANT: HLTV's /results page (including ?event=<id>) also
+            # renders a "RECENT ACTIVITY" sidebar widget further down the
+            # page that links to /matches/<id>/... URLs for unrelated,
+            # recently-played matches — not scoped to this event at all.
+            # Searching the whole page picks those up too, which is what
+            # caused unrelated events' matches to bleed into an event's
+            # scraped URL list. Scoping to div.results excludes the sidebar.
+            results_container = soup.find("div", class_="results")
+            search_root = results_container if results_container is not None else soup
+            if results_container is None:
+                _batch_log(f"  [WARN] event {event_id}: could not find div.results — "
+                           f"falling back to whole-page search, results may include sidebar links")
+
+            hrefs = []
+            for a in search_root.find_all("a", href=re.compile(r'^/matches/\d+/')):
+                full_url = "https://www.hltv.org" + a.get("href","")
                 if full_url not in seen:
                     seen.add(full_url)
                     all_urls.append(full_url)
-                    new_count += 1
-
-            if total is None and data.get("pagination_text"):
-                try:
-                    total = int(data["pagination_text"].split("of")[-1].strip())
-                    _batch_log(f"  HLTV reports {total} matches in this range.")
-                except Exception:
-                    total = None
-
-            _batch_log(f"  Offset {offset}: {len(hrefs)} links on page, {new_count} new (collected so far: {len(all_urls)})")
+                    hrefs.append(full_url)
 
             if not hrefs:
                 break
@@ -8820,29 +9946,171 @@ def scrape_hltv_results(start_date: str, end_date: str = None, context=None) -> 
                 break
 
             offset += HLTV_RESULTS_PAGE_SIZE
-            page.wait_for_timeout(800)  # be polite between page loads
+            _time.sleep(_random.uniform(1.0, 2.5))
 
-    except Exception as e:
-        log_scrape_error("scrape_hltv_results", f"{start_date}->{end_date}", str(e))
-        _batch_log(f"  [ERROR] scrape_hltv_results failed: {e}")
     finally:
-        try:
-            if page:
-                page.close()
-        except Exception:
-            pass
         if owns_browser:
-            for closer in (
-                lambda: context.close() if context else None,
-                lambda: browser.close() if browser else None,
-                lambda: p.stop() if p else None,
-            ):
-                try:
-                    closer()
-                except Exception:
-                    pass
+            try: page.close()
+            except: pass
+            try: _browser_ctx.__exit__(None, None, None)
+            except: pass
+
+    # HLTV results pages are newest-first. Reverse so we import
+    # chronologically oldest-first — critical for correct Elo calculation.
+    ordered = list(reversed(all_urls))
+
+    _batch_log(
+        f"  [EVENT SCRAPE] event_id={event_id} | "
+        f"total_urls={len(ordered)} | "
+        f"first={ordered[0] if ordered else None} | "
+        f"last={ordered[-1] if ordered else None}"
+    )
+
+    return ordered
+
+
+def scrape_hltv_results(start_date: str, end_date: str = None, context=None) -> list[str]:
+    """
+    DEPRECATED date-range scraper — kept for backward compatibility.
+    Now routes through event-based scraping internally.
+
+    For the daemon's rolling window, we scrape active events instead of
+    date-range URLs (which are Cloudflare-blocked).
+    """
+    _batch_log("  [INFO] Using event-based scraping (date-range URLs are CF-blocked)")
+    cookies = _load_hltv_cookies()
+
+    # Get active events from /events page
+    active = scrape_active_events(cookies=cookies)
+    if not active:
+        _batch_log("  [WARN] No active events found — nothing to scrape")
+        return []
+
+    _batch_log(f"  Found {len(active)} active events to check")
+    all_urls: list[str] = []
+    seen: set[str] = set()
+
+    for evt in active:
+        _batch_log(f"  Scraping event {evt['id']}: {evt['name'][:50]}")
+        urls = scrape_hltv_results_by_event(evt["id"], cookies=cookies)
+        for u in urls:
+            if u not in seen:
+                seen.add(u)
+                all_urls.append(u)
+        _batch_log(f"    -> {len(urls)} match URLs")
 
     return all_urls
+
+
+    """
+    Walk HLTV's /results listing for every match URL between start_date and
+    end_date (inclusive), across every tier HLTV lists.
+
+    Uses curl_cffi to impersonate a real browser's TLS fingerprint, bypassing
+    Cloudflare's JS challenge which blocks Playwright/Camoufox on the results
+    listing page. Individual match pages are still scraped via BrowserSession.
+
+    Returns a de-duplicated, order-preserved list of full match URLs.
+    """
+    if not end_date:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+
+    all_urls: List[str] = []
+    seen = set()
+
+    # ── curl_cffi: impersonates Chrome TLS fingerprint, bypasses CF ──
+    try:
+        from curl_cffi import requests as cf_requests  # type: ignore
+        from bs4 import BeautifulSoup                  # type: ignore
+    except ImportError:
+        _batch_log("  [ERROR] curl_cffi or beautifulsoup4 not installed. Run: pip install curl_cffi beautifulsoup4")
+        return all_urls
+
+    session = cf_requests.Session(impersonate="chrome136")
+    session.headers.update({
+        "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language":           "en-US,en;q=0.9",
+        "Accept-Encoding":           "gzip, deflate, br",
+        "Cache-Control":             "max-age=0",
+        "Sec-Fetch-Dest":            "document",
+        "Sec-Fetch-Mode":            "navigate",
+        "Sec-Fetch-Site":            "none",
+        "Sec-Fetch-User":            "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "Referer":                   "https://www.google.com/",
+    })
+    # Add HLTV cookies if available
+    cookies = _load_hltv_cookies()
+    for c in cookies:
+        session.cookies.set(c["name"], c["value"], domain=c.get("domain", ".hltv.org"))
+    if not cookies:
+        session.cookies.set("cookieConsent", "1", domain=".hltv.org")
+        session.cookies.set("hltvConsent",   "true", domain=".hltv.org")
+
+    offset = 0
+    total  = None
+    _batch_log(f"  Scraping HLTV results {start_date} -> {end_date} ...")
+
+    import re, time, random
+
+    while True:
+        if offset // HLTV_RESULTS_PAGE_SIZE >= HLTV_RESULTS_MAX_PAGES:
+            _batch_log(f"  [WARN] Hit page safety cap ({HLTV_RESULTS_MAX_PAGES} pages) — stopping.")
+            break
+
+        list_url = f"https://www.hltv.org/results?startDate={start_date}&endDate={end_date}&offset={offset}"
+        try:
+            resp = session.get(list_url, timeout=30)
+            if resp.status_code == 403:
+                # Retry once with a different impersonate target
+                _batch_log(f"  [WARN] 403 with chrome136, retrying with chrome131...")
+                session2 = cf_requests.Session(impersonate="chrome131")
+                session2.headers.update(session.headers)
+                session2.cookies.update(session.cookies)
+                resp = session2.get(list_url, timeout=30)
+            resp.raise_for_status()
+        except Exception as e:
+            _batch_log(f"  [WARN] Request failed at offset {offset}: {e}")
+            break
+
+        html = resp.text
+
+        # Check if still getting a CF challenge
+        if "Just a moment" in html or "challenge-platform" in html:
+            _batch_log(f"  [WARN] Still getting Cloudflare challenge — try adding hltv_cookies.json")
+            break
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Parse total from "1 - 100 of 3482"
+        if total is None:
+            body_text = soup.get_text()
+            m = re.search(r'(\d+)\s*-\s*(\d+)\s*of\s*(\d+)', body_text)
+            if m:
+                total = int(m.group(3))
+                _batch_log(f"  HLTV reports {total} matches in this range.")
+
+        hrefs = []
+        for a in soup.find_all("a", href=re.compile(r'^/matches/\d+/')):
+            href = a.get("href", "")
+            full_url = "https://www.hltv.org" + href
+            if full_url not in seen:
+                seen.add(full_url)
+                all_urls.append(full_url)
+                hrefs.append(href)
+
+        _batch_log(f"  Offset {offset}: {len(hrefs)} new URLs (collected: {len(all_urls)})")
+
+        if not hrefs:
+            break
+        if total is not None and offset + HLTV_RESULTS_PAGE_SIZE >= total:
+            break
+
+        offset += HLTV_RESULTS_PAGE_SIZE
+        time.sleep(random.uniform(1.0, 2.5))  # polite delay between pages
+
+    return all_urls
+
 
 
 def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
@@ -8856,6 +10124,7 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
     auto-backfill-by-date-range flow can share one import loop.
     """
     VALID_TIERS = ['S+', 'S', 'A', 'B', 'C', 'D', 'E']
+    global total_imports
     import_counter = 0
     failed = []
 
@@ -8869,7 +10138,7 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             failed.append(url_raw)
             continue
 
-        t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env = match_data
+        t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env, match_stage, lineups = match_data
 
         # --- Date ---
         if not match_date or match_date == 'N/A':
@@ -8895,7 +10164,8 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
                     teams[name] = csrs
                     _batch_log(f"  Auto-registered '{name}': {int(page_vrs)} VRS -> {int(csrs)} CSRS")
                 else:
-                    ok = auto_register_team(name, match_dt, teams, context=ctx)
+                    player_nicks = lineups[0] if name == t1_name else lineups[1]
+                    ok = auto_register_team(name, match_dt, teams, context=ctx, player_nicks=player_nicks)
                     if not ok:
                         _batch_log(f"  FAIL: could not register '{name}' — skipping match")
                         registration_failed = True
@@ -8950,15 +10220,13 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
                 if event_name:
                     event_tiers[event_name] = tier_raw
                     mark_unsaved()
-            elif details.get('insufficient_vrs'):
-                _batch_log(f"  SKIP: <60% VRS ranked teams — cannot assign tier")
-                failed.append(url_raw)
-                continue
             else:
-                tier_raw = 'A'
-                _batch_log(f"  Tier: A (scrape failed, using default)")
+                # Scrape failed entirely (exception/timeout) — fall back to E
+                tier_raw = 'E'
+                _batch_log(f"  Tier: E (scrape failed, using fallback)")
         else:
-            _batch_log(f"  Tier: A (no event href, using default)")
+            tier_raw = 'E'
+            _batch_log(f"  Tier: E (no event href, using fallback)")
 
         # --- Environment ---
         if match_env in ('ONLINE', 'LAN'):
@@ -8969,6 +10237,10 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             _batch_log(f"  Env: LAN (default — no tag found)")
 
         is_gf = is_grand_final
+        if is_gf and not match_stage:
+            _batch_log(f"  [GRAND FINAL]")
+        if match_stage:
+            _batch_log(f"  [{match_stage}]")
 
         # --- Forfeit ---
         forfeiting_team = None
@@ -8980,7 +10252,14 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             _batch_log(f"  [Forfeit] {forfeiting_team}")
 
         # --- Depreciation baseline ---
-        today_date = datetime.now().date()
+        # Use the match's own date as the depreciation reference point, not
+        # real wall-clock "now" — see matching comment/fix in the interactive
+        # import path above. Using real "now" here during a backfill made the
+        # rank-ordering snapshot diverge wildly from the actual point totals
+        # (e.g. a team correctly at 852 pts showing a worse rank than a team
+        # at 839 pts), since it depreciated every team by ~(today - their
+        # historical last-match date) instead of relative to match_dt.
+        as_of_date = match_dt.date() if match_dt else datetime.now().date()
         dep_base = {}
         date_index = build_match_date_index(history)
         for name, pts in teams.items():
@@ -8988,7 +10267,7 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
                 continue
             last = get_team_last_match_date_before(name, before_date=match_dt, index=date_index) if match_dt else get_team_last_match_date_before(name, index=date_index)
             if last:
-                d = (today_date - last.date()).days
+                d = (as_of_date - last.date()).days
                 dep_base[name] = calculate_depreciation(pts, d, name) if d > DEPRECIATION_THRESHOLD else pts
             else:
                 dep_base[name] = pts
@@ -9041,15 +10320,30 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             increment_provisional(t2)
 
         # --- Rank shifts ---
+        # dep_base only contains non-provisional teams (provisional teams were
+        # skipped when it was built above). To keep old_order/new_order
+        # comparable, new_order must apply that same "non-provisional only"
+        # rule to t1/t2 — only insert them if they're established (or just
+        # graduated via increment_provisional above), not simply because they
+        # played this match. Previously t1/t2 were force-inserted into
+        # dep_new unconditionally, so a still-provisional team got ranked
+        # against the full established pool while every other still-
+        # provisional team stayed excluded — producing meaningless rank
+        # numbers/shifts (e.g. a team's very first-ever match showing
+        # "Rank #60" against what was really only ~60 established teams).
         dep_new = dict(dep_base)
-        dep_new[t1] = new_p1
-        dep_new[t2] = new_p2
+        if t1 in dep_new or not is_provisional(t1):
+            dep_new[t1] = new_p1
+        if t2 in dep_new or not is_provisional(t2):
+            dep_new[t2] = new_p2
         new_order = sorted(dep_new.keys(), key=lambda x: dep_new[x], reverse=True)
-        t1_rank_shift = (old_order.index(t1) + 1) - (new_order.index(t1) + 1) if t1 in old_order else 0
-        t2_rank_shift = (old_order.index(t2) + 1) - (new_order.index(t2) + 1) if t2 in old_order else 0
+        t1_rank_shift = (old_order.index(t1) + 1) - (new_order.index(t1) + 1) if (t1 in old_order and t1 in new_order) else 0
+        t2_rank_shift = (old_order.index(t2) + 1) - (new_order.index(t2) + 1) if (t2 in old_order and t2 in new_order) else 0
 
-        _batch_log(f"  {t1}: {int(p1_before)} -> {int(new_p1)} ({'+' if new_p1 >= p1_before else ''}{int(new_p1 - p1_before)}) | Rank #{new_order.index(t1)+1}")
-        _batch_log(f"  {t2}: {int(p2_before)} -> {int(new_p2)} ({'+' if new_p2 >= p2_before else ''}{int(new_p2 - p2_before)}) | Rank #{new_order.index(t2)+1}")
+        t1_rank_str = f"Rank #{new_order.index(t1)+1}" if t1 in new_order else "Rank: provisional (unranked)"
+        t2_rank_str = f"Rank #{new_order.index(t2)+1}" if t2 in new_order else "Rank: provisional (unranked)"
+        _batch_log(f"  {t1}: {int(p1_before)} -> {int(new_p1)} ({'+' if new_p1 >= p1_before else ''}{int(new_p1 - p1_before)}) | {t1_rank_str}")
+        _batch_log(f"  {t2}: {int(p2_before)} -> {int(new_p2)} ({'+' if new_p2 >= p2_before else ''}{int(new_p2 - p2_before)}) | {t2_rank_str}")
 
         # --- Build entry ---
         entry = {
@@ -9057,6 +10351,7 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             "tier": tier_raw,
             "env": env_raw,
             "grand_final": is_gf,
+            "match_stage": match_stage,
             "source": "HLTV Batch Import",
             "url": url_raw,
             "t1": {"name": t1, "score": s1, "pts_before": p1_before, "pts_after": new_p1, "rank_shift": t1_rank_shift},
@@ -9077,6 +10372,7 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
         update_peak(t1, teams.get(t1, 1000), entry_date)
         update_peak(t2, teams.get(t2, 1000), entry_date)
         mark_unsaved()
+        total_imports += 1
         import_counter += 1
         if import_counter % 5 == 0:
             save_all(silent=True)
@@ -9395,13 +10691,13 @@ def _git_push() -> bool:
     try:
         # Stage data.save only — never commit source code automatically
         subprocess.run(
-            ["git", "add", "data.save"],
+            ["git", "add", SAVE_FILE],
             cwd=repo_dir, check=True, capture_output=True
         )
 
         # Check if there's actually anything to commit
         status = subprocess.run(
-            ["git", "status", "--porcelain", "data.save"],
+            ["git", "status", "--porcelain", SAVE_FILE],
             cwd=repo_dir, capture_output=True, text=True
         )
         if not status.stdout.strip():
@@ -9439,40 +10735,162 @@ def _git_push() -> bool:
 # === AUTO IMPORT (headless daemon mode) ===
 # =============================================================================
 
-def run_auto_import(lookback_hours: int = 2) -> int:
+def _parse_results_page(html: str) -> list[dict]:
     """
-    Headless single-pass auto-import.
-    Scrapes HLTV for matches in the last `lookback_hours` hours,
-    imports anything not already in history, saves, then pushes to GitHub.
+    Parse one /results page into day-groups preserving newest-first order:
+
+      [{"headline": "Results for June 23rd 2026",
+        "matches": [{"url": "...", "unix_ms": 1782164735000}, ...]},
+       ...]
+
+    Each match's unix_ms comes from data-zonedgrouping-entry-unix on its
+    .result-con block. Used by both run_auto_import and backfill.py.
+    """
+    import re
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+    results_container = soup.find("div", class_="results")
+    search_root = results_container if results_container is not None else soup
+
+    groups = []
+    for sublist in search_root.find_all("div", class_="results-sublist"):
+        headline_div = sublist.find("div", class_="standard-headline")
+        headline = headline_div.get_text(strip=True) if headline_div else None
+
+        matches = []
+        seen: set[str] = set()
+        for con in sublist.find_all("div", class_="result-con"):
+            a = con.find("a", href=re.compile(r'^/matches/\d+/'))
+            if not a:
+                continue
+            full_url = "https://www.hltv.org" + a["href"]
+            if full_url in seen:
+                continue
+            seen.add(full_url)
+            unix_ms_raw = con.get("data-zonedgrouping-entry-unix")
+            try:
+                unix_ms = int(unix_ms_raw) if unix_ms_raw else None
+            except ValueError:
+                unix_ms = None
+            matches.append({"url": full_url, "unix_ms": unix_ms})
+
+        if matches:
+            groups.append({"headline": headline, "matches": matches})
+
+    return groups
+
+
+def run_auto_import(lookback_hours: int = 48) -> int:
+    """
+    Headless single-pass auto-import using the same offset-based /results
+    walk as backfill.py — walks /results newest-first, collects URLs whose
+    timestamp >= (now - lookback_hours), stops as soon as a day-group falls
+    entirely before that boundary.
+
     Returns number of matches imported (0 if nothing new or error).
     """
+    import random as _random
+
     now = datetime.now()
     start_dt = now - timedelta(hours=lookback_hours)
+    start_unix_ms = int(start_dt.timestamp() * 1000)
     start_date = start_dt.strftime("%Y-%m-%d")
     end_date = now.strftime("%Y-%m-%d")
 
     _batch_log(f"=== Auto-import started "
                f"(lookback {lookback_hours}h: {start_date} -> {end_date}) ===")
 
-    # --- Scrape phase ---
+    cookies = _load_hltv_cookies()
+    pw_cookies = [
+        {"name": c.get("name", ""), "value": c.get("value", ""),
+         "domain": c.get("domain", ".hltv.org"), "path": c.get("path", "/")}
+        for c in cookies if c.get("name") and c.get("value")
+    ]
+
+    # --- Scrape phase: walk /results offset pages until boundary ---
+    collected_urls: list[str] = []
+    seen_urls: set[str] = set()
+
     try:
-        with BrowserSession() as scrape_session:
-            scraped_urls = scrape_hltv_results(
-                start_date, end_date, context=scrape_session.context
-            )
+        from camoufox.sync_api import Camoufox
+    except ImportError:
+        _batch_log("  [ERROR] Camoufox not installed — cannot scrape.")
+        return 0
+
+    try:
+        with Camoufox(headless=_CAMOUFOX_HEADLESS, os=("windows", "macos", "linux")) as browser:
+            context = browser.new_context()
+            if pw_cookies:
+                context.add_cookies(pw_cookies)
+            page = context.new_page()
+
+            try:
+                page.goto("https://www.hltv.org", timeout=30000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+            except Exception as e:
+                _batch_log(f"  [WARN] Warm-up failed: {e}")
+
+            hit_boundary = False
+            for page_num in range(HLTV_RESULTS_MAX_PAGES):
+                offset = page_num * HLTV_RESULTS_PAGE_SIZE
+                url = ("https://www.hltv.org/results" if offset == 0
+                       else f"https://www.hltv.org/results?offset={offset}")
+
+                try:
+                    page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                    page.wait_for_timeout(2000)
+                except Exception as e:
+                    _batch_log(f"  [WARN] Page {page_num+1} navigation failed: {e}")
+                    break
+
+                html = page.content()
+                if "Just a moment" in html or "challenge-platform" in html:
+                    _batch_log("  [BLOCKED] Cloudflare challenge — stopping scrape.")
+                    break
+
+                groups = _parse_results_page(html)
+                if not groups:
+                    break
+
+                for grp in groups:
+                    group_unix = [m["unix_ms"] for m in grp["matches"] if m["unix_ms"] is not None]
+                    if group_unix and max(group_unix) < start_unix_ms:
+                        hit_boundary = True
+                        break
+                    for m in grp["matches"]:
+                        if m["unix_ms"] is not None and m["unix_ms"] < start_unix_ms:
+                            continue
+                        if m["url"] not in seen_urls:
+                            seen_urls.add(m["url"])
+                            collected_urls.append(m["url"])
+
+                if hit_boundary:
+                    break
+
+                time.sleep(_random.uniform(1.0, 2.5))
+
+            page.close()
+
     except Exception as e:
         _batch_log(f"  [ERROR] Scrape phase failed: {e}")
         return 0
 
-    if not scraped_urls:
-        _batch_log("  No match URLs found for this window — nothing to import.")
+    if not collected_urls:
+        _batch_log("  No match URLs found in lookback window — nothing to import.")
         return 0
+
+    # Reverse to oldest-first for correct import order
+    collected_urls.reverse()
 
     # --- Filter already-imported ---
     imported_urls = get_imported_urls(history)
-    urls_to_do = [u for u in scraped_urls if u not in imported_urls]
-    already_done = len(scraped_urls) - len(urls_to_do)
-    _batch_log(f"  Found {len(scraped_urls)} matches scraped, "
+    urls_to_do = [u for u in collected_urls if u not in imported_urls]
+    already_done = len(collected_urls) - len(urls_to_do)
+    _batch_log(f"  Found {len(collected_urls)} matches in window, "
                f"{already_done} already imported, "
                f"{len(urls_to_do)} new to import.")
 
@@ -9480,25 +10898,38 @@ def run_auto_import(lookback_hours: int = 2) -> int:
         _batch_log("  Nothing new to import.")
         return 0
 
-    # --- Import phase ---
-    try:
-        with BrowserSession() as session:
-            import_counter, failed = _import_url_list(urls_to_do, session.context)
-    except Exception as e:
-        _batch_log(f"  [ERROR] Import phase failed: {e}")
-        return 0
+    # --- Import phase with auto-retry ---
+    import_counter = 0
+    still_failed: list[str] = []
+    remaining = list(urls_to_do)
+    for attempt in range(1, 6):
+        if attempt > 1:
+            _batch_log(f"  [RETRY {attempt}/5] {len(remaining)} URL(s) — waiting 30s...")
+            time.sleep(30)
+        try:
+            with BrowserSession() as session:
+                count, failed = _import_url_list(remaining, session.context)
+            import_counter += count
+            if not failed:
+                break
+            _batch_log(f"  Pass {attempt}: {count} imported, {len(failed)} still failed.")
+            remaining = failed
+            still_failed = failed
+        except Exception as e:
+            _batch_log(f"  [ERROR] Import pass {attempt} failed: {e}")
+            break
 
     # --- Save ---
     _vrs_session_cache.clear()
     save_all(silent=True)
 
-    if failed:
-        _batch_log(f"  [WARN] {len(failed)} match(es) failed to import:")
-        for u in failed:
+    if still_failed:
+        _batch_log(f"  [WARN] {len(still_failed)} match(es) still failed after all retries:")
+        for u in still_failed:
             _batch_log(f"    FAILED: {u}")
 
     _batch_log(f"=== Auto-import complete: "
-               f"{import_counter} imported, {len(failed)} failed ===")
+               f"{import_counter} imported, {len(still_failed)} failed ===")
 
     # --- Git push (only if something was imported) ---
     if import_counter > 0:
@@ -9507,12 +10938,206 @@ def run_auto_import(lookback_hours: int = 2) -> int:
     return import_counter
 
 
+# =============================================================================
+# --delete command — wipes data/save/logs under CSRS_DATA_DIR, with
+# hltv_cookies.json hard-excluded under every circumstance. This is a
+# standalone, self-contained routine: it does NOT call load_all(), does NOT
+# require dependency checks, and does NOT touch any in-memory CSRS state.
+# =============================================================================
+
+# Absolute, normalized path to the one file that must never be deleted by
+# --delete, regardless of which target ("data", "save", "logs", "all") is
+# requested. Computed once here from the same CSRS_DATA_DIR/data/hltv_cookies.json
+# convention used everywhere else in this file (see HLTV_COOKIE_FILE above).
+_PROTECTED_COOKIE_FILE = os.path.normcase(os.path.normpath(os.path.abspath(
+    os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "data", "hltv_cookies.json")
+)))
+
+
+def _is_protected_path(path: str) -> bool:
+    """
+    Returns True if `path` IS the cookie file, or is a directory that
+    CONTAINS the cookie file (in which case the directory must be emptied
+    around it rather than removed wholesale).
+    """
+    norm = os.path.normcase(os.path.normpath(os.path.abspath(path)))
+    if norm == _PROTECTED_COOKIE_FILE:
+        return True
+    # Directory case: does the protected file live inside this directory?
+    try:
+        common = os.path.commonpath([norm, _PROTECTED_COOKIE_FILE])
+        return common == norm
+    except ValueError:
+        # Different drives on Windows, or unrelated paths — not protected.
+        return False
+
+
+def _delete_path_preserving_cookies(path: str) -> tuple[int, int, int]:
+    """
+    Deletes the FILES inside `path` (recursively), but never removes any
+    directory — only file contents are wiped, the entire folder skeleton
+    (e.g. save/, save/main/, save/backup/) is always left standing. This
+    matters because CSRS.py assumes save/main and save/backup already
+    exist when writing SAVE_FILE / backups, with no os.makedirs guard
+    before those writes — losing the directories (not just their
+    contents) would silently break the next save/backup write.
+
+    hltv_cookies.json is never removed under any circumstance — if it
+    lives inside `path`, every other file around it is still wiped
+    normally; the cookie file itself is always skipped.
+
+    Every file is deleted individually (no shutil.rmtree) so a single
+    locked/in-use file (e.g. a log file held open by a running daemon)
+    is skipped with a warning instead of aborting the entire operation
+    and leaving everything else undeleted.
+
+    Returns (files_deleted, dirs_deleted, files_locked). dirs_deleted is
+    always 0 now — kept in the return signature for call-site compatibility.
+    """
+    files_deleted = 0
+    dirs_deleted = 0  # directories are never removed; kept for compatibility
+    files_locked = 0
+
+    if not os.path.exists(path):
+        return (0, 0, 0)
+
+    norm_path = os.path.normcase(os.path.normpath(os.path.abspath(path)))
+
+    # Exact-match safety net: never, ever delete the cookie file itself,
+    # no matter how it was reached.
+    if norm_path == _PROTECTED_COOKIE_FILE:
+        print(f"  [PROTECTED] Skipping {path} — hltv_cookies.json is never deleted.")
+        return (0, 0, 0)
+
+    if os.path.isfile(path):
+        try:
+            os.remove(path)
+            return (1, 0, 0)
+        except OSError as e:
+            print(f"  [WARN] Could not delete {path} (in use?): {e}")
+            return (0, 0, 1)
+
+    # Directory case — walk every file in the tree and delete it, but
+    # never call os.rmdir on anything. The directory structure itself
+    # (save/, save/main/, save/backup/, logs/normal/, etc.) is always
+    # preserved, even when fully emptied.
+    for root, dirs, files in os.walk(path, topdown=False):
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            if os.path.normcase(os.path.normpath(os.path.abspath(fpath))) == _PROTECTED_COOKIE_FILE:
+                print(f"  [PROTECTED] Keeping {fpath}")
+                continue
+            try:
+                os.remove(fpath)
+                files_deleted += 1
+            except OSError as e:
+                print(f"  [WARN] Could not delete {fpath} (in use?): {e}")
+                files_locked += 1
+        # Intentionally no os.rmdir() here — directories are never removed.
+
+    return (files_deleted, dirs_deleted, files_locked)
+
+
+def run_delete_command(target: str, skip_confirm: bool = False) -> None:
+    """
+    Implements `python CSRS.py --delete data|save|logs|all`.
+
+    hltv_cookies.json is hard-excluded from deletion under every target,
+    including "all" — this is non-negotiable because the scraper cannot
+    log in to HLTV without it.
+    """
+    # logging.basicConfig() at module load time opens a FileHandler on
+    # logs/normal/csrs.log that stays open for the life of this process —
+    # including right now. If we don't close it first, --delete (and
+    # --delete logs/all in particular) will ALWAYS fail to remove csrs.log
+    # because this same process is holding it open, regardless of whether
+    # any other CSRS process is running. Close and detach every handler
+    # before touching the filesystem.
+    for _h in list(logger.handlers):
+        try:
+            _h.close()
+        except Exception:
+            pass
+        logger.removeHandler(_h)
+    for _h in list(logging.getLogger().handlers):
+        try:
+            _h.close()
+        except Exception:
+            pass
+        logging.getLogger().removeHandler(_h)
+
+    data_dir = os.environ.get("CSRS_DATA_DIR", ".")
+
+    target = target.strip().lower()
+    valid_targets = {"data", "save", "logs", "all"}
+    if target not in valid_targets:
+        print(f"[ERROR] Unknown --delete target '{target}'. Must be one of: {', '.join(sorted(valid_targets))}")
+        sys.exit(1)
+
+    target_dirs_by_name = {
+        "data": [os.path.join(data_dir, "data")],
+        "save": [os.path.join(data_dir, "save")],
+        "logs": [os.path.join(data_dir, "logs")],
+    }
+    target_dirs_by_name["all"] = (
+        target_dirs_by_name["data"] + target_dirs_by_name["save"] + target_dirs_by_name["logs"]
+    )
+
+    dirs_to_wipe = target_dirs_by_name[target]
+
+    print(f"\n{'='*60}")
+    print(f"CSRS --delete {target}")
+    print(f"{'='*60}")
+    print(f"CSRS_DATA_DIR : {os.path.abspath(data_dir)}")
+    print(f"Will wipe     : {', '.join(os.path.abspath(d) for d in dirs_to_wipe)}")
+    print(f"PROTECTED     : {_PROTECTED_COOKIE_FILE}  (never deleted, any target)")
+    print(f"{'='*60}\n")
+
+    existing_dirs = [d for d in dirs_to_wipe if os.path.exists(d)]
+    if not existing_dirs:
+        print("Nothing to delete — none of the target directories exist.")
+        return
+
+    if not skip_confirm:
+        confirm = input(
+            f"Type 'yes' to permanently delete the FILES inside {target} "
+            f"(folder structure and hltv_cookies.json will be preserved): "
+        ).strip().lower()
+        if confirm != "yes":
+            print("Cancelled — nothing was deleted.")
+            return
+
+    total_files = 0
+    total_locked = 0
+    for d in existing_dirs:
+        print(f"Deleting files in {d} ...")
+        f, _dd, locked = _delete_path_preserving_cookies(d)
+        total_files += f
+        total_locked += locked
+        msg = f"  Removed {f} file(s). Folder structure preserved."
+        if locked:
+            msg += f" ({locked} skipped — in use)"
+        print(msg)
+
+    print(f"\n{'='*60}")
+    print(f"Delete complete: {total_files} file(s) removed. Folder structure (save/, save/main/, "
+          f"save/backup/, logs/normal/, etc.) was preserved — only file contents were wiped.")
+    if total_locked:
+        print(f"[WARN] {total_locked} file(s) could not be deleted because they were in use "
+              f"(likely a running daemon/import holding a log file open). Close any running "
+              f"CSRS processes and re-run --delete to remove them.")
+    if os.path.exists(_PROTECTED_COOKIE_FILE):
+        print(f"hltv_cookies.json preserved at: {_PROTECTED_COOKIE_FILE}")
+    print(f"{'='*60}\n")
+
+
 if __name__ == "__main__":
     # -------------------------------------------------------------------------
     # CLI argument handling
     # --auto          : single headless pass (last 2 hours), then exit
     # --daemon        : loop every 30 minutes indefinitely (Ctrl+C to stop)
-    # --lookback N    : override lookback window in hours (default: 2)
+    # --lookback N     : override lookback window in hours (default: 2)
+    # --lookback-days N: same but in days (multiplied to hours internally)
     # -------------------------------------------------------------------------
     import argparse
     parser = argparse.ArgumentParser(add_help=False)
@@ -9522,10 +11147,30 @@ if __name__ == "__main__":
                         help="Loop auto-import every 30 minutes until Ctrl+C")
     parser.add_argument("--lookback", type=int, default=2, metavar="HOURS",
                         help="How many hours back to scrape (default: 2)")
+    parser.add_argument("--lookback-days", type=int, default=None, metavar="DAYS",
+                        help="How many days back to scrape — overrides --lookback if supplied")
+    parser.add_argument("--delete", type=str, default=None, metavar="data|save|logs|all",
+                        help="Wipe the given data directory/directories under CSRS_DATA_DIR. "
+                             "hltv_cookies.json is NEVER deleted, no matter what. Requires "
+                             "interactive y/n confirmation.")
+    parser.add_argument("--yes", action="store_true",
+                        help="Skip the confirmation prompt for --delete (use with caution)")
+    parser.add_argument("--resimulate", action="store_true",
+                        help="Resimulate all matches in history from scratch using the "
+                             "current formula/config, then save and exit.")
     args, _ = parser.parse_known_args()
+
+    if args.delete:
+        run_delete_command(args.delete, skip_confirm=args.yes)
+        sys.exit(0)
 
     # === DEPENDENCY CHECK & AUTO-INSTALL ===
     if not check_and_install_dependencies():
+        sys.exit(0)
+
+    if args.resimulate:
+        os.environ["NODE_NO_WARNINGS"] = "1"
+        run_resimulate_command(skip_confirm=args.yes)
         sys.exit(0)
 
     os.environ["NODE_NO_WARNINGS"] = "1"
@@ -9533,30 +11178,66 @@ if __name__ == "__main__":
 
     if args.auto or args.daemon:
         DAEMON_INTERVAL_MINUTES = 30
+        FORCE_TRIGGER_FILE = os.path.join(
+            os.environ.get("CSRS_DATA_DIR", "."), "force_import.trigger"
+        )
+
+        def _sleep_with_trigger_check(total_seconds: int):
+            """
+            Sleep in short increments, checking for a force-trigger file.
+            If found, delete it and return early so the daemon re-runs
+            the import immediately instead of waiting out the full interval.
+            Lets the admin panel "Run Import Now" button wake a sleeping
+            daemon instead of spawning a separate, disconnected process.
+            """
+            checked_every = 5  # seconds
+            elapsed = 0
+            while elapsed < total_seconds:
+                if os.path.exists(FORCE_TRIGGER_FILE):
+                    try:
+                        os.remove(FORCE_TRIGGER_FILE)
+                    except OSError:
+                        pass
+                    _batch_log("  [TRIGGER] Force-import signal received — running now.")
+                    return
+                time.sleep(checked_every)
+                elapsed += checked_every
+
         if args.daemon:
+            # Resolve final lookback in hours — days flag takes precedence
+            lookback_hours = args.lookback_days * 24 if args.lookback_days is not None else args.lookback
+            lookback_label = f"{args.lookback_days}d ({lookback_hours}h)" if args.lookback_days is not None else f"{lookback_hours}h"
             _batch_log(
                 f"=== CSRS Daemon started — "
                 f"checking every {DAEMON_INTERVAL_MINUTES} min, "
-                f"lookback {args.lookback}h ==="
+                f"lookback {lookback_label} ==="
             )
             print(f"CSRS daemon running. Ctrl+C to stop.")
+            # Clear any stale trigger file from a previous run on startup
+            if os.path.exists(FORCE_TRIGGER_FILE):
+                try:
+                    os.remove(FORCE_TRIGGER_FILE)
+                except OSError:
+                    pass
             try:
                 while True:
-                    run_auto_import(lookback_hours=args.lookback)
+                    run_auto_import(lookback_hours=lookback_hours)
                     next_run = datetime.now() + timedelta(minutes=DAEMON_INTERVAL_MINUTES)
                     _batch_log(
                         f"  Next check at "
                         f"{next_run.strftime('%H:%M:%S')} — "
-                        f"sleeping {DAEMON_INTERVAL_MINUTES} min."
+                        f"sleeping {DAEMON_INTERVAL_MINUTES} min "
+                        f"(or until force-triggered)."
                     )
-                    time.sleep(DAEMON_INTERVAL_MINUTES * 60)
+                    _sleep_with_trigger_check(DAEMON_INTERVAL_MINUTES * 60)
             except KeyboardInterrupt:
                 _batch_log("=== CSRS Daemon stopped by user ===")
                 print("\nDaemon stopped.")
                 sys.exit(0)
         else:
             # --auto: single pass then exit
-            run_auto_import(lookback_hours=args.lookback)
+            lookback_hours = args.lookback_days * 24 if args.lookback_days is not None else args.lookback
+            run_auto_import(lookback_hours=lookback_hours)
             sys.exit(0)
     
     def confirm_exit() -> bool:
