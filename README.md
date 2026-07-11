@@ -32,4 +32,4 @@ curl -sS http://localhost:8000/api/meta
 - `www/csrs/csrs_api/frontend/index.html` is the CSRS browser UI.
 - `Caddyfile` controls the public routes for the domain.
 
-If the site is broken in production but works locally, check routing first, then API responses, then the mounted data file.
+If the site is broken in production but works locally, server admins should check routing first, then API responses, then the mounted data file.
