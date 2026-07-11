@@ -302,23 +302,7 @@
 
     <script>
         // --- Password Logic ---
-        let PASSWORD = null;
-        
-        async function fetchPassword() {
-            try {
-                const response = await fetch('/api/console/api/love/password');
-                if (response.ok) {
-                    const data = await response.json();
-                    PASSWORD = data.password;
-                } else {
-                    PASSWORD = "strawberry"; // Fallback
-                }
-            } catch (e) {
-                PASSWORD = "strawberry"; // Fallback
-                console.log("Could not fetch password from server:", e);
-            }
-            checkPassword();
-        }
+        const PASSWORD = "watermelon";
         
         function checkPassword() {
             const entry = prompt("Enter the secret word:");
@@ -330,8 +314,7 @@
             }
         }
         
-        // Fetch password before checking
-        fetchPassword();
+        checkPassword();
 
         // --- Live Accurate Counting Script ---
         // CONFIGURATION: Set your anniversary date here! (Year, Month index 0-11, Day, Hour, Minute)
