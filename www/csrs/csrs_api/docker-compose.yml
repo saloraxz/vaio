@@ -35,15 +35,14 @@ services:
       GITHUB_REPO: "${GITHUB_REPO}"
     volumes:
       - csrs-data:/data
-      - git-repo:/app/repo
-    working_dir: /app/repo/repo
+    working_dir: /app
     networks:
       - internal
     depends_on:
       - git-sync
 
   # ---------------------------------------------------------------------------
-  # csrs-web: FastAPI + frontend, public via Tailscale funnel on port 8000
+  # csrs-web: FastAPI + frontend, exposed on port 8000
   # ---------------------------------------------------------------------------
   csrs-web:
     build:
@@ -65,7 +64,7 @@ services:
       - git-sync
 
   # ---------------------------------------------------------------------------
-  # csrs-admin: admin API + UI, Tailscale-only on port 8001 (never funnelled)
+  # csrs-admin: admin API + UI on port 8001 (localhost only)
   # ---------------------------------------------------------------------------
   csrs-admin:
     build:

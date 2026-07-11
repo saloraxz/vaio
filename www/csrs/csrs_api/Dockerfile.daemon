@@ -1,11 +1,11 @@
 FROM python:3.12-slim
 
-# Install system dependencies required by Playwright/Chromium on Linux
+# Install system dependencies required by Playwright/Chromium and Camoufox on Linux
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
-    # Chromium system deps
+    # Chromium/Firefox system deps
     libnss3 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
@@ -24,32 +24,41 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libx11-6 \
     libxcb1 \
     libxext6 \
+    libdbus-1-3 \
+    libgtk-3-0 \
     fonts-liberation \
     fonts-unifont \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install Python dependencies
+# Install Python dependencies (now includes camoufox, beautifulsoup4,
+# sortedcontainers, curl_cffi, playwright-stealth — see requirements.daemon.txt)
 COPY csrs_api/requirements.daemon.txt .
 RUN pip install --no-cache-dir -r requirements.daemon.txt
 
-# Install Playwright and download Chromium (no --with-deps, deps installed above)
+# Download Playwright Chromium (fallback browser if Camoufox unavailable)
 RUN playwright install chromium
 
-# Copy CSRS application
+# Download Camoufox browser binary — required separately from pip install,
+# same pattern as `playwright install`. Without this step the pip package
+# is installed but the browser won't launch at runtime.
+RUN python -m camoufox fetch
+
+# Copy CSRS application + backfill script + entrypoint
 COPY CSRS.py .
+COPY backfill.py .
+COPY csrs_api/entrypoint.sh .
+RUN chmod +x entrypoint.sh
 
 # data.save lives on a shared volume mounted at /data
-# batch_import.log also written there
 ENV CSRS_DATA_DIR=/data
 
-# Git config for auto-commits (name/email can be anything)
+# Git config for auto-commits
 RUN git config --global user.email "csrs-daemon@auto" && \
     git config --global user.name "CSRS Daemon" && \
     git config --global --add safe.directory /app
 
 VOLUME ["/data"]
 
-# Entrypoint: run daemon mode
-CMD ["python", "CSRS.py", "--daemon", "--lookback", "2"]
+CMD ["./entrypoint.sh"]
