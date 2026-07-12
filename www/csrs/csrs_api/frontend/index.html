@@ -1047,7 +1047,7 @@ tr:last-child td { border-bottom: none; }
 <div id="more-sheet">
   <div class="more-sheet-handle"></div>
   <a data-page="form-rankings" class="more-sheet-item">
-    <span class="more-sheet-icon" style="background:none">
+    <span class="more-sheet-icon">
       <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2.5l2.9 6.6 7.1.6-5.4 4.7 1.6 7-6.2-3.8-6.2 3.8 1.6-7-5.4-4.7 7.1-.6z"/></svg>
     </span>
     <span>Form Rankings</span>
@@ -1208,7 +1208,7 @@ tr:last-child td { border-bottom: none; }
       <button onclick="loadHistory(1)">Filter</button>
       <button class="secondary" onclick="clearHistoryFilters()">Clear</button>
     </div>
-    <div class="card" style="padding:0" id="history-card">
+    <div id="history-card">
       <div class="table-wrap" id="history-table">
         <div class="loading"><div class="spinner"></div> Loading…</div>
       </div>
@@ -2014,7 +2014,6 @@ function initEventSummaryPage() {
 function esSelectEvent(name) {
   if (!name) return;
   document.getElementById('es-search').value = name;
-  document.getElementById('es-dd').style.display = 'none';
   setEl('es-result', '<div class="loading"><div class="spinner"></div> Loading…</div>');
   api(`/api/event-summary?event=${encodeURIComponent(name)}`)
     .then(d => { setEl('es-result', renderEventSummaryHTML(d)); })
@@ -2591,7 +2590,7 @@ async function loadRankings() {
     // rankings exactly as before, even though the button always shows an
     // actual date rather than a separate "Live" label.
     const dateParam = (date && date !== getTodayStr()) ? `&as_of=${encodeURIComponent(date)}` : '';
-    const d = await api(`/api/rankings?limit=200&search=${encodeURIComponent(search)}${dateParam}`);
+    const d = await api(`/api/rankings?search=${encodeURIComponent(search)}${dateParam}`);
     rankingsData = d.rankings;
     renderRankings(rankingsData);
   } catch(e) {
@@ -2650,7 +2649,7 @@ async function loadFormRankings() {
   setLoading('form-rankings-table');
   try {
     const search = document.getElementById('form-rank-search').value;
-    const d = await api(`/api/form-rankings?limit=200&search=${encodeURIComponent(search)}`);
+    const d = await api(`/api/form-rankings?search=${encodeURIComponent(search)}`);
     formRankingsData = d.rankings;
     renderFormRankings(formRankingsData);
   } catch(e) {
@@ -2669,13 +2668,12 @@ function renderFormRankings(rows) {
         <th>#</th>
         <th>Team</th>
         <th>Form</th>
-        <th>Streak</th>
         <th class="col-peak">Points</th>
       </tr></thead>
       <tbody>
         ${rows.map(r => {
-          const streakColored = [...r.streak].map(c =>
-            `<span style="color:${c === 'W' ? 'var(--green)' : 'var(--red)'}">${c}</span>`
+          const streakDots = [...r.streak].map(c =>
+            `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${c === 'W' ? 'var(--green)' : 'var(--red)'}"></span>`
           ).join('');
           return `
           <tr>
@@ -2685,9 +2683,9 @@ function renderFormRankings(rows) {
                 ${r.name}
               </span>
               ${r.provisional ? `<span class="prov-badge">PROV</span>` : ''}
+              <div style="display:flex;gap:3px;align-items:center;margin-top:4px">${streakDots}</div>
             </td>
-            <td class="pts"><span style="color:${tdFormColor(r.form_grade)};font-weight:700">${r.form_grade}</span> (${r.form_score})</td>
-            <td style="font-family:monospace;letter-spacing:1px">${streakColored}</td>
+            <td class="pts" style="white-space:nowrap"><span style="color:${tdFormColor(r.form_grade)};font-weight:700">${r.form_grade}</span>&nbsp;(${r.form_score})</td>
             <td class="pts col-peak" style="color:var(--muted)">${r.points.toFixed(2)}</td>
           </tr>`;
         }).join('')}
@@ -3513,8 +3511,8 @@ function renderH2H(d) {
         </div>
         <div class="dash">–</div>
         <div class="team-side">
-          <div class="wins" style="color:${t2color}">${d.team2_wins}</div>
           <div class="name">${d.team2}</div>
+          <div class="wins" style="color:${t2color}">${d.team2_wins}</div>
         </div>
       </div>
       <div class="table-wrap">
@@ -3529,8 +3527,10 @@ function renderH2H(d) {
                 <td style="font-weight:600">${m.score}</td>
                 <td class="win-badge">${m.winner}</td>
                 <td style="white-space:nowrap">
-                  ${m.url ? `<a href="${m.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none;margin-right:8px">HLTV</a>` : ''}
-                  ${m.url ? `<span class="team-link" style="font-size:0.75rem;color:var(--accent)" onclick="openMatch(${JSON.stringify(m.url)})">CSRS</span>` : ''}
+                  <div style="display:flex;flex-direction:column;gap:2px">
+                    ${m.url ? `<a href="${m.url}" target="_blank" style="color:var(--muted);font-size:0.75rem;text-decoration:none">HLTV</a>` : ''}
+                    ${m.url ? `<span class="team-link" style="font-size:0.75rem;color:var(--accent)" onclick="openMatch(${JSON.stringify(m.url)})">CSRS</span>` : ''}
+                  </div>
                 </td>
               </tr>
             `).join('')}
@@ -3649,30 +3649,37 @@ function renderCompare(d1, d2) {
   const v1 = ds1.map(p => p.pts);
   const v2 = ds2.map(p => p.pts);
 
-  // Build point styling for one team's series: colored dot on match days
-  // (green/red = win/loss), a small hollow dot on transition points (the
-  // day before a scheduling gap — mirrors the single-team rating chart),
-  // and a hollow dot at the very first/last point so the line always has
-  // a clear, visible start and end instead of just trailing off.
-  // Point border width is bumped up (not just radius) so the marker's
-  // outline visually sits on top of the connecting line rather than the
-  // line cutting through a thin dot.
+  // Build point styling for one team's series: a small dot on match days
+  // (in the team's own line color — no win/loss coloring, which got
+  // crowded and hard to read with two teams' dots overlapping on mobile),
+  // a smaller hollow dot on transition points (the day before a scheduling
+  // gap — mirrors the single-team rating chart), and a hollow dot at the
+  // very first/last point so the line always has a clear, visible start
+  // and end instead of just trailing off. Point border width is bumped up
+  // (not just radius) so the marker's outline visually sits on top of the
+  // connecting line rather than the line cutting through a thin dot.
+  // Everything is scaled down on narrow screens, where two teams' worth of
+  // dots on the same chart get crowded fast.
+  const isMobile = window.innerWidth <= 700;
   function pointStyle(ds, color) {
     const lastIdx = ds.length - 1;
+    const endR = isMobile ? 3.5 : 5;
+    const matchR = isMobile ? 2.5 : 5;
+    const transR = isMobile ? 2 : 4;
     const radius = ds.map((p, i) => {
-      if (i === 0 || i === lastIdx) return 5;
-      if (p.match) return 5;
-      if (p.transition) return 4;
+      if (i === 0 || i === lastIdx) return endR;
+      if (p.match) return matchR;
+      if (p.transition) return transR;
       return 0;
     });
     const bg = ds.map((p, i) => {
       if (i === 0 || i === lastIdx) return '#16181c'; // hollow start/end
-      if (p.match) return p.won ? '#4caf82' : '#e05a5a';
+      if (p.match) return color;
       if (p.transition) return '#16181c'; // hollow transition
       return 'transparent';
     });
     const border = ds.map(() => color);
-    const borderWidth = ds.map((p, i) => (i === 0 || i === lastIdx || p.match || p.transition) ? 2 : 1);
+    const borderWidth = ds.map((p, i) => (i === 0 || i === lastIdx || p.match || p.transition) ? (isMobile ? 1.5 : 2) : 1);
     return { radius, bg, border, borderWidth };
   }
 

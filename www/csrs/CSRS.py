@@ -215,6 +215,7 @@ DEFAULT_CONFIG = {
     "PITY_THRESHOLD_PERCENT_LOW_ELO": 0.50,
     "DEPRECIATION_THRESHOLD": 14,
     "INACTIVE_ARCHIVE_DAYS": 180,
+    "PEAK_TRACKING_WARMUP_DAYS": 30,
 }
 
 # Load Configuration
@@ -333,6 +334,43 @@ _PITY_THRESHOLD_TO_MAX_GAP = PITY_THRESHOLD_PERCENT - PITY_MAX_PERCENT
 # automatically reappears the instant it plays a new match. See is_team_archived().
 INACTIVE_ARCHIVE_DAYS = CONFIG.get("INACTIVE_ARCHIVE_DAYS", DEFAULT_CONFIG.get("INACTIVE_ARCHIVE_DAYS", 180))
 
+# === PEAK-RANK WARMUP WINDOW ===
+# update_peak() records a team's peak rank alongside its peak rating. Ranks
+# are computed against however many teams have been registered SO FAR, not
+# the eventual full roster — early in a dataset's history (or right after a
+# fresh resimulation from empty), that pool can be tiny (a handful of teams
+# from the first event or two), so a perfectly ordinary team can land a
+# "Peak Rank #1" simply because only 3-4 teams existed yet, not because it
+# was ever actually elite. PEAK_TRACKING_WARMUP_DAYS suppresses peak
+# recording entirely for the first N days of the *dataset's* history (not
+# the team's own — a team's first match ever, played on day 45 of the
+# dataset, is still eligible) — by then the pool has almost always grown
+# past the point where rank numbers are this noisy. This is a calendar-time
+# gate rather than a pool-size gate by deliberate choice.
+PEAK_TRACKING_WARMUP_DAYS = CONFIG.get("PEAK_TRACKING_WARMUP_DAYS", DEFAULT_CONFIG.get("PEAK_TRACKING_WARMUP_DAYS", 30))
+
+
+def _history_start_date(history_list: List[Dict[str, Any]]) -> Optional[datetime]:
+    """
+    Earliest match date in `history_list`, assuming it's stored in
+    chronological order (relied on elsewhere too, e.g. the API's /meta
+    endpoint uses history[0] as the earliest match). Returns None if the
+    list is empty or the date can't be parsed.
+    """
+    if not history_list:
+        return None
+    raw = history_list[0].get("date", "")
+    if not raw or raw == "N/A":
+        return None
+    clean = raw.replace(" UTC", "").strip()
+    try:
+        return datetime.strptime(clean, "%Y-%m-%d %H:%M")
+    except ValueError:
+        try:
+            return datetime.strptime(clean[:10], "%Y-%m-%d")
+        except Exception:
+            return None
+
 # Pre-baked lookup table for the base depreciation decay curve. The curve
 # is a pure function of days_inactive (clamped to [0, 75]) and the fixed
 # DEPRECIATION_THRESHOLD/DEPRECIATION_CAP_DAYS constants above, so it's
@@ -384,6 +422,15 @@ adjustments = []          # List of manual point adjustment records for audit tr
 unsaved_changes = False   # Tracks if data has been modified since last manual save
 total_imports = 0         # Persistent running count of imports (drives tiered backups)
 
+# team_name -> {event_name: [player_nicks]}, captured the first time each
+# team appears in a given event. Used to detect a roster "core" carrying
+# over to a new team name across events (rebrands) — see
+# _find_core_match_in_lineups / auto_register_team's core-matching step.
+# Deliberately keyed by (team, event) rather than just team, since a team's
+# lineup can change between events even without a name change, and we want
+# the specific snapshot that was actually on server at that event.
+team_lineups: Dict[str, Dict[str, List[str]]] = {}
+
 # Tiered backup schedule: maps tier number -> import interval.
 # On each import, only the HIGHEST tier whose interval divides total_imports
 # is written — so import #20 (divisible by 5, 10, and 20) only writes to
@@ -406,7 +453,7 @@ def error_log(message: str) -> None:
     logger.error(message)
 
 def _build_save_code(t, a, h):
-    """Encode teams, aliases, history, peaks, event_tiers, adjustments, provisional_teams, total_imports into base64."""
+    """Encode teams, aliases, history, peaks, event_tiers, adjustments, provisional_teams, total_imports, team_lineups into base64."""
     try:
         payload = json.dumps({
             "version": SAVE_VERSION,
@@ -418,6 +465,7 @@ def _build_save_code(t, a, h):
             "adjustments": adjustments,
             "provisional_teams": provisional_teams,
             "total_imports": total_imports,
+            "team_lineups": team_lineups,
         })
         return base64.b64encode(zlib.compress(payload.encode())).decode()
     except Exception as e:
@@ -425,7 +473,7 @@ def _build_save_code(t, a, h):
         return None
 
 def _parse_save_code(raw_code):
-    """Decode a save code. Returns (teams, aliases, history, peaks, event_tiers, adjustments, provisional_teams, total_imports) or raises."""
+    """Decode a save code. Returns (teams, aliases, history, peaks, event_tiers, adjustments, provisional_teams, total_imports, team_lineups) or raises."""
     try:
         decoded = zlib.decompress(base64.b64decode(raw_code)).decode()
         data = json.loads(decoded)
@@ -434,7 +482,7 @@ def _parse_save_code(raw_code):
             print(f">>> WARNING: Save version mismatch (File: {data.get('version', 0)}, Expected: {SAVE_VERSION})")
         
         if isinstance(data, dict) and "teams" not in data:
-            return data, {}, [], {}, {}, [], {}, 0
+            return data, {}, [], {}, {}, [], {}, 0, {}
         # Migrate legacy 'event_name' key to 'event' on all history records
         history = data.get("history", [])
         for m in history:
@@ -450,7 +498,8 @@ def _parse_save_code(raw_code):
                 data.get("event_tiers", {}),
                 data.get("adjustments", []),
                 data.get("provisional_teams", {}),
-                data.get("total_imports", 0))
+                data.get("total_imports", 0),
+                data.get("team_lineups", {}))  # {} for saves from before this feature existed
     except Exception as e:
         error_log(f"Failed to parse save code: {e}")
         raise
@@ -553,7 +602,7 @@ def save_all(silent: bool = False) -> bool:
 
 def load_all():
     """Load state from data.save. Auto-recovers from backup if corrupted."""
-    global teams, aliases, history, peak_ratings, event_tiers, adjustments, unsaved_changes, total_imports
+    global teams, aliases, history, peak_ratings, event_tiers, adjustments, unsaved_changes, total_imports, team_lineups
     
     _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
     files_to_try = [SAVE_FILE] + [
@@ -570,7 +619,7 @@ def load_all():
                 if not content:
                     continue
                     
-                t, a, h, pk, et, adj, prov, ti = _parse_save_code(content)
+                t, a, h, pk, et, adj, prov, ti, tl = _parse_save_code(content)
                 
                 teams.clear(); teams.update(t)
                 aliases.clear(); aliases.update(a)
@@ -580,6 +629,7 @@ def load_all():
                 adjustments[:] = adj
                 provisional_teams.clear(); provisional_teams.update({k: int(v) for k, v in prov.items()})
                 total_imports = ti
+                team_lineups.clear(); team_lineups.update(tl)
                 
                 if filename == SAVE_FILE:
                     print(f">>> Loaded {len(history)} matches from {filename}")
@@ -600,9 +650,9 @@ def load_logic(raw_code):
     
     Used when importing save codes from other users or backup files.
     """
-    global teams, aliases, history, peak_ratings, event_tiers, adjustments, provisional_teams, total_imports
+    global teams, aliases, history, peak_ratings, event_tiers, adjustments, provisional_teams, total_imports, team_lineups
     try:
-        t, a, h, pk, et, adj, prov, ti = _parse_save_code(raw_code)
+        t, a, h, pk, et, adj, prov, ti, tl = _parse_save_code(raw_code)
         teams.clear(); teams.update(t)
         aliases.clear(); aliases.update(a)
         history.clear(); history.extend(h)
@@ -611,6 +661,7 @@ def load_logic(raw_code):
         adjustments[:] = adj
         provisional_teams.clear(); provisional_teams.update({k: int(v) for k, v in prov.items()})
         total_imports = ti
+        team_lineups.clear(); team_lineups.update(tl)
     except Exception as e:
         error_log(f"Load logic failed: {e}")
         raise
@@ -861,13 +912,20 @@ def pick_date_range():
             print("  [!] Invalid option. Select 1-5 or 0.")
 
 
-def update_peak(name, pts, date_str, rank: int = 0):
+def update_peak(name, pts, date_str, rank: int = 0, days_since_dataset_start: Optional[int] = None):
     """
     Update peak rating for a team if current points exceed recorded peak.
     rank can be passed directly to avoid O(N) get_sorted_rankings() call
     (e.g. from _do_resimulation which already tracks rank incrementally).
     If rank is 0 (default), falls back to get_sorted_rankings() as before.
+
+    days_since_dataset_start, if given, suppresses the update entirely while
+    still inside PEAK_TRACKING_WARMUP_DAYS of the dataset's first-ever match
+    — see the constant's docstring above for why. Pass None (default) to
+    skip this check (e.g. call sites that can't cheaply determine it).
     """
+    if days_since_dataset_start is not None and days_since_dataset_start < PEAK_TRACKING_WARMUP_DAYS:
+        return
     if rank == 0:
         ranked = get_sorted_rankings(include_archived=True)
         rank = ranked.index(name) + 1 if name in ranked else 0
@@ -957,7 +1015,7 @@ def is_team_archived(team_name: str, today=None, index: Optional[Dict[str, List[
     is_team_archived() reproduces that "falls off the list" behavior on top of CSRS's
     rating math: past INACTIVE_ARCHIVE_DAYS (default 180, matching VRS's window) a team is
     treated as archived and excluded from the default rankings/graphs view by
-    get_sorted_rankings()/display_rankings(). It is never deleted, its rating and history
+    get_sorted_rankings(). It is never deleted, its rating and history
     are untouched, and it automatically becomes active again the moment it plays a new
     match (there is no separate "restore" step).
 
@@ -980,7 +1038,7 @@ def get_sorted_rankings(include_archived: bool = False):
     excluded — mirroring how Valve's VRS drops teams with nothing left in its rolling
     window instead of listing them forever at a discounted rating. Pass
     include_archived=True for callers that need a specific team's rank/position
-    regardless of its activity status (e.g. compare_teams, simulate_match), to avoid
+    regardless of its activity status (e.g. update_peak), to avoid
     'team not found in rankings' errors for archived teams.
     """
     # Consider depreciation for accurate ranking
@@ -1210,89 +1268,6 @@ def _print_match_entry(index, m):
     print(f"  {t1_name}: {t1_pts_str}  {t1_rank_str}")
     print(f"  {t2_name}: {t2_pts_str}  {t2_rank_str}")
     print()
-
-# =============================================================================
-# === MENU: FUTURE UPDATES ===
-# =============================================================================
-
-def future_updates_menu():
-    """
-    Display planned features organized by priority.
-    """
-    prioritized = [
-        ("\n=== [OK] COMPLETED FEATURES ===", ""),
-        ("1. Improved Match Import Reliability", "Better scraper with lazy loading, fallback selectors, GF detection"),
-        ("2. Head-to-Head Win Probability Calculator", "Bo3/Bo5 predictions with map score breakdown"),
-        ("3. Elite Teams Over Time Graph", "Visual graph showing rating changes for top teams"),
-        ("4. Date Range Selection (4 Options)", "Max/Months/Weeks/Days + custom, end=latest match"),
-        ("5. Keyboard Shortcuts (menu/quit/restart)", "Type 'menu', 'quit', 'restart' in most prompts"),
-        ("6. Form Table with Streak Tracker", "Shows last 7 match results (W/L streak)"),
-        ("7. Duplicate URL Warning on Import", "Alerts if match URL already exists"),
-        ("8. Backup System (5 Rotating Backups)", "Auto-backup before saves, restore from backup menu"),
-        ("9. VRS Points Caching", "Prevents repeated requests for same date"),
-        ("10. Save Verification After Import", "Confirms data written to disk before reporting success"),
-        ("11. Elite Graph Depreciation Curves", "Visual depreciation after 7 days inactivity"),
-        ("12. Elite Graph Transition Markers", "Circle markers at flat-to-diagonal transitions"),
-        ("13. Elite Graph Dimmed Lines Below 850", "Teams below elite threshold visually de-emphasized"),
-        ("14. Analyze Team Form (Decluttered)", "Clean single-screen form breakdown with bars"),
-        ("15. Improved Form Insights System", "Tiered insights: win rate, maps, competition, streaks, trends"),
-        ("16. Fixed Streak Detection", "Counts consecutive results, not total streak string"),
-        ("17. Filter History by Tier/Environment", "View only S-Tier or Stage matches"),
-        ("18. Map Score Distribution Histogram", "Vertical bar chart for 2-0, 2-1, 3-0, etc."),
-        
-        ("\n=== [~] HIGH PRIORITY ===", ""),
-        ("19. Search Teams by Partial Name", "Type 'Vit' instead of 'Vitality' in all menus"),
-        ("20. Bulk Edit Matches by Event", "Change tier/environment for all matches from one event at once"),
-        ("21. Show Save File Info in Menu", "Display data.save size and last modified date"),
-        ("22. Fix Import Window Termination/Hang Issues", "Bug: GUI hangs when closing after import"),
-        ("23. Undo Last Delete", "Recover accidentally deleted matches from backup (one-click)"),
-        
-        ("\n=== [~] MEDIUM PRIORITY ===", ""),
-        ("24. Progress Bar for Resimulation", "Visual feedback when resimulating 100+ matches"),
-        ("25. Team Quick Stats on Selection", "Show current points, form, trend when selecting a team"),
-        ("26. Monthly/Yearly Summary Report", "See which teams gained/lost most points in a period"),
-        ("27. Peak Rating Profile Lookup", "Standalone lookup for team peak rating history"),
-        ("28. Estimated Time for Resimulation", "Show ~15 seconds before starting long resims"),
-        ("29. Skip Unchanged Matches on Resim", "Only recalculate matches after edited/deleted ones"),
-        
-        ("\n=== [~] ANALYTICS ENHANCEMENTS ===", ""),
-        ("30. Team Performance vs Tier", "Show how teams perform at S-Tier vs C-Tier events"),
-        ("31. Cache Form Calculations", "Store form scores, recalculate only when history changes"),
-        ("32. Lazy Load History for Display", "Show 50 matches at a time with Load More for large histories"),
-        ("33. Export Form Analysis to File", "Save team form breakdown as text/CSV"),
-        
-        ("\n=== [~] LOW PRIORITY / POLISH ===", ""),
-        ("34. Color-Coded Output", "Green for gains, red for losses (if terminal supports it)"),
-        ("35. Team Logo/Flag Display", "Show emojis or ASCII art for teams (cosmetic)"),
-        ("36. Orphaned Team Detection", "Find teams in history that no longer exist in roster"),
-        ("37. Reorder Menus", "Feature: Customizable menu layout"),
-        ("38. Export Graph to PNG/CSV", "Save elite teams graph or data for sharing"),
-        ("39. Compare Specific Teams Graph", "Select 2-5 teams to compare instead of all elite"),
-        ("40. Form Analysis Trend Graph", "Mini ASCII graph of form over last 15 matches"),
-    ]
-    
-    completed_count = len([i for i in prioritized if i[0].startswith('\n=== [OK]')]) - 1
-    pending_count = len([i for i in prioritized if i[0].startswith('\n=== [~]')])
-    
-    print("\n" + "="*70)
-    print(" FUTURE UPDATES & FEATURE REQUESTS")
-    print("="*70)
-    print(f"  Completed: {completed_count} features [OK]")
-    print(f"  Pending: {pending_count} features [~]")
-    print("="*70)
-    for item, reason in prioritized:
-        if item.startswith("\n==="):
-            print(f"\n{item}")
-            print("-"*70)
-        else:
-            print(f"  {item}")
-            if reason:
-                print(f"    -> {reason}")
-    print("\n" + "="*70)
-    print(" Note: Features marked HIGH PRIORITY will be implemented first.")
-    print("       Submit bug reports to csrs_error.log if issues occur.")
-    print("="*70)
-
 
 # =============================================================================
 # === MENU: SAVE/LOAD ===
@@ -1588,6 +1563,106 @@ def build_match_date_index(history_list: List[Dict[str, Any]]) -> Dict[str, List
     return index
 
 
+def _build_event_participation_index(history_list: List[Dict[str, Any]]) -> set:
+    """
+    Set of (team_name, event_name) pairs already present in history. Used
+    to detect a team's first match of an event without rescanning all of
+    history on every match processed during an import — build this once
+    per import run, then check/update it in memory as matches come in.
+    """
+    seen = set()
+    for m in history_list:
+        ev = m.get('event')
+        if not ev:
+            continue
+        for side in ('t1', 't2'):
+            name = m.get(side, {}).get('name')
+            if name:
+                seen.add((name, ev))
+    return seen
+
+
+def _capture_core_if_first_match(team_name: str, event_name: str, player_nicks: List[str],
+                                   participation_index: set) -> None:
+    """
+    If this is `team_name`'s first known match in `event_name` (per
+    participation_index), record `player_nicks` as that team's core for
+    the event, for future core-matching (see _find_core_match_in_lineups).
+    No-op if already captured, or if there's no lineup data to capture.
+
+    Mutates `participation_index` in place so a second match for the same
+    (team, event) later in the same import batch is correctly seen as NOT
+    the first, without needing to re-scan history.
+    """
+    if not team_name or not event_name or not player_nicks:
+        return
+    key = (team_name, event_name)
+    if key in participation_index:
+        return
+    participation_index.add(key)
+    team_lineups.setdefault(team_name, {})[event_name] = list(player_nicks)
+    mark_unsaved()
+
+
+def _find_core_match_in_lineups(player_nicks: List[str], exclude_team: Optional[str] = None,
+                                  before_date: Optional[datetime] = None,
+                                  date_index: Optional[Dict[str, List[datetime]]] = None,
+                                  min_matches: int = 3,
+                                  max_gap_days: int = None) -> Optional[Tuple[str, str, int]]:
+    """
+    Search team_lineups for the best-matching (team, event) by player-core
+    overlap with `player_nicks`. Returns (matched_team_name, matched_event,
+    overlap_count), or None if nothing qualifies.
+
+    - exclude_team: skip this team name (a team's own lineup history
+      shouldn't match against itself under a name change that didn't
+      actually happen)
+    - before_date: only consider teams whose LAST known match activity is
+      strictly before this date — without this, two simultaneously-active
+      teams that happen to share players (loans, stand-ins, dual-tagging)
+      could be falsely flagged as the same core.
+    - max_gap_days: additionally require the candidate's last match to be
+      within this many days of `before_date` (defaults to
+      INACTIVE_ARCHIVE_DAYS). Matches the same "nothing meaningful left to
+      carry forward" cutoff apply_depreciation_to_rating uses — a core
+      match against a team that would itself have already been archived
+      for inactivity shouldn't resurrect its old rating.
+    - Ties (equal overlap) are broken by most recent last-match date —
+      a coincidental 3-player overlap with a team from years ago is far
+      less meaningful than one from last month.
+
+    Selection is over ALL stored (team, event) lineups, not just the most
+    recent one for each team, so a team matches against whichever of its
+    past events had the closest core, not necessarily its latest.
+    """
+    if not player_nicks:
+        return None
+    if max_gap_days is None:
+        max_gap_days = INACTIVE_ARCHIVE_DAYS
+    nick_set = set(n.lower() for n in player_nicks)
+
+    best: Optional[Tuple[str, str, int, datetime]] = None  # (team, event, overlap, last_match)
+    for team_name, events in team_lineups.items():
+        if team_name == exclude_team:
+            continue
+        last_match = get_team_last_match_date_before(team_name, before_date, index=date_index)
+        if before_date is not None:
+            if last_match is None or last_match >= before_date:
+                continue  # still active / no prior activity — not a valid rebrand source
+            if (before_date - last_match).days > max_gap_days:
+                continue  # too long ago — same cutoff as the inactivity archive reset
+        for event_name, lineup in events.items():
+            overlap = len(nick_set & set(n.lower() for n in lineup))
+            if overlap < min_matches:
+                continue
+            if best is None or overlap > best[2] or (overlap == best[2] and (last_match or datetime.min) > (best[3] or datetime.min)):
+                best = (team_name, event_name, overlap, last_match)
+
+    if best is None:
+        return None
+    return (best[0], best[1], best[2])
+
+
 def get_team_last_match_date_before(team_name: str, before_date: datetime = None,
                                      index: Optional[Dict[str, List[datetime]]] = None) -> Optional[datetime]:
     """
@@ -1650,6 +1725,24 @@ def apply_depreciation_to_rating(team_name: str, current_rating: float, match_da
         return current_rating
     
     days_inactive = (match_date - last_match).days
+
+    # A team that's been fully inactive for more than INACTIVE_ARCHIVE_DAYS
+    # (default 180, matching Valve VRS's rolling results window) is treated
+    # exactly like a brand-new team returning to competition: its old rating
+    # is dropped entirely in favor of a fresh PROVISIONAL_STARTING_RATING,
+    # and it re-enters the provisional window (boosted K-factors for its
+    # next PROVISIONAL_MATCH_THRESHOLD matches — see get_provisional_k).
+    # Ordinary depreciation (calculate_depreciation) only ever discounts a
+    # rating — capped around 25% off, held forever — it never resets anyone,
+    # so on its own a team that vanishes for years would still carry a
+    # near-full rating back into competition. This mirrors how Valve's VRS
+    # has nothing meaningful left to score a team on once its whole rolling
+    # window has expired: past that point there's nothing left to carry
+    # forward, so the team starts over.
+    if days_inactive > INACTIVE_ARCHIVE_DAYS:
+        provisional_teams[team_name] = 0
+        return PROVISIONAL_STARTING_RATING
+
     depreciated = calculate_depreciation(current_rating, days_inactive, team_name)
     
     return depreciated
@@ -1797,10 +1890,128 @@ def calculate_points(team_points, opponent_points, result, map_diff, tier='A', e
     return min(max(RATING_FLOOR, team_points + change), RATING_CAP)
 
 # =============================================================================
+# === ADAPTIVE COMPETITION-STRENGTH REFERENCE (form calculator only) ===
+# =============================================================================
+#
+# A Monte Carlo test (a synthetic team locked at an exact 50% win rate, no
+# real skill change at all) showed its form score drifting upward over the
+# season purely because the form calculator's Competition Strength
+# component divided opponent points by the FIXED constant DIMINISHING_MAX
+# (1050), while the league's real top-of-table point levels drift upward
+# over time. Win Rate and Map Win Rate don't have this problem (a win is a
+# win regardless of era), so this only affects Competition Strength.
+#
+# Fix: normalize against the league's ACTUAL point level at the time of
+# each match (the trailing top-20 teams' most recent points, recomputed
+# daily) instead of a static number. This is intentionally separate from
+# DIMINISHING_MAX's other use in calculate_points()'s K-factor
+# diminishing-returns curve (line ~1672 above) — that's a different, more
+# sensitive part of the rating engine and is deliberately left untouched.
+
+_comp_reference_cache: Dict[str, Any] = {"fingerprint": None, "series": None, "keys": None}
+
+
+def _history_fingerprint(history: List[Dict[str, Any]]) -> tuple:
+    """
+    Cheap cache-invalidation fingerprint for a history list: its length
+    plus the last entry's date. Good enough to detect imports/resimulation
+    changing `history` without hashing the whole list on every call — this
+    CLI operates on an in-memory list rather than a request-scoped file
+    mtime, so there's no single "data changed" signal to key off of.
+    """
+    if not history:
+        return (0, None)
+    return (len(history), history[-1].get('date'))
+
+
+def _build_comp_reference_series(history: List[Dict[str, Any]], top_k: int = 20) -> Dict[str, float]:
+    """
+    Day-by-day 'ceiling of the league' series: for each day with at least
+    one match, the average of the top `top_k` teams' most-recent points as
+    of that day. Used to normalize Competition Strength against the
+    league's actual point levels at the time, rather than a fixed constant.
+    """
+    latest_pts: Dict[str, float] = {}
+    series: Dict[str, float] = {}
+    current_day_key = None
+
+    def _snapshot(day_key):
+        if not latest_pts:
+            return
+        top_vals = sorted(latest_pts.values(), reverse=True)[:top_k]
+        series[day_key] = sum(top_vals) / len(top_vals)
+
+    for m in history:
+        date_str = m.get("date", "")
+        if not date_str or date_str == "N/A":
+            continue
+        clean = date_str.replace(" UTC", "").strip()
+        try:
+            as_of = datetime.strptime(clean, "%Y-%m-%d %H:%M")
+        except ValueError:
+            try:
+                as_of = datetime.strptime(clean[:10], "%Y-%m-%d")
+            except Exception:
+                continue
+        day_key = as_of.strftime("%Y-%m-%d")
+
+        if current_day_key is not None and day_key != current_day_key:
+            _snapshot(current_day_key)
+        current_day_key = day_key
+
+        for side in ("t1", "t2"):
+            name = m[side]["name"]
+            latest_pts[name] = m[side]["pts_after"]
+
+    if current_day_key is not None:
+        _snapshot(current_day_key)
+
+    return series
+
+
+def _comp_reference_cached(history: List[Dict[str, Any]]):
+    """Fingerprint-cached wrapper — recomputes only when `history` changes."""
+    fp = _history_fingerprint(history)
+    if _comp_reference_cache["fingerprint"] != fp:
+        series = _build_comp_reference_series(history)
+        _comp_reference_cache["fingerprint"] = fp
+        _comp_reference_cache["series"] = series
+        _comp_reference_cache["keys"] = sorted(series.keys())
+    return _comp_reference_cache["series"], _comp_reference_cache["keys"]
+
+
+def _comp_reference_for_date(date_str: str, history: List[Dict[str, Any]]) -> float:
+    """
+    Looks up the adaptive Competition-Strength reference for a match date
+    (nearest day at or before it). Falls back to the static DIMINISHING_MAX
+    constant if there's no series data yet (e.g. the very first matches in
+    history, before any day has been snapshotted).
+    """
+    series, keys = _comp_reference_cached(history)
+    if not keys:
+        return DIMINISHING_MAX
+
+    clean = (date_str or "").replace(" UTC", "").strip()
+    try:
+        try:
+            dt = datetime.strptime(clean, "%Y-%m-%d %H:%M")
+        except ValueError:
+            dt = datetime.strptime(clean[:10], "%Y-%m-%d")
+    except Exception:
+        return DIMINISHING_MAX
+    day_key = dt.strftime("%Y-%m-%d")
+
+    idx = bisect.bisect_right(keys, day_key) - 1
+    if idx < 0:
+        return DIMINISHING_MAX
+    return series[keys[idx]]
+
+
+# =============================================================================
 # === FORM & STATISTICS (TRENDS, HISTORY) ===
 # =============================================================================
 
-def _compute_form_from_recent(recent) -> Optional[Tuple[str, float, str]]:
+def _compute_form_from_recent(recent, history: Optional[List[Dict[str, Any]]] = None) -> Optional[Tuple[str, float, str]]:
     """
     Core form computation, shared by calculate_form() (which scans full
     history to build `recent`) and the incremental per-team deque tracker
@@ -1810,6 +2021,19 @@ def _compute_form_from_recent(recent) -> Optional[Tuple[str, float, str]]:
     Parameters:
     - recent: list of (side, match) tuples in chronological order
       (oldest first), already capped to the desired window size (e.g. 15).
+    - history: full match history, used only to look up the adaptive
+      Competition-Strength reference for each match's date (see
+      _comp_reference_for_date above). Falls back to the static
+      DIMINISHING_MAX constant if omitted.
+
+      NOTE: this function is also called from _do_resimulation's inner
+      loop (via the per-team deque tracker) to compute the form
+      adjustment fed into calculate_points() — unlike every other form
+      call site in this file, that one isn't purely a display feature.
+      Passing `history` there (see call site) means a resimulation's
+      historical points will shift slightly from before, by the same
+      small, bounded amount the Monte Carlo test measured for the
+      display-only fix — not a display-only change in that one case.
 
     Returns: (grade, score, streak) or None if insufficient data
     """
@@ -1843,7 +2067,8 @@ def _compute_form_from_recent(recent) -> Optional[Tuple[str, float, str]]:
         map_total_weighted += (t_score + opp_score) * recency
 
         opp_pts = opp.get('pts_before', 500)
-        comp_weighted += (opp_pts / DIMINISHING_MAX) * recency
+        comp_ref = _comp_reference_for_date(m.get('date', ''), history) if history else DIMINISHING_MAX
+        comp_weighted += (opp_pts / comp_ref) * recency
 
         total_weight += recency
         streak_chars.append('W' if won else 'L')
@@ -1947,1253 +2172,18 @@ def calculate_form(team_name: str, n: int, history: List[Dict[str, Any]]) -> Opt
     if len(team_matches) < 3:
         return None
 
-    return _compute_form_from_recent(team_matches[-n:])
+    return _compute_form_from_recent(team_matches[-n:], history=history)
 
 
-def calculate_form_at_match_index(team_name: str, match_index: int, history: List[Dict[str, Any]]) -> Optional[Tuple[str, float, str]]:
-    """
-    Calculate form score for a team using only matches UP TO match_index.
-    Used for historical form graphing.
-    
-    Parameters:
-    - team_name: The team to calculate form for
-    - match_index: Slice history up to this index (exclusive)
-    - history: List of match records (REQUIRED - no global fallback)
-    
-    Returns: (grade, score, streak) or None if insufficient data
-    """
-    if not history:
-        return None
-    
-    sliced_history = history[:match_index]
-    
-    team_matches = []
-    for m in sliced_history:
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        if t1_name == team_name:
-            team_matches.append(('t1', m))
-        elif t2_name == team_name:
-            team_matches.append(('t2', m))
-    
-    if len(team_matches) < 3:
-        return None
-    
-    recent = team_matches[-15:]
-    total_weight = 0.0
-    win_weighted = 0.0
-    map_wins_weighted = 0.0
-    map_total_weighted = 0.0
-    comp_weighted = 0.0
-    streak_chars = []
-    
-    for idx, (side, m) in enumerate(recent):
-        t = m.get(side, {})
-        opp_side = 't2' if side == 't1' else 't1'
-        opp = m.get(opp_side, {})
-        
-        t_score = t.get('score', 0)
-        opp_score = opp.get('score', 0)
-        won = t_score > opp_score
-        
-        matches_ago = len(recent) - 1 - idx
-        exponent = 2.0
-        normalized = matches_ago / 14
-        recency = 1.0 - (normalized ** exponent) * 0.85
-        recency = max(0.15, recency)
-        
-        win_weighted += (1.0 if won else 0.0) * recency
-        map_wins_weighted += t_score * recency
-        map_total_weighted += (t_score + opp_score) * recency
-        
-        opp_pts = opp.get('pts_before', 500)
-        comp_weighted += (opp_pts / DIMINISHING_MAX) * recency
-        
-        total_weight += recency
-        streak_chars.append('W' if won else 'L')
-    
-    if total_weight == 0:
-        return None
-    
-    win_rate = win_weighted / total_weight
-    map_win_rate = map_wins_weighted / map_total_weighted if map_total_weighted > 0 else 0.5
-    comp_rate = comp_weighted / total_weight
-    
-    def apply_form_compression(value: float, threshold: float = FORM_DIMINISHING_THRESHOLD, 
-                                compression: float = FORM_DIMINISHING_COMPRESSION) -> float:
-        if not FORM_DIMINISHING_ENABLED or value <= threshold:
-            return value
-        else:
-            gain_above_threshold = value - threshold
-            compressed_gain = gain_above_threshold * (1.0 - compression)
-            result = threshold + compressed_gain
-            return min(1.0, max(threshold, result))
-    
-    win_rate_compressed = apply_form_compression(win_rate)
-    map_win_rate_compressed = apply_form_compression(map_win_rate)
-    comp_rate_compressed = apply_form_compression(comp_rate)
-    
-    win_score = win_rate_compressed * FORM_WIN_WEIGHT
-    map_score = map_win_rate_compressed * FORM_MAP_WEIGHT
-    comp_score = comp_rate_compressed * FORM_COMP_WEIGHT
-    
-    base_score = win_score + map_score + comp_score
-    
-    streak = ''.join(streak_chars[-15:])
-    streak_bonus = 0.0
-    consecutive_losses = 0
-    
-    if FORM_STREAK_BONUS_ENABLED:
-        for result in streak:
-            if result == 'W':
-                streak_bonus += FORM_STREAK_BONUS_PER_WIN
-                streak_bonus = min(FORM_STREAK_BONUS_MAX, streak_bonus)
-                consecutive_losses = 0
-            else:
-                consecutive_losses += 1
-                if consecutive_losses >= FORM_STREAK_LOSS_RESET_COUNT:
-                    streak_bonus = 0.0
-                    consecutive_losses = 0
-                else:
-                    streak_bonus *= 0.5
-        
-        streak_bonus = min(FORM_STREAK_BONUS_MAX, streak_bonus)
-    
-    score = base_score + streak_bonus
-    score = min(score, 100.0)
-    
-    total_form_points = FORM_WIN_WEIGHT + FORM_MAP_WEIGHT + FORM_COMP_WEIGHT
-    if score >= total_form_points * 0.85:   grade = 'S'
-    elif score >= total_form_points * 0.70: grade = 'A'
-    elif score >= total_form_points * 0.55: grade = 'B'
-    elif score >= total_form_points * 0.40: grade = 'C'
-    else:                                   grade = 'D'
-    
-    return grade, round(score, 1), streak
-
-def build_form_timeline(team_name, history=None):
-    """
-    Build a complete form timeline for a team across all their matches.
-    Returns list of (date, form_score, grade, match_index) tuples.
-    """
-    if history is None:
-        history = globals().get('history', [])
-    
-    # Get all matches for this team
-    team_matches = []
-    for idx, m in enumerate(history):
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        if t1_name == team_name or t2_name == team_name:
-            team_matches.append((idx, m))
-    
-    if len(team_matches) < 3:
-        return None
-    
-    timeline = []
-    
-    # Calculate form at each match point (starting from match 4, since we need 3 prior)
-    for i, (match_idx, m) in enumerate(team_matches):
-        # Calculate form using history up to this match
-        form = calculate_form_at_match_index(team_name, match_idx + 1, history)
-        
-        if form:
-            grade, score, streak = form
-            match_date = m.get('date', 'N/A')[:10]
-            timeline.append((match_date, score, grade, match_idx))
-    
-    return timeline
-
-def display_form_table() -> None:
-    """Show form ratings for all teams with history, sorted by score."""
-    if not history:
-        print("\n>>> No match history available.")
-        print("    Import matches to see form ratings.")
-        return
-    
-    print("\n=== FORM RATINGS (Last 15 matches) ===")
-    print(f"  {'#':<4} {'Team':<22} {'Gr':<4} {'Score':<7} {'Win':<7} {'Map':<7} {'Comp':<7} {'Streak'}")
-    print(f"  {'':<4} {'':<22} {'':<4} {'':<7} {'(pts)':<7} {'(pts)':<7} {'(pts)':<7} {''}")
-    print(f"  {'-'*76}")
-    results = []
-    for name in teams:
-        form = calculate_form(name, n=15, history=history)
-        if form:
-            team_matches = []
-            for m in history:
-                t1_name = m.get('t1', {}).get('name')
-                t2_name = m.get('t2', {}).get('name')
-                if t1_name == name:
-                    team_matches.append(('t1', m))
-                elif t2_name == name:
-                    team_matches.append(('t2', m))
-            
-            team_matches = sorted(team_matches, key=lambda x: x[1].get('date',''))[-15:]
-            tw = ww = mw = mt = cw = 0.0
-            for idx, (side, m) in enumerate(team_matches):
-                t = m.get(side, {})
-                opp = m.get('t2' if side == 't1' else 't1', {})
-                
-                matches_ago = len(team_matches) - 1 - idx
-                exponent = 2.0
-                normalized = matches_ago / 14
-                r = 1.0 - (normalized ** exponent) * 0.85
-                r = max(0.15, r)
-                
-                t_score = t.get('score', 0)
-                opp_score = opp.get('score', 0)
-                ww += (1.0 if t_score > opp_score else 0.0) * r
-                mw += t_score * r
-                mt += (t_score + opp_score) * r
-                cw += (opp.get('pts_before', 500) / DIMINISHING_MAX) * r
-                tw += r
-            
-            def apply_form_compression(value, threshold=FORM_DIMINISHING_THRESHOLD, 
-                                        compression=FORM_DIMINISHING_COMPRESSION):
-                if not FORM_DIMINISHING_ENABLED or value <= threshold:
-                    return value
-                else:
-                    gain_above_threshold = value - threshold
-                    compressed_gain = gain_above_threshold * (1.0 - compression)
-                    result = threshold + compressed_gain
-                    return min(1.0, max(threshold, result))
-
-            win_rate_raw = ww/tw if tw else 0
-            map_rate_raw = mw/mt if mt else 0
-            comp_rate_raw = cw/tw if tw else 0
-
-            win_rate_c = apply_form_compression(win_rate_raw)
-            map_rate_c = apply_form_compression(map_rate_raw)
-            comp_rate_c = apply_form_compression(comp_rate_raw)
-
-            win_s  = round(win_rate_c * FORM_WIN_WEIGHT, 1) if tw else 0
-            map_s  = round(map_rate_c * FORM_MAP_WEIGHT, 1) if mt else 0
-            comp_s = round(comp_rate_c * FORM_COMP_WEIGHT, 1) if tw else 0
-            
-            grade, score, streak = form
-            
-            results.append((name, form, win_s, map_s, comp_s, streak))
-    
-    results.sort(key=lambda x: x[1][1], reverse=True)
-    for i, (name, (grade, score, streak), win_s, map_s, comp_s, streak_display) in enumerate(results, 1):
-        n = min(15, sum(1 for m in history if m.get('t1', {}).get('name') == name or m.get('t2', {}).get('name') == name))
-        print(f"  {i:<4} {name:<22} {grade:<4} {score:<7} {win_s:<7} {map_s:<7} {comp_s:<7} {streak_display} ({n})")
-    if not results:
-        print("  [!] No teams have enough match history for form calculation (minimum 3 matches).")
-        
-def analyze_team_form() -> None:
-    """
-    Detailed breakdown and analysis of a team's form score.
-    """
-    print("\n=== ANALYZE TEAM FORM ===")
-    
-    team_raw = check_cmd(input("Enter team name: ")).strip()
-    if get_cmd(team_raw) in ['back', '0']:
-        return
-    
-    team = find_team(team_raw)
-    if not team:
-        print(">>> Team not found.")
-        return
-    
-    form = calculate_form(team, n=15, history=history)
-    if not form:
-        print(f">>> Not enough match history for {team} (minimum 3 matches required).")
-        return
-    
-    grade, score, streak = form
-    
-    team_matches = []
-    for m in history:
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        if t1_name == team:
-            team_matches.append(('t1', m))
-        elif t2_name == team:
-            team_matches.append(('t2', m))
-    
-    if not team_matches:
-        print(">>> No matches found for this team.")
-        return
-    
-    team_matches = sorted(team_matches, key=lambda x: x[1].get('date', ''))
-    recent = team_matches[-15:]
-    
-    streak_bonus = 0.0
-    consecutive_losses = 0
-    total_wins = 0
-    total_losses = 0
-
-    streak_for_bonus = []
-    for idx, (side, m) in enumerate(recent):
-        t = m.get(side, {})
-        opp = m.get('t2' if side == 't1' else 't1', {})
-        won = t.get('score', 0) > opp.get('score', 0)
-        streak_for_bonus.append('W' if won else 'L')
-    
-    streak_full = ''.join(streak_for_bonus)
-
-    if FORM_STREAK_BONUS_ENABLED:
-        for result in streak_full:
-            if result == 'W':
-                streak_bonus += FORM_STREAK_BONUS_PER_WIN
-                streak_bonus = min(FORM_STREAK_BONUS_MAX, streak_bonus)
-                total_wins += 1
-                consecutive_losses = 0
-            else:
-                consecutive_losses += 1
-                total_losses += 1
-                if consecutive_losses >= FORM_STREAK_LOSS_RESET_COUNT:
-                    streak_bonus = 0.0
-                    consecutive_losses = 0
-                else:
-                    streak_bonus *= 0.5
-        
-        streak_bonus = min(FORM_STREAK_BONUS_MAX, streak_bonus)
-    
-    base_score = score - streak_bonus
-    
-    print(f"\n=== {team} - Form Analysis ===")
-    total_form_points = FORM_WIN_WEIGHT + FORM_MAP_WEIGHT + FORM_COMP_WEIGHT
-    print(f"Form: {grade} ({score}/{total_form_points:.1f})  |  Streak: {streak}  |  Matches: {len(recent)}")
-    
-    if streak_bonus > 0:
-        print(f"      +-- Win Streak Bonus: +{streak_bonus:.1f} ({total_wins}W/{total_losses}L in window) [Base: {base_score:.1f}]")
-    elif total_losses >= FORM_STREAK_LOSS_RESET_COUNT and consecutive_losses >= FORM_STREAK_LOSS_RESET_COUNT:
-        print(f"      +-- Streak Bonus Wiped ({consecutive_losses} Consecutive Losses) [Base: {base_score:.1f}]")
-    else:
-        print(f"      +-- No Active Bonus [Base: {base_score:.1f}]")
-    
-    total_weight = 0.0
-    win_weighted = 0.0
-    map_wins_weighted = 0.0
-    map_total_weighted = 0.0
-    comp_weighted = 0.0
-    
-    raw_match_data = []
-    
-    for idx, (side, m) in enumerate(recent):
-        t = m.get(side, {})
-        opp_side = 't2' if side == 't1' else 't1'
-        opp = m.get(opp_side, {})
-        
-        t_score = t.get('score', 0)
-        opp_score = opp.get('score', 0)
-        opp_pts = opp.get('pts_before', 500)
-        won = t_score > opp_score
-        
-        matches_ago = len(recent) - 1 - idx
-        exponent = 2.0
-        normalized = matches_ago / 14
-        recency = 1.0 - (normalized ** exponent) * 0.85
-        recency = max(0.15, recency)
-        
-        win_weighted += (1.0 if won else 0.0) * recency
-        map_wins_weighted += t_score * recency
-        map_total_weighted += (t_score + opp_score) * recency
-        
-        # Same flat linear formula as _compute_form_from_recent (the function
-        # that actually produces the team's real, displayed form score) —
-        # previously this used a team-rating-relative threshold/buffer that
-        # didn't match, so this breakdown's numbers didn't sum to the real
-        # score shown above them.
-        comp_value = opp_pts / DIMINISHING_MAX
-        
-        comp_weighted += comp_value * recency
-        total_weight += recency
-        
-        raw_match_data.append({
-            'date': m.get('date', 'N/A')[:10],
-            'opponent': opp.get('name', 'Unknown'),
-            'score': f"{t_score}-{opp_score}",
-            'result': 'W' if won else 'L',
-            'opp_rating': opp_pts,
-            'recency': recency,
-            'won': won,
-            't_score': t_score,
-            'opp_score': opp_score,
-            'comp_value': comp_value
-        })
-    
-    win_rate = win_weighted / total_weight if total_weight > 0 else 0.0
-    map_win_rate = map_wins_weighted / map_total_weighted if map_total_weighted > 0 else 0.0
-    comp_rate = min(1.0, max(0.0, comp_weighted / total_weight)) if total_weight > 0 else 0.0
-    
-    def apply_form_compression(value: float, threshold: float = FORM_DIMINISHING_THRESHOLD, 
-                                compression: float = FORM_DIMINISHING_COMPRESSION) -> float:
-        if not FORM_DIMINISHING_ENABLED or value <= threshold:
-            return value
-        else:
-            gain_above_threshold = value - threshold
-            compressed_gain = gain_above_threshold * (1.0 - compression)
-            result = threshold + compressed_gain
-            return min(1.0, max(threshold, result))
-
-    win_rate_compressed = apply_form_compression(win_rate)
-    map_win_rate_compressed = apply_form_compression(map_win_rate)
-    comp_rate_compressed = apply_form_compression(comp_rate)
-
-    win_score = win_rate_compressed * FORM_WIN_WEIGHT
-    map_score = map_win_rate_compressed * FORM_MAP_WEIGHT
-    comp_score = comp_rate_compressed * FORM_COMP_WEIGHT
-    
-    match_details = []
-    for raw in raw_match_data:
-        win_contrib = (1.0 if raw['won'] else 0.0) * raw['recency'] * FORM_WIN_WEIGHT / total_weight if total_weight > 0 else 0
-        map_contrib = (raw['t_score'] / (raw['t_score'] + raw['opp_score']) if (raw['t_score'] + raw['opp_score']) > 0 else 0) * raw['recency'] * FORM_MAP_WEIGHT / total_weight if total_weight > 0 else 0
-        comp_contrib = raw['comp_value'] * raw['recency'] * FORM_COMP_WEIGHT / total_weight if total_weight > 0 else 0
-        match_form = win_contrib + map_contrib + comp_contrib
-        
-        match_details.append({
-            'date': raw['date'],
-            'opponent': raw['opponent'],
-            'score': raw['score'],
-            'result': raw['result'],
-            'recency': raw['recency'],
-            'match_form': match_form
-        })
-    
-    print(f"\nComponents:")
-    
-    win_pct = (win_rate * 100) if total_weight > 0 else 0
-    win_pct_compressed = (win_rate_compressed * 100) if total_weight > 0 else 0
-    win_bar_len = int((win_score / FORM_WIN_WEIGHT) * 30) if FORM_WIN_WEIGHT > 0 else 0
-    win_bar = '#' * win_bar_len + '-' * (30 - win_bar_len)
-    if FORM_DIMINISHING_ENABLED and win_rate > FORM_DIMINISHING_THRESHOLD:
-        print(f"  Win Rate              {win_score:<5.1f}  {win_bar} ({win_pct:.0f}%->{win_pct_compressed:.0f}%)")
-    else:
-        print(f"  Win Rate              {win_score:<5.1f}  {win_bar} ({win_pct:.0f}%)")
-    
-    map_pct = (map_win_rate * 100) if map_total_weighted > 0 else 0
-    map_pct_compressed = (map_win_rate_compressed * 100) if map_total_weighted > 0 else 0
-    map_bar_len = int((map_score / FORM_MAP_WEIGHT) * 30) if FORM_MAP_WEIGHT > 0 else 0
-    map_bar = '#' * map_bar_len + '-' * (30 - map_bar_len)
-    if FORM_DIMINISHING_ENABLED and map_win_rate > FORM_DIMINISHING_THRESHOLD:
-        print(f"  Map Win Rate          {map_score:<5.1f}  {map_bar} ({map_pct:.0f}%->{map_pct_compressed:.0f}%)")
-    else:
-        print(f"  Map Win Rate          {map_score:<5.1f}  {map_bar} ({map_pct:.0f}%)")
-    
-    comp_pct = (comp_rate * 100) if total_weight > 0 else 0
-    comp_pct_compressed = (comp_rate_compressed * 100) if total_weight > 0 else 0
-    comp_bar_len = int((comp_score / FORM_COMP_WEIGHT) * 30) if FORM_COMP_WEIGHT > 0 else 0
-    comp_bar = '#' * comp_bar_len + '-' * (30 - comp_bar_len)
-    if FORM_DIMINISHING_ENABLED and comp_rate > FORM_DIMINISHING_THRESHOLD:
-        print(f"  Competition Strength  {comp_score:<5.1f}  {comp_bar} ({comp_pct:.0f}%->{comp_pct_compressed:.0f}%)")
-    else:
-        print(f"  Competition Strength  {comp_score:<5.1f}  {comp_bar} ({comp_pct:.0f}%)")
-    
-    print(f"\nRecent Matches:")
-    print(f"  {'#':<3} {'Date':<8} {'Opponent':<18} {'Score':<6} {'Form Points':>11}")
-    print(f"  {'-'*50}")
-    
-    for idx, details in enumerate(match_details, 1):
-        date_short = details['date'][5:]
-        result_icon = 'W' if details['result'] == 'W' else 'L'
-        print(f"  {idx:<3} {date_short:<8} {details['opponent'][:18]:<18} {details['score']:<6} {result_icon}  {details['match_form']:>6.1f}")
-    
-    print(f"\nTrend:", end="")
-    trend_data = []
-    for window in [5, 10, 15]:
-        if len(recent) >= window:
-            window_matches = recent[-window:]
-            w_w = w_mw = w_mt = w_c = w_t = 0.0
-            
-            for idx, (side, m) in enumerate(window_matches):
-                t = m.get(side, {})
-                opp = m.get('t2' if side == 't1' else 't1', {})
-                
-                matches_ago = len(window_matches) - 1 - idx
-                exponent = 2.0
-                normalized = matches_ago / 14
-                r = 1.0 - (normalized ** exponent) * 0.85
-                r = max(0.15, r)
-                
-                won = t.get('score', 0) > opp.get('score', 0)
-                w_w += (1.0 if won else 0.0) * r
-                w_mw += t.get('score', 0) * r
-                w_mt += (t.get('score', 0) + opp.get('score', 0)) * r
-                
-                opp_pts = opp.get('pts_before', 500)
-                comp_value = opp_pts / DIMINISHING_MAX
-                
-                w_c += comp_value * r
-                w_t += r
-            
-            w_rate = w_w / w_t if w_t > 0 else 0
-            w_map = w_mw / w_mt if w_mt > 0 else 0
-            w_comp = w_c / w_t if w_t > 0 else 0
-            w_score = round((w_rate * FORM_WIN_WEIGHT) + (w_map * FORM_MAP_WEIGHT) + (w_comp * FORM_COMP_WEIGHT), 1)
-            
-            trend_arrow = "^" if w_score > score else ("v" if w_score < score else "-")
-            diff = f"+{w_score - score:.1f}" if w_score > score else f"{w_score - score:.1f}"
-            trend_data.append((window, w_score, trend_arrow, diff))
-    
-    for window, w_score, trend_arrow, diff in trend_data:
-        print(f"  Last {window} ({w_score} {trend_arrow} {diff})", end="")
-    print()
-    
-    insights = []
-    
-    win_rate_pct = win_rate * 100
-    if win_rate_pct >= 80:
-        insights.append(f"Dominating matches ({win_rate_pct:.0f}%)")
-    elif win_rate_pct >= 60:
-        insights.append(f"Consistent in matches ({win_rate_pct:.0f}%)")
-    elif win_rate_pct >= 40:
-        insights.append(f"Inconsistent in matches ({win_rate_pct:.0f}%)")
-    else:
-        insights.append(f"Poor performance in matches ({win_rate_pct:.0f}%)")
-    
-    map_pct = map_win_rate * 100
-    if map_pct >= 70:
-        insights.append(f"Dominating maps ({map_pct:.0f}%)")
-    elif map_pct >= 55:
-        insights.append(f"Highly competitive on maps ({map_pct:.0f}%)")
-    elif map_pct >= 45:
-        insights.append(f"Competitive on maps ({map_pct:.0f}%)")
-    else:
-        insights.append(f"Poor performance on maps ({map_pct:.0f}%)")
-    
-    if comp_rate >= 0.90:
-        insights.append("Great competition")
-    elif comp_rate >= 0.75:
-        insights.append("Okay competition")
-    else:
-        insights.append("Farming bad teams")
-    
-    consecutive = 1
-    for i in range(len(streak) - 2, -1, -1):
-        if streak[i] == streak[-1]:
-            consecutive += 1
-        else:
-            break
-    
-    if streak.endswith('W'):
-        if consecutive >= 10:
-            insights.append(f"{consecutive}-Match legendary win streak")
-        elif consecutive >= 5:
-            insights.append(f"{consecutive}-Match hot win streak")
-        elif consecutive >= 3:
-            insights.append(f"{consecutive}-Match small win streak")
-    elif streak.endswith('L'):
-        if consecutive >= 10:
-            insights.append(f"{consecutive}-Match rebuild needed")
-        elif consecutive >= 5:
-            insights.append(f"{consecutive}-Match crisis mode")
-        elif consecutive >= 3:
-            insights.append(f"{consecutive}-Match rough patch")
-    
-    if len(trend_data) > 0:
-        latest_window, latest_score, trend_arrow, diff = trend_data[0]
-        diff_val = float(diff)
-        if diff_val >= 5.0:
-            insights.append(f"Form hiking {trend_arrow}{trend_arrow}")
-        elif diff_val >= 2.0:
-            insights.append(f"Form improving {trend_arrow}")
-        elif diff_val <= -5.0:
-            insights.append(f"Form slumping {trend_arrow}{trend_arrow}")
-        elif diff_val <= -2.0:
-            insights.append(f"Form declining {trend_arrow}")
-    
-    print(f"\nInsights:  {' | '.join(insights)}")
-    print(f"\n{'='*50}")
-    print("\nPress Enter to return...")
-    input()
-
-def get_team_trend(team_name, days=30):
-    """
-    Calculate rating trend for a team over the last N days.
-    Returns (trend_type, points_change) where trend_type is:
-    -- (stable), ↑ (slight up), ↑↑ (strong up), ↓ (slight down), ↓↓ (strong down)
-    """
-    from datetime import datetime, timedelta
-    
-    cutoff_date = datetime.now() - timedelta(days=days)
-    
-    team_ratings = []
-    for m in history:
-        t1_data = m.get('t1', {})
-        t2_data = m.get('t2', {})
-        match_date_str = m.get('date', 'N/A')
-        
-        if match_date_str == 'N/A' or not match_date_str:
-            continue
-        
-        try:
-            match_date = datetime.strptime(match_date_str[:10], "%Y-%m-%d")
-            if match_date < cutoff_date:
-                continue
-        except:
-            continue
-        
-        if t1_data.get('name') == team_name:
-            pts_after = t1_data.get('pts_after')
-            if pts_after is not None:
-                team_ratings.append((match_date, pts_after))
-        elif t2_data.get('name') == team_name:
-            pts_after = t2_data.get('pts_after')
-            if pts_after is not None:
-                team_ratings.append((match_date, pts_after))
-    
-    if len(team_ratings) < 2:
-        return ('--', 0)
-    
-    # Sort by date
-    team_ratings.sort(key=lambda x: x[0])
-    
-    start_rating = team_ratings[0][1]
-    end_rating = team_ratings[-1][1]
-    points_diff = end_rating - start_rating
-    
-    # Determine arrow type based on thresholds
-    if points_diff >= 50:
-        trend = '↑↑'
-    elif points_diff >= 25:
-        trend = '↑'
-    elif points_diff <= -50:
-        trend = '↓↓'
-    elif points_diff <= -25:
-        trend = '↓'
-    else:
-        trend = '--'
-    
-    return (trend, points_diff)
 
 
-def display_rankings():
-    """
-    Print current team rankings with 30-day trends and depreciated ratings.
-    Teams inactive {DEPRECIATION_THRESHOLD}+ days show their current depreciated rating.
-    Teams inactive {INACTIVE_ARCHIVE_DAYS}+ days are moved to a separate Archived
-    section (see is_team_archived) instead of cluttering the main table forever.
-    """
-    print("\n=== CURRENT RANKINGS ===")
-    print(f"  {'#':<4} {'Team':<26} {'Rating':<10} {'30D Trend':<12} {'Depreciation Punishment'}")
-    print(f"  {'-'*81}")
-    
-    today = datetime.now().date()
-    
-    # === FIX: Calculate depreciated ratings FIRST, then sort ===
-    team_ratings = []
-    provisional_list = []
-    archived_list = []
-    date_index = build_match_date_index(history)
-    for name, points in teams.items():
-        if is_provisional(name):
-            matches_done = provisional_teams.get(name, 0)
-            provisional_list.append((name, int(points), matches_done))
-            continue
+        
 
-        last_match = get_team_last_match_date_before(name, index=date_index)
-        has_last_match = last_match is not None
-        display_rating = int(points)
-        dep_loss = 0
-        days_inactive = 0
-        
-        if last_match:
-            days_inactive = (today - last_match.date()).days
-            if days_inactive > DEPRECIATION_THRESHOLD:
-                depreciated = calculate_depreciation(points, days_inactive, name)
-                dep_loss = points - depreciated
-                display_rating = int(depreciated)
 
-            if days_inactive > INACTIVE_ARCHIVE_DAYS:
-                archived_list.append((name, display_rating, days_inactive))
-                continue
-        
-        team_ratings.append((name, points, display_rating, dep_loss, days_inactive, has_last_match))
-    
-    # === FIX: Sort by display_rating (depreciated) instead of raw points ===
-    team_ratings.sort(key=lambda x: x[2], reverse=True)
-    
-    for i, (name, points, display_rating, dep_loss, days_inactive, has_last_match) in enumerate(team_ratings, 1):
-        # Get 30-day trend
-        trend, diff = get_team_trend(name, days=30)
-        
-        # Build depreciation string
-        if days_inactive > DEPRECIATION_THRESHOLD:
-            dep_str = f"-{int(dep_loss):>3} pts ({days_inactive:>2}d)"
-        elif has_last_match:
-            dep_str = f"{'':>8} ({days_inactive:>2}d)"
-        else:
-            dep_str = f"{'':>8} (--)"
-        
-        print(f"  {i:<4} {name:<26} {display_rating:<10} {trend:<12} {dep_str}")
-    
-    print(f"  {'-'*81}")
-    print(f"  Trend: ↑↑ (+50)  ↑ (+25)  -- (±24)  ↓ (-25)  ↓↓ (-50)")
-    print(f"  Rating shown is depreciated value for teams inactive {DEPRECIATION_THRESHOLD}+ days")
 
-    if provisional_list:
-        print(f"\n  --- Provisional Teams (excluded from rankings) ---")
-        for name, rating, matches_done in sorted(provisional_list, key=lambda x: x[1], reverse=True):
-            remaining = PROVISIONAL_MATCH_THRESHOLD - matches_done
-            print(f"  {'[P]':<4} {name:<26} {rating:<10} {matches_done}/{PROVISIONAL_MATCH_THRESHOLD} matches  ({remaining} to establish)")
 
-    if archived_list:
-        print(f"\n  --- Archived Teams (inactive {INACTIVE_ARCHIVE_DAYS}+ days, excluded from rankings) ---")
-        for name, rating, days_inactive in sorted(archived_list, key=lambda x: x[2]):
-            print(f"  {'[A]':<4} {name:<26} {rating:<10} {days_inactive}d inactive")
-        print(f"  (Archived teams reappear automatically the moment they play a new match.")
-        print(f"   See Team Management > Archived / Inactive Teams to review or delete them.)")
 
-def display_elite_teams_over_time() -> None:
-    """
-    Display rating progression of ALL teams that reached ELITE_THRESHOLD+ CSRS Elo.
-    """
-    from datetime import datetime, timedelta
-    
-    if len(history) < 5:
-        print("\n  Not enough match history to generate trend (minimum 5 matches required).")
-        return
-    
-    start_date, end_date = pick_date_range()
-    if start_date is None or end_date is None:
-        print("\n  >>> Date selection cancelled.")
-        return
-    
-    sorted_hist = sorted(history, key=lambda m: (m.get('date') == 'N/A', m.get('date', '')))
-    
-    team_peaks_in_range = {}
-    
-    for m in sorted_hist:
-        match_date_str = m.get('date', 'N/A')
-        if match_date_str == 'N/A' or not match_date_str:
-            continue
-        try:
-            match_date = datetime.strptime(match_date_str[:10], "%Y-%m-%d").date()
-        except:
-            continue
-        
-        if not (start_date <= match_date <= end_date):
-            continue
-        
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        if not t1_name or not t2_name:
-            continue
-        
-        t1_pts = m.get('t1', {}).get('pts_after')
-        t2_pts = m.get('t2', {}).get('pts_after')
-        
-        if t1_pts is not None:
-            if t1_name not in team_peaks_in_range or t1_pts > team_peaks_in_range[t1_name]:
-                team_peaks_in_range[t1_name] = t1_pts
-        if t2_pts is not None:
-            if t2_name not in team_peaks_in_range or t2_pts > team_peaks_in_range[t2_name]:
-                team_peaks_in_range[t2_name] = t2_pts
-    
-    elite_team_names = set([name for name, peak in team_peaks_in_range.items() if peak >= ELITE_THRESHOLD])
-    print(f"\n  Elite Teams (reached {ELITE_THRESHOLD}+ in date range): {len(elite_team_names)}")
-    
-    team_history = {team: [] for team in elite_team_names}
-    all_dates = set()
-    
-    first_match_date = None
-    first_match_in_range = None
-    for m in sorted_hist:
-        match_date_str = m.get('date', 'N/A')
-        if match_date_str == 'N/A' or not match_date_str:
-            continue
-        try:
-            match_date = datetime.strptime(match_date_str[:10], "%Y-%m-%d").date()
-            if match_date >= start_date:
-                first_match_date = match_date
-                first_match_in_range = m
-                break
-        except:
-            continue
-    
-    start_point_date_str = (first_match_date - timedelta(days=1)).strftime("%Y-%m-%d") if first_match_date else start_date.strftime("%Y-%m-%d")
-    
-    starting_ratings = {}
-    if first_match_in_range:
-        t1_name = first_match_in_range.get('t1', {}).get('name')
-        t2_name = first_match_in_range.get('t2', {}).get('name')
-        t1_pts_before = first_match_in_range.get('t1', {}).get('pts_before')
-        t2_pts_before = first_match_in_range.get('t2', {}).get('pts_before')
-        
-        if t1_name and t1_name in elite_team_names and t1_pts_before is not None:
-            starting_ratings[t1_name] = t1_pts_before
-        if t2_name and t2_name in elite_team_names and t2_pts_before is not None:
-            starting_ratings[t2_name] = t2_pts_before
-    
-    for m in sorted_hist:
-        match_date_str = m.get('date', 'N/A')
-        if match_date_str == 'N/A' or not match_date_str:
-            continue
-        try:
-            match_date = datetime.strptime(match_date_str[:10], "%Y-%m-%d").date()
-        except:
-            continue
-        if match_date < start_date or match_date > end_date:
-            continue
-        
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        
-        if t1_name and t1_name in elite_team_names and t1_name not in starting_ratings:
-            pts_before = m.get('t1', {}).get('pts_before')
-            if pts_before is not None:
-                starting_ratings[t1_name] = pts_before
-        
-        if t2_name and t2_name in elite_team_names and t2_name not in starting_ratings:
-            pts_before = m.get('t2', {}).get('pts_before')
-            if pts_before is not None:
-                starting_ratings[t2_name] = pts_before
-    
-    for team_name in elite_team_names:
-        start_rating = starting_ratings.get(team_name, teams.get(team_name, 1000))
-        team_history[team_name].append((start_point_date_str, start_rating))
-        all_dates.add(start_point_date_str)
-    
-    for m in sorted_hist:
-        match_date_str = m.get('date', 'N/A')
-        if match_date_str == 'N/A' or not match_date_str:
-            continue
-        try:
-            match_date = datetime.strptime(match_date_str[:10], "%Y-%m-%d").date()
-        except:
-            continue
-        if match_date < start_date or match_date > end_date:
-            continue
-        
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        if not t1_name or not t2_name:
-            continue
-        
-        date_key = match_date_str[:10]
-        all_dates.add(date_key)
-        
-        t1_pts = m.get('t1', {}).get('pts_after')
-        t2_pts = m.get('t2', {}).get('pts_after')
-        
-        if t1_name in elite_team_names and t1_pts is not None:
-            team_history[t1_name].append((date_key, t1_pts))
-        if t2_name in elite_team_names and t2_pts is not None:
-            team_history[t2_name].append((date_key, t2_pts))
-    
-    end_date_str = end_date.strftime("%Y-%m-%d")
-    all_dates.add(end_date_str)
-    
-    elite_teams = [team for team, matches in team_history.items() if len(matches) >= 2]
-    if len(elite_teams) < 2:
-        print("\n  Not enough elite team matches in selected date range.")
-        return
-    
-    all_dates = sorted(all_dates)
-    team_initial_ratings = {team: matches[0][1] if matches else 1000 for team, matches in team_history.items()}
-    
-    print(f"\n  [OK] Found {len(all_dates)} unique dates (including start point), {len(elite_teams)} elite teams")
-    
-    # === PRE-CALCULATE FORM DATA (Performance Fix) ===
-    team_form_cache = {}
-    for team in elite_teams:
-        team_form_cache[team] = calculate_form(team, n=15, history=history)
-    
-    try:
-        _show_elite_teams_graph(team_history, all_dates, elite_teams, teams, team_initial_ratings, team_peaks_in_range, start_date, end_date, start_point_date_str, team_form_cache)
-    except Exception as e:
-        logger.error(f"Graph failed: {e}")
-        import traceback
-        traceback.print_exc()
-        _display_elite_teams_text(team_history, all_dates, elite_teams, teams, team_initial_ratings, start_date, end_date)
 
-def _show_elite_teams_graph(team_history: Dict[str, List[Tuple[str, float]]], all_dates: List[str], elite_teams: List[str], final_ratings: Dict[str, float], initial_ratings: Dict[str, float], team_peaks: Dict[str, float], start_date: datetime, end_date: datetime, start_point_date_str: str, team_form_cache: Dict[str, Optional[Tuple[str, float, str]]]) -> None:
-    """
-    Create tkinter window with line graph for elite teams.
-    FIXED: Transition markers at day-before-match and depreciation-to-match transitions.
-    
-    Parameters:
-    - team_form_cache: Pre-calculated form data to avoid recalculation during render
-    """
-    import tkinter as tk
-    from datetime import datetime, timedelta
-    import re
-    
-    root = tk.Tk()
-    root.title("ELITE TEAMS OVER TIME")
-    root.configure(bg='#1a1a1a')
-    
-    if len(all_dates) > 1:
-        date_objects = [datetime.strptime(d, "%Y-%m-%d") for d in all_dates]
-        total_days = (date_objects[-1] - date_objects[0]).days + 1
-    else:
-        total_days = 1
-    
-    max_rating_in_range = ELITE_THRESHOLD
-    for team_name in elite_teams:
-        matches = team_history.get(team_name, [])
-        for date_key, rating in matches:
-            if rating > max_rating_in_range:
-                max_rating_in_range = rating
-    
-    max_y = ((int(max_rating_in_range) // 50) + 1) * 50
-    if max_y > RATING_CAP:
-        max_y = RATING_CAP
-    
-    team_actual_finals = {}
-    for team in elite_teams:
-        matches = team_history.get(team, [])
-        if matches:
-            team_actual_finals[team] = matches[-1][1]
-        else:
-            team_actual_finals[team] = final_ratings.get(team, 1000)
-    
-    sorted_teams = sorted(elite_teams, key=lambda t: team_actual_finals[t], reverse=True)
-    
-    graph_data = {
-        'total_days': total_days, 'all_dates': all_dates, 'elite_teams': elite_teams,
-        'team_history': team_history, 'initial_ratings': initial_ratings,
-        'final_ratings': final_ratings, 'team_peaks': team_peaks,
-        'start_date': start_date, 'end_date': end_date,
-        'start_point_date_str': start_point_date_str, 'min_y': ELITE_THRESHOLD, 'max_y': max_y,
-        'teams_by_rating': sorted_teams,
-        'team_actual_finals': team_actual_finals,
-        'team_form_cache': team_form_cache,
-    }
-    
-    team_colors = ['#FFD700', '#C0C0C0', '#CD7F32', '#e6194B', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#469990', '#dcbeff', '#9A6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1']
-    graph_data['team_color_map'] = {team_name: team_colors[i % len(team_colors)] for i, team_name in enumerate(sorted_teams)}
-    
-    width, height = 1600, 533
-    root.geometry(f"{width}x{height}")
-    
-    canvas = tk.Canvas(root, bg='#1a1a1a', highlightthickness=0)
-    canvas.pack(fill=tk.BOTH, expand=True)
-    close_btn = [None]
-    
-    def on_resize(event):
-        try:
-            canvas.configure(scrollregion=(0, 0, event.width, event.height))
-            draw_graph(event.width, event.height)
-            if close_btn[0]: close_btn[0].place(x=event.width//2 - 40, y=event.height - 50)
-        except Exception as e:
-            logger.error(f"Resize error: {e}")
-    
-    canvas.bind("<Configure>", on_resize)
-    
-    def draw_graph(canvas_width: int, canvas_height: int) -> None:
-        def dim_color(color: str, factor: float = 0) -> str:
-            match = re.match(r'#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})', color)
-            if match:
-                r = int(match.group(1), 16)
-                g = int(match.group(2), 16)
-                b = int(match.group(3), 16)
-                bg_r, bg_g, bg_b = 26, 26, 26
-                new_r = int(r * factor + bg_r * (1 - factor))
-                new_g = int(g * factor + bg_g * (1 - factor))
-                new_b = int(b * factor + bg_b * (1 - factor))
-                return f'#{new_r:02X}{new_g:02X}{new_b:02X}'
-            return color
-        
-        def draw_split_line(x1: float, y1: float, rating1: float, x2: float, y2: float, rating2: float, color: str, width_above: int = 2, width_below: int = 1) -> None:
-            if rating1 >= ELITE_THRESHOLD and rating2 >= ELITE_THRESHOLD:
-                canvas.create_line(x1, y1, x2, y2, fill=color, width=width_above)
-                return
-            if rating1 < ELITE_THRESHOLD and rating2 < ELITE_THRESHOLD:
-                canvas.create_line(x1, y1, x2, y2, fill=dim_color(color, 0), width=width_below)
-                return
-            if abs(rating2 - rating1) > 0.01:
-                t = (ELITE_THRESHOLD - rating1) / (rating2 - rating1)
-                x_cross = x1 + t * (x2 - x1)
-                y_cross = y_elite
-                if rating1 >= ELITE_THRESHOLD:
-                    canvas.create_line(x1, y1, x_cross, y_cross, fill=color, width=width_above)
-                    canvas.create_line(x_cross, y_cross, x2, y2, fill=dim_color(color, 0), width=width_below)
-                else:
-                    canvas.create_line(x1, y1, x_cross, y_cross, fill=dim_color(color, 0), width=width_below)
-                    canvas.create_line(x_cross, y_cross, x2, y2, fill=color, width=width_above)
-            else:
-                canvas.create_line(x1, y1, x2, y2, fill=color if rating1 >= ELITE_THRESHOLD else dim_color(color, 0), width=width_above if rating1 >= ELITE_THRESHOLD else width_below)
-        
-        try:
-            canvas.delete("all")
-            margin_left, margin_top, margin_bottom = 53, 47, 130
-            graph_width = int((canvas_width - margin_left) * 0.60)
-            graph_right_edge = margin_left + graph_width
-            graph_height = max(100, canvas_height - margin_top - margin_bottom)
-            pixels_per_day = graph_width / graph_data['total_days'] if graph_data['total_days'] > 1 else graph_width
-            min_y = graph_data['min_y']
-            max_y = graph_data['max_y']
-            range_y = max_y - min_y
-            y_elite = margin_top + graph_height
-            
-            canvas.create_text(canvas_width//2, 17, text="ELITE TEAMS OVER TIME", font=('Arial', 12, 'bold'), fill='white')
-            canvas.create_text(margin_left, 30, text=f"{graph_data['start_date']} to {graph_data['end_date']}  |  {min_y}-{max_y} CSRS  |  {graph_data['total_days']} days", font=('Arial', 7), fill='#888888', anchor='w')
-            
-            date_to_x = {}
-            if len(graph_data['all_dates']) > 1:
-                date_objects = [datetime.strptime(d, "%Y-%m-%d") for d in graph_data['all_dates']]
-                start_dt = date_objects[0]
-                for i, dt in enumerate(date_objects):
-                    days_from_start = (dt - start_dt).days
-                    date_to_x[graph_data['all_dates'][i]] = margin_left + (days_from_start * pixels_per_day)
-            else:
-                date_to_x[graph_data['all_dates'][0]] = margin_left + graph_width // 2
-            
-            end_date_str = graph_data['all_dates'][-1] if graph_data['all_dates'] else None
-            end_x = date_to_x.get(end_date_str, graph_right_edge) if end_date_str else graph_right_edge
-            
-            num_lines = 6
-            for i in range(num_lines):
-                y_val = min_y + (i * (range_y / (num_lines - 1)))
-                y_pos = margin_top + graph_height - (i / (num_lines - 1) * graph_height)
-                canvas.create_line(margin_left, y_pos, end_x, y_pos, fill='#333333', dash=(5, 5))
-                canvas.create_text(margin_left - 6, y_pos, text=str(int(y_val)), font=('Arial', 6), fill='#888888', anchor='e')
-            
-            canvas.create_line(margin_left, margin_top, margin_left, y_elite, fill='white', width=1)
-            canvas.create_line(margin_left, y_elite, end_x, y_elite, fill='white', width=1)
-            
-            team_points, declined_teams, team_display_ratings = {}, set(), {}
-            
-            for team_name in graph_data['teams_by_rating']:
-                color = graph_data['team_color_map'][team_name]
-                points = []
-                matches = graph_data['team_history'].get(team_name, [])
-                actual_final = graph_data['team_actual_finals'][team_name]
-                
-                if actual_final < ELITE_THRESHOLD:
-                    declined_teams.add(team_name)
-                
-                for date_key, rating in matches:
-                    if date_key in date_to_x:
-                        x = date_to_x[date_key]
-                        y = margin_top + graph_height - ((rating - min_y) / range_y * graph_height)
-                        points.append((x, y, date_key, rating, 'match'))
-                
-                points.sort(key=lambda p: p[0])
-                
-                if len(points) > 1:
-                    unique_points = [points[0]]
-                    for p in points[1:]:
-                        if abs(p[0] - unique_points[-1][0]) < 1:
-                            unique_points[-1] = p
-                        else:
-                            unique_points.append(p)
-                    points = unique_points
-                
-                current_rating = points[-1][3] if points else actual_final
-                last_match_date = points[-1][2] if points else None
-                
-                depreciated_rating = current_rating
-                days_inactive = 0
-                
-                if last_match_date and end_date_str:
-                    try:
-                        end_date_obj = datetime.strptime(end_date_str, "%Y-%m-%d")
-                        last_date_obj = datetime.strptime(last_match_date, "%Y-%m-%d")
-                        days_inactive = (end_date_obj - last_date_obj).days
-                        if days_inactive > DEPRECIATION_THRESHOLD:
-                            depreciated_rating = calculate_depreciation(current_rating, days_inactive, team_name)
-                    except:
-                        pass
-                
-                team_display_ratings[team_name] = depreciated_rating if days_inactive > DEPRECIATION_THRESHOLD else current_rating
-                
-                if points and end_date_str:
-                    y_end = margin_top + graph_height - ((depreciated_rating - min_y) / range_y * graph_height)
-                    points.append((end_x, y_end, end_date_str, depreciated_rating, 'end'))
-                
-                if len(points) > 1:
-                    for i in range(len(points) - 1):
-                        x1, y1, rating1, date1, point_type1 = points[i][0], points[i][1], points[i][3], points[i][2], points[i][4]
-                        x2, y2, rating2, date2, point_type2 = points[i+1][0], points[i+1][1], points[i+1][3], points[i+1][2], points[i+1][4]
-                        
-                        try:
-                            date1_obj = datetime.strptime(date1, "%Y-%m-%d")
-                            date2_obj = datetime.strptime(date2, "%Y-%m-%d")
-                            days_gap = (date2_obj - date1_obj).days
-                        except:
-                            days_gap = 0
-                        
-                        is_end_segment = (point_type2 == 'end')
-                        has_depreciation = days_gap > DEPRECIATION_THRESHOLD
-
-                        if has_depreciation:
-                            x_day7 = x1 + ((x2 - x1) * (DEPRECIATION_THRESHOLD / days_gap))
-                            y_day7 = y1
-                            draw_split_line(x1, y1, rating1, x_day7, y_day7, rating1, color)
-                            
-                            dep_points = [(x_day7, y_day7, rating1)]
-                            dep_end_day = days_gap if is_end_segment else days_gap - 1
-                            
-                            if dep_end_day > DEPRECIATION_THRESHOLD:
-                                for day in range(DEPRECIATION_THRESHOLD + 1, dep_end_day + 1):
-                                    daily_rating = calculate_depreciation(rating1, day, team_name)
-                                    
-                                    day_x = x1 + ((x2 - x1) * (day / days_gap))
-                                    daily_y = margin_top + graph_height - ((daily_rating - min_y) / range_y * graph_height)
-                                    dep_points.append((day_x, daily_y, daily_rating))
-                                
-                                for j in range(len(dep_points) - 1):
-                                    dot1 = dep_points[j]
-                                    dot2 = dep_points[j + 1]
-                                    draw_split_line(dot1[0], dot1[1], dot1[2], dot2[0], dot2[1], dot2[2], color)
-                            
-                            if not is_end_segment:
-                                draw_split_line(dep_points[-1][0], dep_points[-1][1], dep_points[-1][2], x2, y2, rating2, color)
-                                
-                                trans_x, trans_y, trans_rating = dep_points[-1]
-                                marker_fill = color if trans_rating >= ELITE_THRESHOLD else dim_color(color, 0)
-                                outline_color = 'white' if trans_rating >= ELITE_THRESHOLD else ''
-                                canvas.create_oval(trans_x-3, trans_y-3, trans_x+3, trans_y+3, fill=marker_fill, outline=outline_color, width=1)
-                        else:
-                            if days_gap >= 1:
-                                if days_gap == 1:
-                                    draw_split_line(x1, y1, rating1, x2, y2, rating2, color)
-                                else:
-                                    x_flat_end = x1 + ((x2 - x1) * ((days_gap - 1) / days_gap))
-                                    draw_split_line(x1, y1, rating1, x_flat_end, y1, rating1, color)
-                                    draw_split_line(x_flat_end, y1, rating1, x2, y2, rating2, color)
-                                    
-                                    if not is_end_segment and abs(x_flat_end - x1) > 5:
-                                        marker_fill = color if rating1 >= ELITE_THRESHOLD else dim_color(color, 0)
-                                        outline_color = 'white' if rating1 >= ELITE_THRESHOLD else ''
-                                        canvas.create_oval(x_flat_end-3, y1-3, x_flat_end+3, y1+3, fill=marker_fill, outline=outline_color, width=1)
-                            else:
-                                draw_split_line(x1, y1, rating1, x2, y2, rating2, color)
-                
-                for (x, y, date, rating, point_type) in points:
-                    if rating >= ELITE_THRESHOLD:
-                        if point_type == 'end':
-                            canvas.create_oval(x-4, y-4, x+4, y+4, fill='#1a1a1a', outline=color, width=2)
-                        elif date == graph_data['start_point_date_str']:
-                            canvas.create_oval(x-4, y-4, x+4, y+4, fill='#1a1a1a', outline=color, width=2)
-                        else:
-                            canvas.create_oval(x-3, y-3, x+3, y+3, fill=color, outline='white', width=1)
-                
-                team_points[team_name] = points
-            
-            rightmost_label_edge = end_x
-            for team_name in graph_data['teams_by_rating']:
-                if team_name in declined_teams:
-                    continue
-                points = team_points.get(team_name, [])
-                if points:
-                    final_x, final_y = points[-1][0], points[-1][1]
-                    color = graph_data['team_color_map'][team_name]
-                    display_rating = team_display_ratings.get(team_name, points[-1][3])
-                    label_id = canvas.create_text(final_x + 15, final_y, text=f"{team_name}  {int(display_rating)}", font=('Arial', 9, 'bold'), fill=color, anchor='w')
-                    bbox = canvas.bbox(label_id)
-                    if bbox and bbox[2] > rightmost_label_edge:
-                        rightmost_label_edge = bbox[2]
-            
-            min_date_spacing, dates_to_show = 100, []
-            sorted_date_positions = sorted(date_to_x.items(), key=lambda x: x[1])
-            if sorted_date_positions:
-                last_x = sorted_date_positions[-1][1] + min_date_spacing
-                for date, x in reversed(sorted_date_positions):
-                    if last_x - x >= min_date_spacing:
-                        dates_to_show.append((x, date))
-                        last_x = x
-                dates_to_show.reverse()
-                if len(dates_to_show) < 2 and len(sorted_date_positions) >= 2:
-                    dates_to_show = [sorted_date_positions[-2], sorted_date_positions[-1]]
-            for x, date in dates_to_show:
-                canvas.create_text(x, y_elite + 15, text='^', font=('Arial', 9), fill='#888888')
-                canvas.create_text(x, y_elite + 35, text=date, font=('Arial', 8), fill='#888888', anchor='n')
-            
-            if end_date_str:
-                canvas.create_text(end_x, y_elite + 15, text='v', font=('Arial', 10, 'bold'), fill='#FFFFFF')
-                canvas.create_text(end_x, y_elite + 50, text=f"END: {end_date_str}", font=('Arial', 9, 'bold'), fill='#FFFFFF', anchor='n')
-            
-            legend_padding = 40
-            gap_after_labels = 30
-            available_space_start = rightmost_label_edge + gap_after_labels
-            available_space_end = canvas_width - legend_padding
-            center_point = (available_space_start + available_space_end) // 2
-            estimated_legend_width = 350
-            legend_x = center_point - (estimated_legend_width // 2)
-            min_legend_x = rightmost_label_edge + gap_after_labels
-            if legend_x < min_legend_x:
-                legend_x = min_legend_x
-            
-            canvas.create_text(legend_x, margin_top, text="Teams:", font=('Arial', 11, 'bold'), fill='white', anchor='w')
-            
-            legend_data = []
-            for team_name in sorted_teams:
-                actual_final = graph_data['team_actual_finals'][team_name]
-                initial_rating = graph_data['initial_ratings'].get(team_name, 1000)
-                is_declined = actual_final < ELITE_THRESHOLD
-                
-                legend_data.append({
-                    'name': team_name, 
-                    'final': actual_final, 
-                    'initial': initial_rating, 
-                    'diff': actual_final - initial_rating, 
-                    'declined': is_declined,
-                    'color': graph_data['team_color_map'][team_name]
-                })
-            
-            elite_split_idx = 0
-            for i, data in enumerate(legend_data):
-                if data['final'] < ELITE_THRESHOLD:
-                    elite_split_idx = i
-                    break
-            else:
-                elite_split_idx = len(legend_data)
-            
-            # Build global rank lookup from full rankings (excluding provisional)
-            all_ranked = [t for t in get_sorted_rankings(include_archived=True) if not is_provisional(t)]
-            global_rank_map = {t: i + 1 for i, t in enumerate(all_ranked)}
-
-            rank_colors = {0: '#FFD700', 1: '#C0C0C0', 2: '#CD7F32'}
-            for i, data in enumerate(legend_data):
-                y = margin_top + 25 + (i * 35)
-                if i == elite_split_idx and elite_split_idx > 0 and elite_split_idx < len(legend_data):
-                    sep_y = y - 5
-                    canvas.create_line(legend_x, sep_y, legend_x + 350, sep_y, fill='#444444', dash=(3, 3), width=1)
-                    text_y = sep_y - 5
-                    canvas.create_text(legend_x, text_y, text=f"v Below {ELITE_THRESHOLD} ELO v", font=('Arial', 7), fill='#666666', anchor='w')
-                
-                global_rank = global_rank_map.get(data['name'])
-                rank_label = f"#{global_rank}" if global_rank else "—"
-                canvas.create_rectangle(legend_x, y, legend_x + 14, y + 14, fill=data['color'], outline='#666666' if data['declined'] else 'white', width=1)
-                canvas.create_text(legend_x + 20, y + 7, text=rank_label, font=('Arial', 8, 'bold'), fill='#666666', anchor='w')
-                short_name = data['name'][:18] + "..." if len(data['name']) > 18 else data['name']
-                name_color = '#888888' if data['declined'] else rank_colors.get(global_rank - 1 if global_rank else None, '#AAAAAA')
-                canvas.create_text(legend_x + 45, y + 7, text=short_name, font=('Arial', 9, 'bold'), fill=name_color, anchor='w')
-                sign = "+" if data['diff'] >= 0 else ""
-                canvas.create_text(legend_x + 220, y + 7, text=f"{int(data['initial'])} -> {int(data['final'])} ({sign}{int(data['diff'])})", font=('Arial', 8), fill='#666666' if data['declined'] else '#888888', anchor='w')
-            
-            if close_btn[0] is None:
-                close_btn[0] = tk.Button(root, text="Close", command=root.destroy, bg='#404040', fg='white', font=('Arial', 10), padx=30, pady=5)
-            close_btn[0].place(x=canvas_width//2 - 40, y=canvas_height - 50)
-            
-        except Exception as e:
-            logger.error(f"Draw error: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    draw_graph(width, height)
-    root.mainloop()
-
-def _display_elite_teams_text(team_history, all_dates, elite_teams, final_ratings, initial_ratings, start_date, end_date):
-    """
-    Text-based fallback display for elite teams trend.
-    """
-    print("\n" + "="*80)
-    print("  ELITE TEAMS OVER TIME")
-    print("="*80)
-    print(f"\n  Date Range: {start_date} to {end_date}")
-    print(f"  Rating Range: {ELITE_THRESHOLD} - {RATING_CAP} CSRS Elo")
-    print(f"  Elite Teams: {len(elite_teams)}")
-    print(f"  Unique Dates: {len(all_dates)}\n")
-    sorted_teams = sorted(elite_teams, key=lambda t: final_ratings.get(t, 0), reverse=True)
-    for rank, team_name in enumerate(sorted_teams, 1):
-        matches = team_history.get(team_name, [])
-        if not matches: continue
-        initial_rating = initial_ratings.get(team_name, 1000)
-        final_rating = matches[-1][1] if matches else initial_rating
-        diff = final_rating - initial_rating
-        sign = "+" if diff >= 0 else ""
-        status = "v Declined" if final_rating < ELITE_THRESHOLD else "[OK] Elite"
-        print(f"  #{rank} {team_name} [{status}]")
-        print(f"      Rating: {int(initial_rating)} -> {int(final_rating)} ({sign}{int(diff)})")
-        print(f"      Matches: {len(matches)}\n")
-    print("="*80)
 
 
 # =============================================================================
@@ -3552,7 +2542,11 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
     PROVISIONAL-TEAM HANDLING IS APPLIED IDENTICALLY TO THE IMPORT-TIME PATH
     (see _import_url_list): capped rating differential vs provisional
     opponents, boosted K-factor for a provisional team's own change, and
-    graduation after PROVISIONAL_MATCH_THRESHOLD matches.
+    graduation after PROVISIONAL_MATCH_THRESHOLD matches. A team returning
+    from more than INACTIVE_ARCHIVE_DAYS of inactivity is additionally
+    reset to a fresh provisional team before its next match is processed —
+    same rule as apply_depreciation_to_rating (the live-import path's
+    equivalent of this loop's inline depreciation block below).
 
     NOTE on provisional inference: provisional registration is normally
     decided at scrape time by a live VRS lookup (see scrape_vrs_points /
@@ -3734,8 +2728,8 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
             team_recent_matches[t2_name] = deque(maxlen=15)
         team_recent_matches[t2_name].append(('t2', m))
 
-        form1 = _compute_form_from_recent(team_recent_matches[t1_name])
-        form2 = _compute_form_from_recent(team_recent_matches[t2_name])
+        form1 = _compute_form_from_recent(team_recent_matches[t1_name], history=chronologically_sorted)
+        form2 = _compute_form_from_recent(team_recent_matches[t2_name], history=chronologically_sorted)
         form_adj_1 = (form1[1] - 50) if form1 else 0
         form_adj_2 = (form2[1] - 50) if form2 else 0
         form_score_1 = form1[1] if form1 else None
@@ -3745,16 +2739,32 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         p1_before = sim_teams[t1_name]
         p2_before = sim_teams[t2_name]
 
-        # Team 1 depreciation
+        # Team 1: returning from more than INACTIVE_ARCHIVE_DAYS of inactivity
+        # is treated exactly like a brand-new team for this match — old
+        # rating dropped, fresh PROVISIONAL_STARTING_RATING, re-enters the
+        # provisional window. This is the resimulation-loop equivalent of
+        # the same rule in apply_depreciation_to_rating (used by the live
+        # import paths) — see that function's docstring for the full
+        # rationale. Otherwise, ordinary depreciation applies as before.
         if t1_name in team_last_match:
             days_inactive_1 = (match_date - team_last_match[t1_name]).days
-            if days_inactive_1 > DEPRECIATION_THRESHOLD:
+            if days_inactive_1 > INACTIVE_ARCHIVE_DAYS:
+                _resort_update(sim_teams[t1_name], PROVISIONAL_STARTING_RATING)
+                sim_teams[t1_name] = PROVISIONAL_STARTING_RATING
+                p1_before = PROVISIONAL_STARTING_RATING
+                sim_provisional[t1_name] = 0
+            elif days_inactive_1 > DEPRECIATION_THRESHOLD:
                 p1_before = calculate_depreciation(p1_before, days_inactive_1, team_name=None, form_score=form_score_1)
 
-        # Team 2 depreciation
+        # Team 2: same rule as team 1 above.
         if t2_name in team_last_match:
             days_inactive_2 = (match_date - team_last_match[t2_name]).days
-            if days_inactive_2 > DEPRECIATION_THRESHOLD:
+            if days_inactive_2 > INACTIVE_ARCHIVE_DAYS:
+                _resort_update(sim_teams[t2_name], PROVISIONAL_STARTING_RATING)
+                sim_teams[t2_name] = PROVISIONAL_STARTING_RATING
+                p2_before = PROVISIONAL_STARTING_RATING
+                sim_provisional[t2_name] = 0
+            elif days_inactive_2 > DEPRECIATION_THRESHOLD:
                 p2_before = calculate_depreciation(p2_before, days_inactive_2, team_name=None, form_score=form_score_2)
         
         t1_won = 1 if t1_score > t2_score else 0
@@ -3825,8 +2835,9 @@ def _do_resimulation(history_list: List[Dict[str, Any]], verbose: bool = True) -
         m['t2']['pts_after'] = new_p2
         m['t2']['rank_shift'] = t2_rank_shift
         
-        update_peak(t1_name, new_p1, match_date_str, rank=t1_new_rank)
-        update_peak(t2_name, new_p2, match_date_str, rank=t2_new_rank)
+        _days_since_start = (match_date - parsed_dates[0]).days
+        update_peak(t1_name, new_p1, match_date_str, rank=t1_new_rank, days_since_dataset_start=_days_since_start)
+        update_peak(t2_name, new_p2, match_date_str, rank=t2_new_rank, days_since_dataset_start=_days_since_start)
         
         # Update last match date for depreciation tracking
         team_last_match[t1_name] = match_date
@@ -4538,2488 +3549,11 @@ def edit_match_details():
         return False
 
 # =============================================================================
-# === MATCH SIMULATION & COMPARISON ===
-# =============================================================================
-
-def simulate_match() -> None:
-    """Simulate all possible outcomes for a match format without saving to history."""
-    print_menu(
-        "SIMULATE MATCH",
-        [
-            ("·", "Displays rating impact for every possible scoreline"),
-        ],
-    )
-    
-    t1_raw = check_cmd(input("Team 1: "))
-    if get_cmd(t1_raw) in ['back', '0']:
-        return
-    t1 = find_team(t1_raw)
-    if not t1:
-        print("  [!] Team not found.")
-        return
-    
-    t2_raw = check_cmd(input("Team 2: "))
-    if get_cmd(t2_raw) in ['back', '0']:
-        return
-    t2 = find_team(t2_raw)
-    if not t2:
-        print("  [!] Team not found.")
-        return
-    
-    if t1 == t2:
-        print("  [!] Cannot simulate match against the same team.")
-        return
-
-    # Event tier auto-select
-    tier_raw = 'A'
-    use_event = get_cmd(check_cmd(input("\n  Select tier from a saved event? (y/n): ")))
-    if use_event == 'y':
-        if event_tiers:
-            # Sort by most recent match date, then alphabetically
-            def event_recency(ev):
-                dates = [m.get('date', '') for m in history if m.get('event') == ev and m.get('date')]
-                return max(dates) if dates else ''
-            events_list = sorted(event_tiers.keys(), key=lambda ev: event_recency(ev), reverse=True)
-            print("\n  Saved Events:")
-            for i, ev in enumerate(events_list, 1):
-                print(f"  [{i:>2}] {ev:<40} Tier: {event_tiers[ev]}")
-            raw_ev = check_cmd(input("\n  Enter number or partial name: ")).strip()
-            selected_ev = None
-            if raw_ev.isdigit():
-                idx = int(raw_ev) - 1
-                if 0 <= idx < len(events_list):
-                    selected_ev = events_list[idx]
-            else:
-                matches_ev = [ev for ev in events_list if raw_ev.lower() in ev.lower()]
-                if len(matches_ev) == 1:
-                    selected_ev = matches_ev[0]
-                elif len(matches_ev) > 1:
-                    for i, ev in enumerate(matches_ev, 1):
-                        print(f"  [{i}] {ev}")
-                    sub = check_cmd(input("  Select: ")).strip()
-                    if sub.isdigit() and 1 <= int(sub) <= len(matches_ev):
-                        selected_ev = matches_ev[int(sub) - 1]
-            if selected_ev:
-                tier_raw = event_tiers[selected_ev]
-                print(f"  Using tier '{tier_raw}' from '{selected_ev}'")
-            else:
-                print("  Event not found — defaulting to manual entry.")
-                use_event = 'n'
-        else:
-            print("  No saved events found.")
-            use_event = 'n'
-
-    if use_event != 'y':
-        tier_raw = check_cmd(input("  Tier (S+/S/A/B/R/C/D): ")).strip().upper()
-        if get_cmd(tier_raw) == 'back':
-            return
-        if tier_raw not in ['S+', 'S', 'A', 'B', 'C', 'D', 'E']:
-            tier_raw = 'A'
-
-    # Format selection
-    print("\n  Format:  1. Best of 1   2. Best of 3   3. Best of 5")
-    fmt_choice = get_cmd(check_cmd(input("  Select: ")))
-    if fmt_choice in ['back', '0']:
-        return
-    formats = {'1': 1, '2': 3, '3': 5}
-    bo = formats.get(fmt_choice)
-    if not bo:
-        print("  [!] Invalid format.")
-        return
-
-    # Possible scorelines — (t1_maps, t2_maps)
-    wins_needed = (bo // 2) + 1
-    scorelines = []
-    for loser in range(0, wins_needed):
-        scorelines.append((wins_needed, loser))   # t1 wins
-        scorelines.append((loser, wins_needed))   # t2 wins
-
-    print("  Environment:  1. Online   2. LAN")
-    env_choice = get_cmd(check_cmd(input("  Select: ")))
-    if env_choice == 'back':
-        return
-    env_raw = {'1': 'ONLINE', '2': 'LAN'}.get(env_choice, 'LAN')
-
-    gf_raw = get_cmd(check_cmd(input("  Grand Final? (y/n): ")))
-    is_gf = gf_raw == 'y'
-
-    days_raw = check_cmd(input("  Days since last match (0 for today): "))
-    try:
-        days_inactive = int(days_raw)
-    except:
-        days_inactive = 0
-
-    # Base ratings + depreciation
-    p1 = teams[t1]
-    p2 = teams[t2]
-    p1d = calculate_depreciation(p1, days_inactive, t1) if days_inactive > DEPRECIATION_THRESHOLD else p1
-    p2d = calculate_depreciation(p2, days_inactive, t2) if days_inactive > DEPRECIATION_THRESHOLD else p2
-
-    form1 = calculate_form(t1, n=15, history=history)
-    form2 = calculate_form(t2, n=15, history=history)
-    form_adj_1 = (form1[1] - 50) if form1 else 0
-    form_adj_2 = (form2[1] - 50) if form2 else 0
-
-    t1_prov = is_provisional(t1)
-    t2_prov = is_provisional(t2)
-
-    old_order = [t for t in get_sorted_rankings(include_archived=True) if not is_provisional(t)]
-    r1_old = old_order.index(t1) + 1 if t1 in old_order else '?'
-    r2_old = old_order.index(t2) + 1 if t2 in old_order else '?'
-
-    # Win probability per map (Elo formula, with form adjustment)
-    p_map = 1 / (1 + 10 ** ((p2d - p1d) / 400))
-
-    # Series win probabilities per scoreline
-    def scoreline_prob(s1: int, s2: int) -> float:
-        """Probability of exactly this scoreline occurring."""
-        w, l = max(s1, s2), min(s1, s2)
-        p = p_map if s1 > s2 else (1 - p_map)
-        q = 1 - p
-        wins_needed = w
-        # Negative binomial: last game must be a win, previous (w-1) wins in (w+l-1) games
-        from math import comb
-        return comb(w + l - 1, l) * (p ** wins_needed) * (q ** l)
-
-    # Overall series win probability
-    series_win_prob = sum(scoreline_prob(s1, s2) for s1, s2 in scorelines if s1 > s2)
-
-    fmt_shift = lambda s: f"(+{s})" if s > 0 else (f"({s})" if s < 0 else "(──)")
-    fmt_pts   = lambda a, b: f"({int(round(a-b)):>+3})" if a != b else "( ─ )"
-
-    bo_label = f"Best of {bo}"
-    stage_label = "Grand Final  |  " if is_gf else ""
-    print(f"\n{'═'*68}")
-    print(f"  SIMULATION: {t1}  vs  {t2}  [{bo_label}]")
-    print(f"  Tier: {tier_raw}  |  Env: {env_raw}  |  {stage_label}Ratings: {int(p1d)} vs {int(p2d)}")
-    if days_inactive > DEPRECIATION_THRESHOLD:
-        print(f"  [Depreciation: {t1} {int(p1)}→{int(p1d)}  |  {t2} {int(p2)}→{int(p2d)}]")
-    print(f"  Series Win Probability:  {t1} {series_win_prob*100:.1f}%  |  {t2} {(1-series_win_prob)*100:.1f}%")
-    print(f"{'─'*68}")
-    print(f"  {'Score':<14}  {'%':>5}  {'Team':<22}  {'Before':>6}  {'After':>6}  {'Δ':>6}  Rank")
-    print(f"{'─'*68}")
-
-    for s1, s2 in scorelines:
-        map_diff = abs(s1 - s2)
-        prob = scoreline_prob(s1, s2)
-
-        new_p1_raw = calculate_points(p1d, p2d, 1 if s1 > s2 else 0, map_diff, tier_raw, env_raw, is_gf, form_adj_1, form_adj_2, opp_is_provisional=t2_prov)
-        new_p2_raw = calculate_points(p2d, p1d, 1 if s2 > s1 else 0, map_diff, tier_raw, env_raw, is_gf, form_adj_2, form_adj_1, opp_is_provisional=t1_prov)
-
-        if t1_prov:
-            k1 = get_provisional_k(t1)
-            new_p1 = min(max(RATING_FLOOR, p1d + (new_p1_raw - p1d) * k1), RATING_CAP)
-        else:
-            new_p1 = new_p1_raw
-        if t2_prov:
-            k2 = get_provisional_k(t2)
-            new_p2 = min(max(RATING_FLOOR, p2d + (new_p2_raw - p2d) * k2), RATING_CAP)
-        else:
-            new_p2 = new_p2_raw
-
-        sim = dict(teams)
-        sim[t1] = new_p1
-        sim[t2] = new_p2
-        sim_order = sorted([t for t in sim if not is_provisional(t)], key=lambda x: sim[x], reverse=True)
-        r1_new = sim_order.index(t1) + 1 if t1 in sim_order else '?'
-        r2_new = sim_order.index(t2) + 1 if t2 in sim_order else '?'
-        sh1 = (r1_old - r1_new) if isinstance(r1_old, int) and isinstance(r1_new, int) else 0
-        sh2 = (r2_old - r2_new) if isinstance(r2_old, int) and isinstance(r2_new, int) else 0
-
-        score_label = f"{t1} {s1}-{s2} {t2}"
-        print(f"\n  {score_label}  ({prob*100:.1f}%)")
-        print(f"  {'':14}  {'':>5}  {t1:<22}  {int(p1d):>6}  {int(new_p1):>6}  {fmt_pts(new_p1, p1d):>6}  #{r1_old} → #{r1_new} {fmt_shift(sh1)}")
-        print(f"  {'':14}  {'':>5}  {t2:<22}  {int(p2d):>6}  {int(new_p2):>6}  {fmt_pts(new_p2, p2d):>6}  #{r2_old} → #{r2_new} {fmt_shift(sh2)}")
-
-    print(f"\n{'═'*68}")
-        
-def compare_teams() -> None:
-    """
-    Display detailed head-to-head stats between two teams.
-    """
-    print("\n--- Compare Teams ---")
-    
-    t1_raw = check_cmd(input("Team 1: "))
-    if get_cmd(t1_raw) in ['back', '0']:
-        return
-    t1 = find_team(t1_raw)
-    if not t1:
-        print("  [!] Team not found.")
-        return
-
-    t2_raw = check_cmd(input("Team 2: "))
-    if get_cmd(t2_raw) in ['back', '0']:
-        return
-    t2 = find_team(t2_raw)
-    if not t2:
-        print("  [!] Team not found.")
-        return
-    
-    if t1 == t2:
-        print("  [!] Cannot compare a team against itself.")
-        return
-
-    ranked = get_sorted_rankings(include_archived=True)
-    r1 = ranked.index(t1) + 1
-    r2 = ranked.index(t2) + 1
-    p1, p2 = teams[t1], teams[t2]
-    pk1 = peak_ratings.get(t1, {})
-    pk2 = peak_ratings.get(t2, {})
-
-    h2h = [m for m in history if
-           (m.get('t1', {}).get('name') == t1 and m.get('t2', {}).get('name') == t2) or
-           (m.get('t1', {}).get('name') == t2 and m.get('t2', {}).get('name') == t1)]
-    t1_wins = sum(1 for m in h2h if
-                  (m.get('t1', {}).get('name') == t1 and m.get('t1', {}).get('score', 0) > m.get('t2', {}).get('score', 0)) or
-                  (m.get('t2', {}).get('name') == t1 and m.get('t2', {}).get('score', 0) > m.get('t1', {}).get('score', 0)))
-    t2_wins = len(h2h) - t1_wins
-    
-    t1_maps = 0
-    t2_maps = 0
-    for m in h2h:
-        if m.get('t1', {}).get('name') == t1:
-            t1_maps += m.get('t1', {}).get('score', 0)
-            t2_maps += m.get('t2', {}).get('score', 0)
-        else:
-            t1_maps += m.get('t2', {}).get('score', 0)
-            t2_maps += m.get('t1', {}).get('score', 0)
-
-    t1_opponents = set()
-    t2_opponents = set()
-    for m in history:
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        if t1_name == t1: t1_opponents.add(t2_name)
-        elif t2_name == t1: t1_opponents.add(t1_name)
-        
-        if t1_name == t2: t2_opponents.add(t2_name)
-        elif t2_name == t2: t2_opponents.add(t1_name)
-    
-    common_opponents = t1_opponents.intersection(t2_opponents)
-    common_wins_t1 = 0
-    common_wins_t2 = 0
-    for opp in common_opponents:
-        for m in history:
-            m_t1 = m.get('t1', {}).get('name')
-            m_t2 = m.get('t2', {}).get('name')
-            m_s1 = m.get('t1', {}).get('score', 0)
-            m_s2 = m.get('t2', {}).get('score', 0)
-            
-            if (m_t1 == t1 and m_t2 == opp and m_s1 > m_s2) or \
-               (m_t2 == t1 and m_t1 == opp and m_s2 > m_s1):
-                common_wins_t1 += 1
-            elif (m_t1 == t2 and m_t2 == opp and m_s1 > m_s2) or \
-                 (m_t2 == t2 and m_t1 == opp and m_s2 > m_s1):
-                common_wins_t2 += 1
-
-    w = 24
-    print(f"\n{'='*(w*2+3)}")
-    print(f"  {'Stat':<18} {t1:>{w}} {t2:>{w}}")
-    print(f"{'='*(w*2+3)}")
-    print(f"  {'Points':<18} {int(p1):>{w}} {int(p2):>{w}}")
-    print(f"  {'Rank':<18} {'#'+str(r1):>{w}} {'#'+str(r2):>{w}}")
-    pk1_str = f"{int(pk1.get('points',0))} ({pk1.get('date','N/A')})" if pk1 else "N/A"
-    pk2_str = f"{int(pk2.get('points',0))} ({pk2.get('date','N/A')})" if pk2 else "N/A"
-    print(f"  {'Peak Rating':<18} {pk1_str:>{w}} {pk2_str:>{w}}")
-    
-    f1 = calculate_form(t1, n=15, history=history)
-    f2 = calculate_form(t2, n=15, history=history)
-    f1_str = f"{f1[0]} {f1[1]} ({f1[2]})" if f1 else "N/A"
-    f2_str = f"{f2[0]} {f2[1]} ({f2[2]})" if f2 else "N/A"
-    print(f"  {'Form':<18} {f1_str:>{w}} {f2_str:>{w}}")
-
-    t1_trend = get_team_trend(t1)
-    t2_trend = get_team_trend(t2)
-    if t1_trend and t2_trend:
-        trend1, diff1 = t1_trend
-        trend2, diff2 = t2_trend
-        arrow1 = "^" if trend1 == "up" else ("v" if trend1 == "down" else "-")
-        arrow2 = "^" if trend2 == "up" else ("v" if trend2 == "down" else "-")
-    else:
-        arrow1 = arrow2 = "-"
-    print(f"  {'Trend':<18} {arrow1:>{w}} {arrow2:>{w}}")
-
-    print(f"{'='*(w*2+3)}")
-    print(f"  {'H2H Matches':<18} {len(h2h):>{w}}")
-    print(f"  {'H2H Wins':<18} {t1_wins:>{w}} {t2_wins:>{w}}")
-    print(f"  {'H2H Map Diff':<18} {t1_maps - t2_maps:>{w}} {t2_maps - t1_maps:>{w}}")
-    print(f"{'='*(w*2+3)}")
-    print(f"  {'Common Opponents':<18} {len(common_opponents):>{w}}")
-    print(f"  {'Wins vs Common':<18} {common_wins_t1:>{w}} {common_wins_t2:>{w}}")
-    print(f"{'='*(w*2+3)}")
-
-def view_team_rating_graph() -> None:
-    """Display tkinter line graph of a single team's rating history."""
-    print("\n=== TEAM RATING GRAPH ===")
-
-    team_raw = check_cmd(input("Enter team name: ")).strip()
-    if get_cmd(team_raw) in ['back', '0']:
-        return
-    team = find_team(team_raw)
-    if not team:
-        print(">>> Team not found.")
-        return
-
-    all_team_matches = []
-    for m in history:
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        if t1_name == team:
-            all_team_matches.append(('t1', m))
-        elif t2_name == team:
-            all_team_matches.append(('t2', m))
-
-    if len(all_team_matches) < 2:
-        print(">>> Not enough match history to generate graph (minimum 2 matches).")
-        return
-    all_team_matches.sort(key=lambda x: x[1].get('date', ''))
-
-    start_date, end_date = pick_date_range()
-    if start_date is None or end_date is None:
-        print("\n  >>> Date selection cancelled.")
-        return
-
-    def _in_range(date_str):
-        try:
-            return start_date <= datetime.strptime(date_str[:10], "%Y-%m-%d").date() <= end_date
-        except Exception:
-            return False
-
-    team_matches = [(side, m) for side, m in all_team_matches if _in_range(m.get('date', ''))]
-    if len(team_matches) < 2:
-        print(">>> Not enough matches in selected date range (minimum 2).")
-        return
-
-    first_side, first_match = team_matches[0]
-    start_rating = first_match.get(first_side, {}).get('pts_before') or STARTING_TEAMS.get(team, 1000)
-    start_point_date = (datetime.strptime(team_matches[0][1].get('date', '')[:10], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-
-    timeline = []
-    all_dates = set()
-    timeline.append((start_point_date, start_rating, 'start', None))
-    all_dates.add(start_point_date)
-
-    for side, m in team_matches:
-        match_date = m.get('date', 'N/A')[:10]
-        pts_after  = m.get(side, {}).get('pts_after')
-        pts_before = m.get(side, {}).get('pts_before')
-        if pts_after is not None:
-            timeline.append((match_date, pts_after, 'match', pts_before))
-            all_dates.add(match_date)
-
-    today = datetime.now().date()
-    end_date_str = end_date.strftime("%Y-%m-%d")
-    if end_date >= today:
-        current_rating = teams.get(team, 1000)
-        timeline.append((end_date_str, current_rating, 'current', None))
-    else:
-        last_pts = timeline[-1][1]
-        current_rating = last_pts
-        timeline.append((end_date_str, last_pts, 'current', None))
-    all_dates.add(end_date_str)
-
-    peak_rating = max(pts for _, pts, _, _ in timeline if pts is not None)
-    peak_date = next((d for d, pts, _, _ in timeline if pts == peak_rating), None)
-    all_dates = sorted(all_dates)
-
-    if len(all_dates) < 2:
-        print(">>> Not enough date points to generate graph.")
-        return
-
-    try:
-        _show_single_team_graph(team, timeline, all_dates, current_rating, peak_rating, peak_date)
-    except Exception as e:
-        logger.error(f"Graph failed: {e}")
-        print(f"\n  [!] Graph failed: {e}")
-        import traceback
-        traceback.print_exc()
-
-def view_team_form_graph() -> None:
-    """Display tkinter line graph of a single team's form history."""
-    print("\n=== TEAM FORM GRAPH ===")
-
-    team_raw = check_cmd(input("Enter team name: ")).strip()
-    if get_cmd(team_raw) in ['back', '0']:
-        return
-    team = find_team(team_raw)
-    if not team:
-        print(">>> Team not found.")
-        return
-
-    full_form_timeline = build_form_timeline(team)
-    if not full_form_timeline or len(full_form_timeline) < 2:
-        print(">>> Not enough match history to generate form graph (minimum 4 matches required).")
-        return
-
-    start_date, end_date = pick_date_range()
-    if start_date is None or end_date is None:
-        print("\n  >>> Date selection cancelled.")
-        return
-
-    def _in_range(date_str):
-        try:
-            return start_date <= datetime.strptime(date_str[:10], "%Y-%m-%d").date() <= end_date
-        except Exception:
-            return False
-
-    form_timeline = [(d, score, grade, idx) for d, score, grade, idx in full_form_timeline if _in_range(d)]
-    if len(form_timeline) < 2:
-        print(">>> Not enough form data points in selected date range (minimum 2).")
-        return
-
-    all_dates = sorted(set(d for d, _, _, _ in form_timeline))
-    end_date_str = end_date.strftime("%Y-%m-%d")
-    if end_date_str not in all_dates:
-        all_dates = sorted(set(all_dates) | {end_date_str})
-
-    if len(all_dates) < 2:
-        print(">>> Not enough date points to generate graph.")
-        return
-
-    current_form = calculate_form(team, n=15, history=history)
-
-    try:
-        _show_single_team_form_graph(team, form_timeline, all_dates, current_form)
-    except Exception as e:
-        logger.error(f"Graph failed: {e}")
-        print(f"\n  [!] Graph failed: {e}")
-        import traceback
-        traceback.print_exc()
-
-def view_team_combined_graph() -> None:
-    """Display combined rating AND form graph for a single team."""
-    print("\n=== TEAM COMBINED GRAPH ===")
-
-    team_raw = check_cmd(input("Enter team name: ")).strip()
-    if get_cmd(team_raw) in ['back', '0']:
-        return
-    team = find_team(team_raw)
-    if not team:
-        print(">>> Team not found.")
-        return
-
-    all_team_matches = []
-    for m in history:
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        if t1_name == team:
-            all_team_matches.append(('t1', m))
-        elif t2_name == team:
-            all_team_matches.append(('t2', m))
-
-    if len(all_team_matches) < 2:
-        print(">>> Not enough match history to generate graph (minimum 2 matches).")
-        return
-    all_team_matches.sort(key=lambda x: x[1].get('date', ''))
-
-    full_form_timeline = build_form_timeline(team)
-
-    start_date, end_date = pick_date_range()
-    if start_date is None or end_date is None:
-        print("\n  >>> Date selection cancelled.")
-        return
-
-    def _in_range(date_str):
-        try:
-            return start_date <= datetime.strptime(date_str[:10], "%Y-%m-%d").date() <= end_date
-        except Exception:
-            return False
-
-    team_matches = [(side, m) for side, m in all_team_matches if _in_range(m.get('date', ''))]
-    if len(team_matches) < 2:
-        print(">>> Not enough matches in selected date range (minimum 2).")
-        return
-
-    first_side, first_match = team_matches[0]
-    start_rating = first_match.get(first_side, {}).get('pts_before') or STARTING_TEAMS.get(team, 1000)
-    start_point_date = (datetime.strptime(team_matches[0][1].get('date', '')[:10], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-
-    rating_timeline = []
-    all_dates = set()
-    rating_timeline.append((start_point_date, start_rating, 'start', None))
-    all_dates.add(start_point_date)
-
-    for side, m in team_matches:
-        match_date = m.get('date', 'N/A')[:10]
-        pts_after  = m.get(side, {}).get('pts_after')
-        pts_before = m.get(side, {}).get('pts_before')
-        if pts_after is not None:
-            rating_timeline.append((match_date, pts_after, 'match', pts_before))
-            all_dates.add(match_date)
-
-    today = datetime.now().date()
-    end_date_str = end_date.strftime("%Y-%m-%d")
-    if end_date >= today:
-        current_rating = teams.get(team, 1000)
-        rating_timeline.append((end_date_str, current_rating, 'current', None))
-    else:
-        last_pts = rating_timeline[-1][1]
-        current_rating = last_pts
-        rating_timeline.append((end_date_str, last_pts, 'current', None))
-    all_dates.add(end_date_str)
-
-    form_timeline = None
-    if full_form_timeline:
-        form_timeline = [(d, score, grade, idx) for d, score, grade, idx in full_form_timeline if _in_range(d)]
-        if len(form_timeline) < 2:
-            form_timeline = None
-        else:
-            for date, score, grade, _ in form_timeline:
-                all_dates.add(date)
-
-    all_dates = sorted(all_dates)
-    if len(all_dates) < 2:
-        print(">>> Not enough date points to generate graph.")
-        return
-
-    peak_rating = max(pts for _, pts, _, _ in rating_timeline if pts is not None)
-    peak_date = next((d for d, pts, _, _ in rating_timeline if pts == peak_rating), None)
-    current_form = calculate_form(team, n=15, history=history)
-
-    try:
-        _show_combined_graph(team, rating_timeline, form_timeline, all_dates, current_rating, peak_rating, peak_date, current_form)
-    except Exception as e:
-        logger.error(f"Graph failed: {e}")
-        print(f"\n  [!] Graph failed: {e}")
-        import traceback
-        traceback.print_exc()
-
-def _draw_depreciation_curve(
-    canvas,
-    x1,
-    y1,
-    rating1,
-    x2,
-    y2,
-    rating2,
-    color,
-    margin_top,
-    graph_height,
-    min_y,
-    range_y,
-    start_date,
-    end_date,
-    team_name,
-):
-    """
-    Draw the rating line that connects two matches.
-
-    Three gap‑size cases are supported:
-
-    • 0‑1 day  → straight line (no markers).  
-    • 2‑7 days → flat segment for the first (gap‑1) days, then a
-      diagonal for the last day. **One circle** is drawn at the flat‑end
-      (the exact point where the line turns diagonal).  
-    • > 7 days → a flat part for the first 7 days followed by the full
-      depreciation curve. **One circle** is drawn at day 7 (the transition
-      from the flat part to the curve).  No marker is drawn at the last
-      point of the curve because the next match already has its own
-      marker; drawing another circle would duplicate the point.
-
-    The function does **not** draw a marker for the non‑depreciated rating.
-    """
-    from datetime import datetime
-
-    # --------------------------------------------------------------
-    # 1️⃣  Parse dates and compute the day gap
-    # --------------------------------------------------------------
-    d_start = datetime.strptime(start_date, "%Y-%m-%d")
-    d_end   = datetime.strptime(end_date,   "%Y-%m-%d")
-    days_gap = (d_end - d_start).days          # guaranteed ≥ 0
-
-    # --------------------------------------------------------------
-    # 2️⃣  Gap 0‑1 day → simple straight line
-    # --------------------------------------------------------------
-    if days_gap <= 1:
-        canvas.create_line(x1, y1, x2, y2, fill=color, width=2)
-        return
-
-    # --------------------------------------------------------------
-    # 3️⃣  Gap 2‑7 days → flat then diagonal, with flat‑end marker
-    # --------------------------------------------------------------
-    if days_gap <= DEPRECIATION_THRESHOLD:
-        # flat segment (first gap‑1 days)
-        x_flat_end = x1 + ((x2 - x1) * ((days_gap - 1) / days_gap))
-        canvas.create_line(x1, y1, x_flat_end, y1,
-                           fill=color, width=2)      # flat part
-        canvas.create_line(x_flat_end, y1, x2, y2,
-                           fill=color, width=2)      # diagonal part
-
-        # **flat‑end transition marker**
-        canvas.create_oval(x_flat_end - 4, y1 - 4,
-                           x_flat_end + 4, y1 + 4,
-                           fill=color, outline='white', width=1)
-        return
-
-    # --------------------------------------------------------------
-    # 4️⃣  Gap > 7 days → day‑7 marker + depreciation curve
-    # --------------------------------------------------------------
-    # day‑7 point (still at the old rating)
-    x_day7 = x1 + ((x2 - x1) * (DEPRECIATION_THRESHOLD / days_gap))
-    y_day7 = y1
-    canvas.create_line(x1, y1, x_day7, y_day7,
-                       fill=color, width=2)
-
-    # threshold transition marker
-    canvas.create_oval(x_day7 - 4, y_day7 - 4,
-                       x_day7 + 4, y_day7 + 4,
-                       fill=color, outline='white', width=1)
-
-    # ---- build the depreciation‑curve points (day 8 … last day) ----
-    dep_points = [(x_day7, y_day7, rating1)]
-
-    for day in range(DEPRECIATION_THRESHOLD + 1, days_gap + 1):
-        daily_rating = calculate_depreciation(rating1, day, team_name)
-        day_x = x1 + ((x2 - x1) * (day / days_gap))
-        if day == days_gap:
-            daily_y = y2   # snap to exact arrival Y
-        else:
-            daily_y = margin_top + graph_height - (
-                (daily_rating - min_y) / range_y * graph_height
-            )
-        dep_points.append((day_x, daily_y, daily_rating))
-
-    # ---- draw the depreciation curve ---------------------------------
-    for i in range(len(dep_points) - 1):
-        canvas.create_line(dep_points[i][0], dep_points[i][1],
-                           dep_points[i + 1][0], dep_points[i + 1][1],
-                           fill=color, width=2)
-
-def _show_single_team_graph(team, timeline, all_dates,
-                            current_rating, peak_rating, peak_date):
-    """
-    Graph the rating history of a single team (rating only).
-    Includes the depreciation curve and shows the **depreciated** current rating.
-    """
-    import tkinter as tk
-    from datetime import datetime, timedelta
-
-    # ------------------------------------------------------------------
-    #   Window and basic sizing
-    # ------------------------------------------------------------------
-    root = tk.Tk()
-    root.title(f"{team} – Rating Over Time")
-    root.configure(bg='#1a1a1a')
-
-    # ------------------------------------------------------------------
-    #   Prepare dates (add a one‑day buffer at the start)
-    # ------------------------------------------------------------------
-    date_objects = [datetime.strptime(d, "%Y-%m-%d") for d in all_dates]
-    first_date = date_objects[0]
-    buffer_start = first_date - timedelta(days=1)
-
-    # Add the buffer date to the axis so the graph always has a little space.
-    all_dates_with_buffer = [buffer_start.strftime("%Y-%m-%d")] + all_dates
-    date_objects_with_buffer = [buffer_start] + date_objects
-
-    total_days = (date_objects_with_buffer[-1] -
-                  date_objects_with_buffer[0]).days + 1
-
-    # ------------------------------------------------------------------
-    #   Y‑range (add a little padding)
-    # ------------------------------------------------------------------
-    ratings = [pts for _, pts, _, _ in timeline if pts is not None]
-    min_rating = min(ratings)
-    max_rating = max(ratings)
-
-    rating_range = max_rating - min_rating
-    pad = rating_range * 0.1 if rating_range > 0 else 50
-    rating_min = max(0, min_rating - pad)
-    rating_max = min(RATING_CAP, max_rating + pad)
-
-    # round to the nearest 50 for a tidy grid
-    rating_min = (int(rating_min) // 50) * 50
-    rating_max = ((int(rating_max) // 50) + 1) * 50
-
-    # ------------------------------------------------------------------
-    #   Compute *depreciated* rating for “today”
-    # ------------------------------------------------------------------
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    last_match_date = None
-    for d, _, pt_type, _ in timeline:
-        if pt_type == 'match':
-            last_match_date = d
-
-    depreciated = current_rating
-    days_inactive = 0
-    if last_match_date:
-        last_dt = datetime.strptime(last_match_date, "%Y-%m-%d")
-        today_dt = datetime.strptime(today_str, "%Y-%m-%d")
-        days_inactive = (today_dt - last_dt).days
-        if days_inactive > DEPRECIATION_THRESHOLD:
-            depreciated = calculate_depreciation(
-                current_rating, days_inactive, team
-            )
-
-    # ------------------------------------------------------------------
-    #   Pack everything for drawing
-    # ------------------------------------------------------------------
-    graph_data = {
-        'team': team,
-        'total_days': total_days,
-        'all_dates': all_dates_with_buffer,
-        'date_objects': date_objects_with_buffer,
-        'timeline': timeline,
-        'current_rating': current_rating,
-        'depreciated_rating': depreciated,
-        'days_inactive': days_inactive,
-        'peak_rating': peak_rating,
-        'peak_date': peak_date,
-        'rating_min': rating_min,
-        'rating_max': rating_max,
-    }
-
-    team_color = '#3cb44b'      # default line colour
-
-    # ------------------------------------------------------------------
-    #   Canvas
-    # ------------------------------------------------------------------
-    width, height = 1200, 600
-    root.geometry(f"{width}x{height}")
-
-    canvas = tk.Canvas(root, bg='#1a1a1a', highlightthickness=0)
-    canvas.pack(fill=tk.BOTH, expand=True)
-
-    close_btn = [None]          # mutable holder for the Close button
-
-    # ------------------------------------------------------------------
-    #   Resize handling – redraw on every window size change
-    # ------------------------------------------------------------------
-    def on_resize(event):
-        canvas.configure(scrollregion=(0, 0, event.width, event.height))
-        draw_graph(event.width, event.height)
-        if close_btn[0]:
-            close_btn[0].place(x=event.width // 2 - 40,
-                               y=event.height - 50)
-
-    canvas.bind("<Configure>", on_resize)
-
-    # ------------------------------------------------------------------
-    #   Main drawing routine
-    # ------------------------------------------------------------------
-    def draw_graph(cw, ch):
-        canvas.delete("all")
-
-        # ---- margins -------------------------------------------------
-        m_left, m_top, m_bottom = 80, 60, 130
-        m_right = 100
-        g_width = int((cw - m_left - m_right) * 0.95)
-        g_right = m_left + g_width
-        g_height = max(100, ch - m_top - m_bottom)
-
-        px_day = g_width / graph_data['total_days'] if \
-                 graph_data['total_days'] > 1 else g_width
-        r_min = graph_data['rating_min']
-        r_max = graph_data['rating_max']
-        r_range = r_max - r_min
-
-        # ---- title --------------------------------------------------
-        canvas.create_text(cw // 2, 25,
-                           text=f"{graph_data['team']} – Rating Over Time",
-                           font=('Arial', 14, 'bold'), fill='white')
-
-        # ---- subtitle (depreciation info) ---------------------------
-        dep_info = ""
-        if graph_data['days_inactive'] > DEPRECIATION_THRESHOLD:
-            loss = int(graph_data['current_rating'] -
-                       graph_data['depreciated_rating'])
-            dep_info = f" | Dep: -{loss} ({graph_data['days_inactive']}d)"
-        stats = (f"Current: {int(graph_data['current_rating'])}{dep_info}  |  "
-                 f"Peak: {int(graph_data['peak_rating'])}  |  "
-                 f"Range: {graph_data['all_dates'][1]} to "
-                 f"{graph_data['all_dates'][-1]}")
-        canvas.create_text(cw // 2, 45,
-                           text=stats,
-                           font=('Arial', 9), fill='#888888')
-
-        # ---- date → x map -----------------------------------------
-        date_to_x = {}
-        start_dt = graph_data['date_objects'][0]
-        for i, dt in enumerate(graph_data['date_objects']):
-            days_off = (dt - start_dt).days
-            date_to_x[graph_data['all_dates'][i]] = (
-                m_left + days_off * px_day
-            )
-        end_x = date_to_x.get(graph_data['all_dates'][-1], g_right)
-
-        # ---- horizontal grid lines with styled labels ---------------
-        for i in range(6):
-            y_val = r_min + i * (r_range / 5)
-            y_pos = m_top + g_height - (i / 5 * g_height)
-            canvas.create_line(m_left, y_pos, end_x, y_pos,
-                               fill='#2a2a2a', dash=(5, 5))
-            canvas.create_text(m_left - 8, y_pos,
-                               text=str(int(y_val)),
-                               font=('Arial', 8, 'bold'), fill='#aaaaaa',
-                               anchor='e')
-
-        # ---- elite threshold reference line -------------------------
-        if r_min <= ELITE_THRESHOLD <= r_max:
-            elite_y = m_top + g_height - (
-                (ELITE_THRESHOLD - r_min) / r_range * g_height
-            )
-            canvas.create_line(m_left, elite_y, end_x, elite_y,
-                               fill='#4363d8', dash=(6, 3), width=1)
-            canvas.create_text(m_left - 8, elite_y,
-                               text=str(int(ELITE_THRESHOLD)),
-                               font=('Arial', 8, 'bold'), fill='#4363d8',
-                               anchor='e')
-            canvas.create_text(end_x + 8, elite_y,
-                               text="Elite",
-                               font=('Arial', 8, 'bold'), fill='#4363d8',
-                               anchor='w')
-
-        # ---- axes --------------------------------------------------
-        canvas.create_line(m_left, m_top,
-                           m_left, m_top + g_height,
-                           fill='white', width=1)
-        canvas.create_line(m_left, m_top + g_height,
-                           end_x, m_top + g_height,
-                           fill='white', width=1)
-
-        # ---- peak‑rating line ---------------------------------------
-        peak_y = m_top + g_height - (
-            (graph_data['peak_rating'] - r_min) / r_range * g_height
-        )
-        canvas.create_line(m_left, peak_y, end_x, peak_y,
-                           fill='#FFD700', dash=(8, 4), width=1)
-        canvas.create_text(end_x + 12, peak_y,
-                           text=f"Peak: {int(graph_data['peak_rating'])}",
-                           font=('Arial', 8, 'bold'), fill='#FFD700',
-                           anchor='w')
-
-        # ---- current‑rating line (depreciated) --------------------
-        cur_y = m_top + g_height - (
-            (graph_data['depreciated_rating'] - r_min) / r_range * g_height
-        )
-        canvas.create_line(m_left, cur_y, end_x, cur_y,
-                           fill=team_color, dash=(8, 4), width=1)
-        canvas.create_text(end_x + 12, cur_y,
-                           text=f"Current: {int(graph_data['depreciated_rating'])}",
-                           font=('Arial', 8, 'bold'), fill=team_color,
-                           anchor='w')
-
-        # ---- build canvas points from timeline (pts_after Y) -------
-        # Only include 'match' entries — we handle start and end separately.
-        points = []
-        for d, rating, ptype, _ in graph_data['timeline']:
-            if d in date_to_x and rating is not None and ptype == 'match':
-                x = date_to_x[d]
-                y = m_top + g_height - ((rating - r_min) / r_range * g_height)
-                points.append((x, y, d, rating, ptype))
-        points.sort(key=lambda p: p[0])
-
-        # Deduplicate same-x points (keep last — mirrors elite graph)
-        if points:
-            unique = [points[0]]
-            for p in points[1:]:
-                if abs(p[0] - unique[-1][0]) < 1:
-                    unique[-1] = p
-                else:
-                    unique.append(p)
-            points = unique
-
-        # Compute depreciated end-point (mirrors elite graph logic exactly)
-        end_date_str = graph_data['all_dates'][-1]
-        if points and end_date_str in date_to_x:
-            last_rating = points[-1][3]
-            last_date   = points[-1][2]
-            try:
-                days_to_end = (datetime.strptime(end_date_str, "%Y-%m-%d") -
-                               datetime.strptime(last_date,    "%Y-%m-%d")).days
-            except Exception:
-                days_to_end = 0
-            dep_rating = (calculate_depreciation(last_rating, days_to_end, team)
-                          if days_to_end > DEPRECIATION_THRESHOLD else last_rating)
-            y_end = m_top + g_height - ((dep_rating - r_min) / r_range * g_height)
-            points.append((date_to_x[end_date_str], y_end, end_date_str, dep_rating, 'end'))
-
-        # ---- start-rating line/marker -----------------------------------
-        start_rating_entry = next(
-            (r for _, r, pt, _ in graph_data['timeline'] if pt == 'start'), None
-        )
-        start_rating = (start_rating_entry if start_rating_entry is not None
-                        else STARTING_TEAMS.get(team, 1000))
-        start_x = m_left
-        start_y = m_top + g_height - ((start_rating - r_min) / r_range * g_height)
-        if points:
-            canvas.create_line(start_x, start_y,
-                               points[0][0], points[0][1],
-                               fill=team_color, width=2)
-
-        # ---- draw rating lines segment by segment (elite graph logic) ---
-        if len(points) > 1:
-            for i in range(len(points) - 1):
-                x1, y1, d1, r1, t1 = points[i]
-                x2, y2, d2, r2, t2 = points[i + 1]
-                try:
-                    days_gap = (datetime.strptime(d2, "%Y-%m-%d") -
-                                datetime.strptime(d1, "%Y-%m-%d")).days
-                except Exception:
-                    days_gap = 0
-
-                is_end = (t2 == 'end')
-
-                if days_gap > DEPRECIATION_THRESHOLD:
-                    # flat segment to threshold
-                    x_thresh = x1 + (x2 - x1) * (DEPRECIATION_THRESHOLD / days_gap)
-                    canvas.create_line(x1, y1, x_thresh, y1,
-                                       fill=team_color, width=2)
-                    # depreciation curve
-                    dep_pts = [(x_thresh, y1, r1)]
-                    dep_end = days_gap if is_end else days_gap - 1
-                    if dep_end > DEPRECIATION_THRESHOLD:
-                        for day in range(DEPRECIATION_THRESHOLD + 1, dep_end + 1):
-                            dr = calculate_depreciation(r1, day, team)
-                            dx = x1 + (x2 - x1) * (day / days_gap)
-                            dy = m_top + g_height - ((dr - r_min) / r_range * g_height)
-                            dep_pts.append((dx, dy, dr))
-                    for j in range(len(dep_pts) - 1):
-                        canvas.create_line(dep_pts[j][0], dep_pts[j][1],
-                                           dep_pts[j+1][0], dep_pts[j+1][1],
-                                           fill=team_color, width=2)
-                    if not is_end:
-                        # marker at curve end (day before match) — drawn BEFORE
-                        # the connect line, exactly as the elite graph does it
-                        trans_x, trans_y, trans_r = dep_pts[-1]
-                        canvas.create_oval(trans_x-3, trans_y-3,
-                                           trans_x+3, trans_y+3,
-                                           fill=team_color, outline='white', width=1)
-                        # connect curve tail → next match dot
-                        canvas.create_line(trans_x, trans_y, x2, y2,
-                                           fill=team_color, width=2)
-                elif days_gap > 1:
-                    # flat then diagonal (gap within threshold) — mirrors elite exactly
-                    x_flat = x1 + (x2 - x1) * ((days_gap - 1) / days_gap)
-                    canvas.create_line(x1, y1, x_flat, y1,
-                                       fill=team_color, width=2)
-                    if not is_end and abs(x_flat - x1) > 5:
-                        canvas.create_oval(x_flat-3, y1-3, x_flat+3, y1+3,
-                                           fill=team_color, outline='white', width=1)
-                    canvas.create_line(x_flat, y1, x2, y2,
-                                       fill=team_color, width=2)
-                else:
-                    canvas.create_line(x1, y1, x2, y2, fill=team_color, width=2)
-
-        # ---- draw point markers ----------------------------------------
-        for x, y, d, rating, ptype in points:
-            if ptype == 'end':
-                canvas.create_oval(x-5, y-5, x+5, y+5,
-                                   fill='#1a1a1a', outline=team_color, width=2)
-            elif rating == graph_data['peak_rating']:
-                canvas.create_oval(x-5, y-5, x+5, y+5,
-                                   fill='#1a1a1a', outline='#FFD700', width=2)
-            elif ptype == 'match':
-                canvas.create_oval(x-3, y-3, x+3, y+3,
-                                   fill=team_color, outline='white', width=1)
-
-        # ---- start-rating marker ----------------------------------------
-        canvas.create_oval(start_x-5, start_y-5, start_x+5, start_y+5,
-                           fill='#1a1a1a', outline='#4363d8', width=2)
-
-        # ---- date‑axis labels (spaced out) -------------------------
-        min_spacing = 100
-        to_show = []
-        sorted_pos = sorted(date_to_x.items(), key=lambda kv: kv[1])
-        if sorted_pos:
-            last_x = sorted_pos[-1][1] + min_spacing
-            for d, x in reversed(sorted_pos):
-                if last_x - x >= min_spacing:
-                    to_show.append((x, d))
-                    last_x = x
-            to_show.reverse()
-            if len(to_show) < 2 and len(sorted_pos) >= 2:
-                to_show = [sorted_pos[-2], sorted_pos[-1]]
-
-        base_y = m_top + g_height
-        for x, d in to_show:
-            canvas.create_text(x, base_y + 12,
-                               text='|', font=('Arial', 8), fill='#888888')
-            canvas.create_text(x, base_y + 28,
-                               text=d, font=('Arial', 7),
-                               fill='#888888', anchor='n')
-
-        # ---- legend ------------------------------------------------
-        leg_x = m_left
-        leg_y = m_top + g_height + 50
-
-        # Start dot
-        canvas.create_oval(leg_x, leg_y, leg_x+10, leg_y+10,
-                           fill='#1a1a1a', outline='#4363d8', width=2)
-        canvas.create_text(leg_x+16, leg_y+5, text="Start of Range",
-                           font=('Arial', 8), fill='#888888', anchor='w')
-
-        # Peak dot
-        canvas.create_oval(leg_x+140, leg_y, leg_x+150, leg_y+10,
-                           fill='#1a1a1a', outline='#FFD700', width=2)
-        canvas.create_text(leg_x+156, leg_y+5,
-                           text=f"Peak  ({int(graph_data['peak_rating'])})",
-                           font=('Arial', 8), fill='#888888', anchor='w')
-
-        # Current/end dot
-        canvas.create_oval(leg_x+280, leg_y, leg_x+290, leg_y+10,
-                           fill='#1a1a1a', outline=team_color, width=2)
-        dep_txt = (f"Current  ({int(graph_data['depreciated_rating'])})"
-                   if graph_data['days_inactive'] <= DEPRECIATION_THRESHOLD
-                   else f"Current  ({int(graph_data['depreciated_rating'])}  dep.)")
-        canvas.create_text(leg_x+296, leg_y+5, text=dep_txt,
-                           font=('Arial', 8), fill='#888888', anchor='w')
-
-        # Match dot
-        canvas.create_oval(leg_x+440, leg_y+2, leg_x+446, leg_y+8,
-                           fill=team_color, outline='white', width=1)
-        canvas.create_text(leg_x+452, leg_y+5, text="Match result",
-                           font=('Arial', 8), fill='#888888', anchor='w')
-
-        # Elite threshold line swatch (if visible)
-        if r_min <= ELITE_THRESHOLD <= r_max:
-            canvas.create_line(leg_x+560, leg_y+5, leg_x+575, leg_y+5,
-                               fill='#4363d8', dash=(4, 2), width=1)
-            canvas.create_text(leg_x+581, leg_y+5,
-                               text=f"Elite  ({ELITE_THRESHOLD})",
-                               font=('Arial', 8), fill='#4363d8', anchor='w')
-
-        # Depreciation note
-        if graph_data['days_inactive'] > DEPRECIATION_THRESHOLD:
-            loss = int(graph_data['current_rating'] - graph_data['depreciated_rating'])
-            canvas.create_text(leg_x, leg_y+22,
-                               text=f"⚠ Inactive {graph_data['days_inactive']}d  —  depreciation: -{loss} pts",
-                               font=('Arial', 8), fill='#aa8800', anchor='w')
-
-        # ---- Close button -------------------------------------------
-        if close_btn[0] is None:
-            close_btn[0] = tk.Button(root, text="Close",
-                                    command=root.destroy,
-                                    bg='#404040', fg='white',
-                                    font=('Arial', 10),
-                                    padx=30, pady=5)
-        close_btn[0].place(x=cw // 2 - 40,
-                           y=ch - 45)
-
-    # ------------------------------------------------------------------
-    #   Initial draw
-    # ------------------------------------------------------------------
-    draw_graph(width, height)
-    root.mainloop()
-
-def _draw_form_segment(canvas, x1, y1, s1, x2, y2, s2,
-                       tier_colors, thresholds, m_top, g_height,
-                       f_min, f_range):
-    """
-    Draw a line between two form points (s1 → s2) and automatically split
-    it at any tier‑boundary that it crosses.
-
-    Parameters
-    ----------
-    canvas : tk.Canvas
-    x1, y1 : float – pixel coordinates of the first point
-    s1      : float – form score of the first point (0‑100)
-    x2, y2 : float – pixel coordinates of the second point
-    s2      : float – form score of the second point
-    tier_colors : dict – tier → colour (e.g. {'S':'#FFD700', ...})
-    thresholds  : list – tier thresholds in **descending** order, e.g.
-                       [100, 85, 70, 55, 40, 0]
-    m_top, g_height, f_min, f_range – graph geometry (same as in the
-                                        original drawing routine)
-    """
-    # If both points are inside the same tier → one line, done.
-    def tier_of(score):
-        """Return the tier key that belongs to `score`."""
-        if score >= 85:   return 'S'
-        if score >= 70:   return 'A'
-        if score >= 55:   return 'B'
-        if score >= 40:   return 'C'
-        return 'D'
-
-    c1 = tier_colors[tier_of(s1)]
-    c2 = tier_colors[tier_of(s2)]
-
-    # Same colour → simple line
-    if c1 == c2:
-        canvas.create_line(x1, y1, x2, y2, fill=c1, width=2)
-        return
-
-    # The segment crosses at least one threshold.
-    # Work from the higher score downwards (or upwards) and cut it each time
-    # we hit a boundary.
-    # --------------------------------------------------------------
-    #   Build a list of crossing points (including the start & end)
-    # --------------------------------------------------------------
-    cross_pts = [(x1, y1, s1, c1)]          # start point with colour of its tier
-
-    # Determine which thresholds are between s1 and s2.
-    lo, hi = (s2, s1) if s1 > s2 else (s1, s2)   # lo < hi
-    # thresholds are already sorted descending, so we iterate in that order.
-    for thr in thresholds:
-        if lo < thr <= hi:                     # the line hits this boundary
-            # proportion of the way from the higher score to the lower score
-            # (score_high - thr) / (score_high - score_low)
-            if s1 > s2:   # descending
-                t = (s1 - thr) / (s1 - s2)
-            else:         # ascending
-                t = (thr - s1) / (s2 - s1)
-
-            # x‑coordinate of the intersection with the horizontal thresh‑line
-            xc = x1 + t * (x2 - x1)
-            # y‑coordinate is the same for every threshold (horizontal line)
-            yc = m_top + g_height - ((thr - f_min) / f_range * g_height)
-
-            # colour after we cross the threshold is the colour of the next tier
-            after_thr = tier_of(thr - 0.01)   # just below the threshold
-            col_after = tier_colors[after_thr]
-
-            cross_pts.append((xc, yc, thr, col_after))
-
-    cross_pts.append((x2, y2, s2, c2))          # final point
-
-    # --------------------------------------------------------------
-    #   Draw each sub‑segment with its own colour
-    # --------------------------------------------------------------
-    for i in range(len(cross_pts) - 1):
-        x_start, y_start, _, col_start = cross_pts[i]
-        x_end,   y_end,   _, _          = cross_pts[i + 1]
-        canvas.create_line(x_start, y_start,
-                           x_end,   y_end,
-                           fill=col_start, width=2)
-
-def _show_single_team_form_graph(team: str,
-                                 form_timeline,
-                                 all_dates,
-                                 current_form: Optional[Tuple[str, float, str]] = None):
-    """
-    Create a Tkinter window that shows a single team’s FORM over time.
-    The line is *tier‑aware*: whenever the line crosses a tier boundary
-    (S / A / B / C / D) it is automatically split and drawn with the
-    colour that belongs to each tier.
-
-    Parameters
-    ----------
-    team            – team name (string)
-    form_timeline   – list of (date_str, score, grade, match_index)
-    all_dates       – sorted list of every distinct date that appears in
-                      the timeline (strings “YYYY‑MM‑DD”)
-    current_form    – optional (grade, score, streak) tuple for the
-                      most recent form; if supplied it will be drawn as
-                      a horizontal “current” marker at the right edge.
-    """
-    import tkinter as tk
-    from datetime import datetime, timedelta
-
-    # ------------------------------------------------------------------
-    #   Geometry helpers (same as the original function)
-    # ------------------------------------------------------------------
-    date_objects = [datetime.strptime(d, "%Y-%m-%d") for d in all_dates]
-
-    # Add a one‑day buffer on the left so the graph never starts
-    # exactly at the first point (gives a little breathing room).
-    first_date = date_objects[0]
-    buffer_start = first_date - timedelta(days=1)
-
-    all_dates_with_buffer = [buffer_start.strftime("%Y-%m-%d")] + all_dates
-    date_objects_with_buffer = [buffer_start] + date_objects
-
-    total_days = (date_objects_with_buffer[-1] -
-                  date_objects_with_buffer[0]).days + 1
-
-    # Fixed Y‑range for form (0‑100) – a little vertical padding is added.
-    f_min, f_max = 0, 100
-    f_range = f_max - f_min
-
-    # ------------------------------------------------------------------
-    #   Tier colours and the thresholds that separate them
-    # ------------------------------------------------------------------
-    tier_colors = {
-        'S': '#FFD700',   # gold
-        'A': '#C0C0C0',   # silver
-        'B': '#CD7F32',   # bronze
-        'C': '#3cb44b',   # green
-        'D': '#e6194B',   # red
-    }
-
-    # Thresholds in **descending** order – they correspond to the
-    # horizontal grid lines that appear on the left side of the graph.
-    thresholds = [100, 85, 70, 55, 40, 0]
-
-    # ------------------------------------------------------------------
-    #   Helper that draws a (possibly split) segment respecting the tiers
-    # ------------------------------------------------------------------
-    def _draw_form_segment(canvas,
-                           x1, y1, s1,          # start pixel + score
-                           x2, y2, s2,          # end   pixel + score
-                           tier_colors,
-                           thresholds,
-                           m_top, g_height,
-                           f_min, f_range):
-        """
-        Draw a line between (x1,y1)→(x2,y2) where the underlying scores
-        are s1→s2.  If the segment crosses any tier boundary it is split
-        into sub‑segments, each coloured according to the tier it belongs
-        to.
-        """
-        # --------------------------------------------------------------
-        #   Determine which tier a raw score belongs to
-        # --------------------------------------------------------------
-        def tier_of(score):
-            if score >= 85:   return 'S'
-            if score >= 70:   return 'A'
-            if score >= 55:   return 'B'
-            if score >= 40:   return 'C'
-            return 'D'
-
-        col_start = tier_colors[tier_of(s1)]
-        col_end   = tier_colors[tier_of(s2)]
-
-        # Same colour → simple line, nothing to split.
-        if col_start == col_end:
-            canvas.create_line(x1, y1, x2, y2, fill=col_start, width=2)
-            return
-
-        # ----------------------------------------------------------------
-        #   The segment crosses at least one threshold.  Build a list of
-        #   all crossing points (including the original start/end).
-        # ----------------------------------------------------------------
-        # We always store (x, y, score, colour) for each point.
-        cross_pts = [(x1, y1, s1, col_start)]
-
-        # Work from the higher score towards the lower score.
-        lo, hi = (s2, s1) if s1 > s2 else (s1, s2)   # lo < hi
-        ascending = s2 > s1
-
-        for thr in thresholds:
-            if lo < thr <= hi:                # the line hits this boundary
-                # proportion along the line where the threshold is hit
-                if s1 > s2:    # descending
-                    t = (s1 - thr) / (s1 - s2)
-                else:          # ascending
-                    t = (thr - s1) / (s2 - s1)
-
-                xc = x1 + t * (x2 - x1)
-                yc = m_top + g_height - ((thr - f_min) / f_range * g_height)
-
-                # colour AFTER crossing: above threshold when ascending,
-                # below threshold when descending
-                if ascending:
-                    col_after = tier_colors[tier_of(thr + 0.01)]
-                else:
-                    col_after = tier_colors[tier_of(thr - 0.01)]
-                cross_pts.append((xc, yc, thr, col_after))
-
-        cross_pts.append((x2, y2, s2, col_end))
-
-        # Sort crossing points by x so ascending and descending both draw correctly
-        cross_pts.sort(key=lambda p: p[0])
-
-        # ----------------------------------------------------------------
-        #   Draw each sub‑segment with its own colour.
-        # ----------------------------------------------------------------
-        for i in range(len(cross_pts) - 1):
-            x_s, y_s, _, col_s = cross_pts[i]
-            x_e, y_e, _, _       = cross_pts[i + 1]
-            canvas.create_line(x_s, y_s, x_e, y_e,
-                               fill=col_s, width=2)
-
-    # ------------------------------------------------------------------
-    #   Build the Tkinter window
-    # ------------------------------------------------------------------
-    root = tk.Tk()
-    root.title(f"{team} – Form Over Time")
-    root.configure(bg="#1a1a1a")
-
-    width, height = 1500, 600
-    root.geometry(f"{width}x{height}")
-
-    canvas = tk.Canvas(root, bg="#1a1a1a", highlightthickness=0)
-    canvas.pack(fill=tk.BOTH, expand=True)
-
-    close_btn = [None]               # mutable holder for the Close button
-
-    # ------------------------------------------------------------------
-    #   Redraw on resize (keeps everything proportional)
-    # ------------------------------------------------------------------
-    def on_resize(event):
-        canvas.configure(scrollregion=(0, 0, event.width, event.height))
-        draw_graph(event.width, event.height)
-        if close_btn[0]:
-            close_btn[0].place(x=event.width // 2 - 40,
-                               y=event.height - 45)
-
-    canvas.bind("<Configure>", on_resize)
-
-    # ------------------------------------------------------------------
-    #   Main drawing routine
-    # ------------------------------------------------------------------
-    def draw_graph(cw, ch):
-        canvas.delete("all")
-
-        # ---- margins -------------------------------------------------
-        m_left, m_top, m_bottom = 80, 60, 100
-        m_right = 100
-        g_width = int((cw - m_left - m_right) * 0.95)
-        g_right = m_left + g_width
-        g_height = max(100, ch - m_top - m_bottom)
-
-        # pixels per day for the horizontal axis
-        px_day = g_width / total_days if total_days > 1 else g_width
-
-        # ---- title --------------------------------------------------
-        canvas.create_text(cw // 2, 25,
-                           text=f"{team} – Form Over Time",
-                           font=("Arial", 14, "bold"),
-                           fill="white")
-
-        # ---- subtitle (current form + date range) ------------------
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        last_form_date = form_timeline[-1][0] if form_timeline else "?"
-        days_since = (datetime.strptime(today_str, "%Y-%m-%d") -
-                      datetime.strptime(last_form_date, "%Y-%m-%d")).days
-        inactive_str = f"  |  Last match: {days_since}d ago" if days_since > 0 else ""
-        if current_form:
-            grade, score, _ = current_form
-            sub = (f"Current: {grade} ({int(score)}/100){inactive_str}  |  "
-                   f"Range: {all_dates_with_buffer[1]} to {today_str}")
-        else:
-            sub = f"Current: –{inactive_str}  |  Range: {all_dates_with_buffer[1]} to {today_str}"
-        canvas.create_text(cw // 2, 45,
-                           text=sub,
-                           font=("Arial", 9),
-                           fill="#888888")
-
-        # ---- date → x map -----------------------------------------
-        date_to_x = {}
-        start_dt = date_objects_with_buffer[0]
-        for i, dt in enumerate(date_objects_with_buffer):
-            days_off = (dt - start_dt).days
-            date_to_x[all_dates_with_buffer[i]] = m_left + days_off * px_day
-
-        # ---- horizontal background grid (neutral, like rating graph) ---
-        for i in range(6):
-            y_val = f_min + i * (f_range / 5)
-            y_pos = m_top + g_height - (i / 5 * g_height)
-            canvas.create_line(m_left, y_pos, g_right, y_pos,
-                               fill='#2a2a2a', dash=(5, 5))
-
-        # ---- tier threshold lines (coloured, on top of grid) -----------
-        tier_label_map = {100: 'S', 85: 'A', 70: 'B', 55: 'C', 40: 'D', 0: ''}
-        for thr in thresholds:
-            if thr == 0:
-                continue   # skip 0 — already covered by x-axis
-            y = m_top + g_height - ((thr - f_min) / f_range * g_height)
-            col = tier_colors[
-                'S' if thr >= 85 else
-                'A' if thr >= 70 else
-                'B' if thr >= 55 else
-                'C' if thr >= 40 else
-                'D'
-            ]
-            canvas.create_line(m_left, y, g_right, y,
-                               fill=col, dash=(6, 3), width=1)
-            canvas.create_text(m_left - 8, y,
-                               text=str(thr),
-                               font=('Arial', 8, 'bold'),
-                               fill=col, anchor='e')
-            # tier letter label on the right
-            canvas.create_text(g_right + 8, y,
-                               text=tier_label_map.get(thr, ''),
-                               font=('Arial', 8, 'bold'),
-                               fill=col, anchor='w')
-
-        # ---- axes --------------------------------------------------
-        canvas.create_line(m_left, m_top,
-                           m_left, m_top + g_height,
-                           fill='white', width=1)
-        canvas.create_line(m_left, m_top + g_height,
-                           g_right, m_top + g_height,
-                           fill='white', width=1)
-
-        # ---- current-form horizontal reference line -----------------
-        if current_form:
-            grade, score, streak = current_form
-            cur_y = m_top + g_height - ((score - f_min) / f_range * g_height)
-            cur_col = tier_colors[
-                'S' if score >= 85 else
-                'A' if score >= 70 else
-                'B' if score >= 55 else
-                'C' if score >= 40 else
-                'D'
-            ]
-            canvas.create_line(m_left, cur_y, g_right, cur_y,
-                               fill=cur_col, dash=(8, 4), width=1)
-            canvas.create_text(g_right + 8, cur_y,
-                               text=f"Current: {int(score)}",
-                               font=('Arial', 8, 'bold'),
-                               fill=cur_col, anchor='w')
-
-        # ----------------------------------------------------------------
-        #   Convert the raw form timeline into canvas points.
-        #   Each entry is (date_str, score, grade, match_idx)
-        # ----------------------------------------------------------------
-        points = []
-        for d, score, grade, idx in form_timeline:
-            if d not in date_to_x:
-                continue
-            x = date_to_x[d]
-            y = m_top + g_height - ((score - f_min) / f_range * g_height)
-            points.append((x, y, d, score, grade))
-
-        # Keep only the *latest* entry for a given date (in case of duplicates)
-        points.sort(key=lambda p: p[0])
-        uniq = {}
-        for p in points:
-            uniq[p[2]] = p                # later point overwrites earlier
-        points = sorted(uniq.values(), key=lambda p: p[0])
-
-        # ----------------------------------------------------------------
-        #   Draw the (tier‑aware) form line
-        # ----------------------------------------------------------------
-        for i in range(len(points) - 1):
-            x1, y1, d1, s1, g1 = points[i]
-            x2, y2, d2, s2, g2 = points[i + 1]
-
-            _draw_form_segment(canvas,
-                               x1, y1, s1,
-                               x2, y2, s2,
-                               tier_colors,
-                               thresholds,
-                               m_top, g_height,
-                               f_min, f_range)
-
-        # ----------------------------------------------------------------
-        #   Draw markers for every actual point (match dates)
-        # ----------------------------------------------------------------
-        for x, y, d, score, grade in points:
-            col = tier_colors[
-                'S' if score >= 85 else
-                'A' if score >= 70 else
-                'B' if score >= 55 else
-                'C' if score >= 40 else
-                'D'
-            ]
-            canvas.create_oval(x - 4, y - 4, x + 4, y + 4,
-                               fill=col,
-                               outline="white",
-                               width=2)
-
-        # ---- current-form reference line label fix --------------------
-        # (label already drawn above in grid section — just fix text)
-
-        # ----------------------------------------------------------------
-        #   Solid trailing line from last match point → g_right
-        #   (form hasn't changed; solid not dashed to distinguish from
-        #    the tier reference lines which are dashed)
-        # ----------------------------------------------------------------
-        if points:
-            last_x, last_y, _, last_score, _ = points[-1]
-            if g_right > last_x:
-                last_col = tier_colors[
-                    'S' if last_score >= 85 else
-                    'A' if last_score >= 70 else
-                    'B' if last_score >= 55 else
-                    'C' if last_score >= 40 else
-                    'D'
-                ]
-                canvas.create_line(last_x, last_y, g_right, last_y,
-                                   fill=last_col, width=2)
-                canvas.create_oval(g_right - 5, last_y - 5,
-                                   g_right + 5, last_y + 5,
-                                   fill='#1a1a1a',
-                                   outline=last_col, width=2)
-
-        # ----------------------------------------------------------------
-        #   Date‑axis labels (spaced out to avoid crowding)
-        # ----------------------------------------------------------------
-        min_spacing = 100
-        shown = []
-        sorted_pos = sorted(date_to_x.items(), key=lambda kv: kv[1])
-        if sorted_pos:
-            last_x = sorted_pos[-1][1] + min_spacing
-            for d, x in reversed(sorted_pos):
-                if last_x - x >= min_spacing:
-                    shown.append((x, d))
-                    last_x = x
-            shown.reverse()
-            if len(shown) < 2 and len(sorted_pos) >= 2:
-                shown = [sorted_pos[-2], sorted_pos[-1]]
-
-        base_y = m_top + g_height
-        for x, d in shown:
-            canvas.create_text(x, base_y + 12,
-                               text='|', font=('Arial', 8), fill='#888888')
-            canvas.create_text(x, base_y + 28,
-                               text=d, font=('Arial', 7),
-                               fill='#888888', anchor='n')
-
-        # ----------------------------------------------------------------
-        #   Legend
-        # ----------------------------------------------------------------
-        leg_x = m_left
-        leg_y = m_top + g_height + 50
-
-        for i, (letter, col, rng) in enumerate([
-            ('S', tier_colors['S'], '85–100'),
-            ('A', tier_colors['A'], '70–84'),
-            ('B', tier_colors['B'], '55–69'),
-            ('C', tier_colors['C'], '40–54'),
-            ('D', tier_colors['D'], '0–39'),
-        ]):
-            cx = leg_x + i * 110
-            canvas.create_oval(cx, leg_y, cx + 10, leg_y + 10,
-                               fill=col, outline='white', width=1)
-            canvas.create_text(cx + 16, leg_y + 5,
-                               text=f"{letter}  {rng}",
-                               font=('Arial', 8), fill='#888888', anchor='w')
-
-        # Current-form note
-        if current_form:
-            grade, score, streak = current_form
-            streak_str = f"  |  Streak: {streak}" if streak else ""
-            canvas.create_text(leg_x, leg_y + 22,
-                               text=f"Current form: {grade}  ({int(score)}/100){streak_str}",
-                               font=('Arial', 8), fill='#aaaaaa', anchor='w')
-
-        # ----------------------------------------------------------------
-        #   Close button
-        # ----------------------------------------------------------------
-        if close_btn[0] is None:
-            close_btn[0] = tk.Button(root,
-                                    text="Close",
-                                    command=root.destroy,
-                                    bg="#404040",
-                                    fg="white",
-                                    font=("Arial", 10),
-                                    padx=30,
-                                    pady=5)
-        close_btn[0].place(x=cw // 2 - 40, y=ch - 45)
-
-    # ------------------------------------------------------------------
-    #   Initial draw
-    # ------------------------------------------------------------------
-    draw_graph(width, height)
-    root.mainloop()
-
-def _show_combined_graph(team,
-                         rating_timeline,
-                         form_timeline,
-                         all_dates,
-                         current_rating,
-                         peak_rating,
-                         peak_date,
-                         current_form: Optional[Tuple[str, float, str]] = None):
-    """
-    Plot a team’s *rating* (with depreciation) **and** its *form* on the
-    same graph.  The rating line is drawn exactly as before.
-    The form line uses the same tier‑aware colour‑splitting logic as the
-    solo‑form graph.
-
-    Parameters
-    ----------
-    team                – team name (string)
-    rating_timeline     – list of (date_str, rating, type) where type is
-                          'start', 'match', 'depreciated', or 'current'
-    form_timeline       – list of (date_str, score, grade, match_idx)
-    all_dates           – sorted list of every distinct date that appears
-                          in either timeline
-    current_rating      – the *non‑depreciated* rating (used to compute
-                          the depreciation line)
-    peak_rating         – highest rating the team ever achieved
-    peak_date           – date of that peak rating
-    current_form        – optional (grade, score, streak) for the most
-                          recent form; drawn as a horizontal marker.
-    """
-    import tkinter as tk
-    from datetime import datetime, timedelta
-
-    # ------------------------------------------------------------------
-    #   Geometry helpers (same as in the original combined graph)
-    # ------------------------------------------------------------------
-    date_objects = [datetime.strptime(d, "%Y-%m-%d") for d in all_dates]
-
-    first_date = date_objects[0]
-    buffer_start = first_date - timedelta(days=1)
-
-    all_dates_with_buffer = [buffer_start.strftime("%Y-%m-%d")] + all_dates
-    date_objects_with_buffer = [buffer_start] + date_objects
-
-    total_days = (date_objects_with_buffer[-1] -
-                  date_objects_with_buffer[0]).days + 1
-
-    # Rating Y‑range (a little padding)
-    rating_vals = [r for _, r, _, _ in rating_timeline if r is not None]
-    r_min = min(rating_vals)
-    r_max = max(rating_vals)
-    pad = (r_max - r_min) * 0.1 if r_max != r_min else 50
-    rating_min = max(0, r_min - pad)
-    rating_max = min(RATING_CAP, r_max + pad)
-    rating_min = (int(rating_min) // 50) * 50
-    rating_max = ((int(rating_max) // 50) + 1) * 50
-
-    # Form Y‑range (fixed 0‑100)
-    f_min, f_max = 0, 100
-    f_range = f_max - f_min
-
-    # ------------------------------------------------------------------
-    #   Compute depreciation for "today" (mirrors _show_single_team_graph)
-    # ------------------------------------------------------------------
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    last_match_date = None
-    for d, _, pt_type, _ in rating_timeline:
-        if pt_type == 'match':
-            last_match_date = d
-
-    depreciated = current_rating
-    days_inactive = 0
-    if last_match_date:
-        last_dt = datetime.strptime(last_match_date, "%Y-%m-%d")
-        today_dt = datetime.strptime(today_str, "%Y-%m-%d")
-        days_inactive = (today_dt - last_dt).days
-        if days_inactive > DEPRECIATION_THRESHOLD:
-            depreciated = calculate_depreciation(
-                current_rating, days_inactive, team
-            )
-
-    graph_data = {
-        'current_rating':     current_rating,
-        'depreciated_rating': depreciated,
-        'days_inactive':      days_inactive,
-        'peak_rating':        peak_rating,
-        'all_dates':          all_dates_with_buffer,
-    }
-
-    # ------------------------------------------------------------------
-    #   Tier colours / thresholds – reused for the form line
-    # ------------------------------------------------------------------
-    tier_colors = {
-        'S': '#FFD700',   # gold
-        'A': '#C0C0C0',   # silver
-        'B': '#CD7F32',   # bronze
-        'C': '#3cb44b',   # green
-        'D': '#e6194B',   # red
-    }
-    thresholds = [100, 85, 70, 55, 40, 0]
-
-    # ------------------------------------------------------------------
-    #   Helper that draws a tier‑aware form segment (exactly the same as
-    #   the one used in the solo‑form graph)
-    # ------------------------------------------------------------------
-    def _draw_form_segment(canvas,
-                           x1, y1, s1,
-                           x2, y2, s2,
-                           tier_colors,
-                           thresholds,
-                           m_top, g_height,
-                           f_min, f_range):
-        def tier_of(score):
-            if score >= 85:   return 'S'
-            if score >= 70:   return 'A'
-            if score >= 55:   return 'B'
-            if score >= 40:   return 'C'
-            return 'D'
-
-        col_start = tier_colors[tier_of(s1)]
-        col_end   = tier_colors[tier_of(s2)]
-
-        if col_start == col_end:
-            canvas.create_line(x1, y1, x2, y2, fill=col_start, width=2)
-            return
-
-        cross_pts = [(x1, y1, s1, col_start)]
-        lo, hi = (s2, s1) if s1 > s2 else (s1, s2)
-
-        for thr in thresholds:
-            if lo < thr <= hi:
-                if s1 > s2:
-                    t = (s1 - thr) / (s1 - s2)
-                else:
-                    t = (thr - s1) / (s2 - s1)
-                xc = x1 + t * (x2 - x1)
-                yc = m_top + g_height - ((thr - f_min) / f_range * g_height)
-                col_after = tier_colors[tier_of(thr - 0.01)]
-                cross_pts.append((xc, yc, thr, col_after))
-
-        cross_pts.append((x2, y2, s2, col_end))
-
-        for i in range(len(cross_pts) - 1):
-            xs, ys, _, cs = cross_pts[i]
-            xe, ye, _, _   = cross_pts[i + 1]
-            canvas.create_line(xs, ys, xe, ye, fill=cs, width=2)
-
-    # ------------------------------------------------------------------
-    #   Build the window
-    # ------------------------------------------------------------------
-    #   Window geometry & colour
-    # ------------------------------------------------------------------
-    team_color = '#3cb44b'      # default line colour
-    width, height = 1600, 600
-
-    root = tk.Tk()
-    root.title(f"{team} – Rating & Form Over Time")
-    root.geometry(f"{width}x{height}")
-    root.configure(bg="#1a1a1a")
-
-    canvas = tk.Canvas(root, bg="#1a1a1a", highlightthickness=0)
-    canvas.pack(fill=tk.BOTH, expand=True)
-
-    close_btn = [None]
-
-    # ------------------------------------------------------------------
-    #   Resize handling
-    # ------------------------------------------------------------------
-    def on_resize(event):
-        canvas.configure(scrollregion=(0, 0, event.width, event.height))
-        draw_graph(event.width, event.height)
-        if close_btn[0]:
-            close_btn[0].place(x=event.width // 2 - 40,
-                               y=event.height - 45)
-
-    canvas.bind("<Configure>", on_resize)
-
-    # ------------------------------------------------------------------
-    #   Main drawing routine
-    # ------------------------------------------------------------------
-    def draw_graph(cw, ch):
-        canvas.delete("all")
-
-        # ---- margins -------------------------------------------------
-        m_left, m_top, m_bottom = 80, 60, 130
-        m_right = 150
-        g_width = int((cw - m_left - m_right) * 0.95)
-        g_right = m_left + g_width
-        g_height = max(100, ch - m_top - m_bottom)
-
-        px_day = g_width / total_days if total_days > 1 else g_width
-
-        # ---- title --------------------------------------------------
-        canvas.create_text(cw // 2, 25,
-                           text=f"{team} – Rating & Form Over Time",
-                           font=("Arial", 14, "bold"),
-                           fill="white")
-
-        # ---- subtitle (rating + form) -------------------------------
-        dep_info = ""
-        if graph_data['days_inactive'] > DEPRECIATION_THRESHOLD:
-            loss = int(graph_data['current_rating'] -
-                       graph_data['depreciated_rating'])
-            dep_info = f" | Dep: -{loss} ({graph_data['days_inactive']}d)"
-        rating_part = f"Rating: {int(graph_data['current_rating'])}{dep_info}"
-        form_part   = (f"Form: {current_form[0]} {int(current_form[1])}"
-                       if current_form else "Form: –")
-        stats = f"{rating_part}  |  {form_part}  |  " \
-                f"Range: {graph_data['all_dates'][1]} to {graph_data['all_dates'][-1]}"
-        canvas.create_text(cw // 2, 45,
-                           text=stats,
-                           font=("Arial", 9),
-                           fill="#888888")
-
-        # ---- date → x map -----------------------------------------
-        date_to_x = {}
-        start_dt = date_objects_with_buffer[0]
-        for i, dt in enumerate(date_objects_with_buffer):
-            days_off = (dt - start_dt).days
-            date_to_x[all_dates_with_buffer[i]] = m_left + days_off * px_day
-
-        end_x = date_to_x.get(all_dates_with_buffer[-1], g_right)
-
-        # ---- rating grid lines with styled labels ------------------
-        for i in range(6):
-            y_val = rating_min + i * (rating_max - rating_min) / 5
-            y_pos = m_top + g_height - (i / 5 * g_height)
-            canvas.create_line(m_left, y_pos, end_x, y_pos,
-                               fill="#2a2a2a", dash=(5, 5))
-            canvas.create_text(m_left - 8, y_pos,
-                               text=str(int(y_val)),
-                               font=("Arial", 8, "bold"), fill="#aaaaaa",
-                               anchor="e")
-
-        # ---- elite threshold reference line -------------------------
-        if rating_min <= ELITE_THRESHOLD <= rating_max:
-            elite_y = m_top + g_height - (
-                (ELITE_THRESHOLD - rating_min) /
-                (rating_max - rating_min) * g_height
-            )
-            canvas.create_line(m_left, elite_y, end_x, elite_y,
-                               fill="#4363d8", dash=(6, 3), width=1)
-            canvas.create_text(m_left - 8, elite_y,
-                               text=str(int(ELITE_THRESHOLD)),
-                               font=("Arial", 8, "bold"), fill="#4363d8",
-                               anchor="e")
-            canvas.create_text(end_x + 8, elite_y,
-                               text="Elite",
-                               font=("Arial", 8, "bold"), fill="#4363d8",
-                               anchor="w")
-
-        # ---- form horizontal tier lines (left side) ---------------
-        for thr in thresholds:
-            y = m_top + g_height - ((thr - f_min) / f_range * g_height)
-            col = tier_colors[
-                'S' if thr == 100 else
-                'A' if thr == 85 else
-                'B' if thr == 70 else
-                'C' if thr == 55 else
-                'D'
-            ]
-            canvas.create_line(m_left, y, end_x, y,
-                               fill=col, dash=(4, 4), width=1)
-            canvas.create_text(m_left - 10, y,
-                               text=str(thr),
-                               font=("Arial", 8, "bold"),
-                               fill=col,
-                               anchor="e")
-
-        # ---- axes --------------------------------------------------
-        canvas.create_line(m_left, m_top,
-                           m_left, m_top + g_height,
-                           fill="white", width=1)
-        canvas.create_line(m_left, m_top + g_height,
-                           end_x, m_top + g_height,
-                           fill="white", width=1)
-
-        # ---- peak‑rating line ---------------------------------------
-        peak_y = m_top + g_height - (
-            (graph_data['peak_rating'] - rating_min) /
-            (rating_max - rating_min) * g_height
-        )
-        canvas.create_line(m_left, peak_y, end_x, peak_y,
-                           fill="#FFD700", dash=(8, 4), width=1)
-        canvas.create_text(end_x + 12, peak_y,
-                           text=f"Peak: {int(graph_data['peak_rating'])}",
-                           font=("Arial", 8, "bold"), fill="#FFD700",
-                           anchor="w")
-
-        # ---- current‑rating line (depreciated) --------------------
-        cur_y = m_top + g_height - (
-            (graph_data['depreciated_rating'] - rating_min) /
-            (rating_max - rating_min) * g_height
-        )
-        canvas.create_line(m_left, cur_y, end_x, cur_y,
-                           fill=team_color, dash=(8, 4), width=1)
-        canvas.create_text(end_x + 12, cur_y,
-                           text=f"Current: {int(graph_data['depreciated_rating'])}",
-                           font=("Arial", 8, "bold"), fill=team_color,
-                           anchor="w")
-
-        # ----------------------------------------------------------------
-        # ----------------------------------------------------------------
-        #   Convert rating timeline → canvas points
-        # ----------------------------------------------------------------
-        rating_pts = []
-        for d, rating, ptype, pts_before in rating_timeline:
-            if d in date_to_x and rating is not None and ptype != 'start':
-                x = date_to_x[d]
-                y = m_top + g_height - (
-                    (rating - rating_min) / (rating_max - rating_min) * g_height
-                )
-                rating_pts.append((x, y, d, rating, ptype, pts_before))
-        rating_pts.sort(key=lambda p: p[0])
-
-        # Final inactive period → depreciated marker
-        if graph_data['days_inactive'] > DEPRECIATION_THRESHOLD and rating_pts:
-            x_last, _, d_last, _, _, pb = rating_pts[-1]
-            r_range_val = rating_max - rating_min
-            y_dep = m_top + g_height - (
-                (graph_data['depreciated_rating'] - rating_min) / r_range_val * g_height
-            )
-            rating_pts[-1] = (x_last, y_dep, d_last,
-                              graph_data['depreciated_rating'], 'depreciated', pb)
-
-        # arrival_y[i] = pts_before Y; departure_y/r[i] = pts_after Y/rating
-        r_range_val = rating_max - rating_min
-        arrival_y   = {}
-        departure_y = {}
-        departure_r = {}
-        for i, (x, y, d, rating, ptype, pts_before) in enumerate(rating_pts):
-            departure_y[i] = y
-            departure_r[i] = rating
-            if pts_before is not None and ptype == 'match':
-                arr_y = m_top + g_height - ((pts_before - rating_min) / r_range_val * g_height)
-                arrival_y[i] = arr_y
-            else:
-                arrival_y[i] = y
-
-        # ---- start-rating line/marker -----------------------------------
-        start_rating_entry = next(
-            (r for _, r, pt, _ in rating_timeline if pt == 'start'), None
-        )
-        start_rating = start_rating_entry if start_rating_entry is not None \
-                       else STARTING_TEAMS.get(team, 1000)
-        start_x = m_left
-        start_y = m_top + g_height - (
-            (start_rating - rating_min) / r_range_val * g_height
-        )
-        if rating_pts:
-            canvas.create_line(start_x, start_y,
-                               rating_pts[0][0], arrival_y[0],
-                               fill=team_color, width=2)
-
-        # ---- draw rating lines (including depreciation curves) ----------
-        for i in range(len(rating_pts) - 1):
-            x1 = rating_pts[i][0];   d1 = rating_pts[i][2]
-            x2 = rating_pts[i+1][0]; d2 = rating_pts[i+1][2]
-            _draw_depreciation_curve(
-                canvas, x1, departure_y[i], departure_r[i],
-                x2, arrival_y[i+1], departure_r[i+1],
-                team_color, m_top, g_height,
-                rating_min, r_range_val, d1, d2, team
-            )
-
-        # ---- rating markers (dots at arrival_y) ----
-        for i, (x, _, d, rating, ptype, _pb) in enumerate(rating_pts):
-            y = arrival_y[i]
-            if ptype in ('depreciated', 'current'):
-                canvas.create_oval(x-5, y-5, x+5, y+5,
-                                   fill=team_color, outline="white", width=2)
-            elif rating == graph_data['peak_rating'] and ptype not in ('depreciated', 'current'):
-                py = departure_y[i]
-                canvas.create_oval(x-5, py-5, x+5, py+5,
-                                   fill="#1a1a1a", outline="#FFD700", width=2)
-            elif ptype == 'match':
-                canvas.create_oval(x-3, y-3, x+3, y+3,
-                                   fill=team_color, outline="white", width=1)
-
-        # ---- start-rating marker ----------------------------------------
-        canvas.create_oval(start_x-5, start_y-5, start_x+5, start_y+5,
-                           fill="#1a1a1a", outline="#4363d8", width=2)
-
-        # ----------------------------------------------------------------
-        form_pts = []
-        for d, score, grade, _ in form_timeline:
-            if d not in date_to_x:
-                continue
-            x = date_to_x[d]
-            y = m_top + g_height - ((score - f_min) / f_range * g_height)
-            form_pts.append((x, y, d, score, grade))
-
-        form_pts.sort(key=lambda p: p[0])
-
-        # --------------------------------------------------------------
-        #   Draw the tier‑aware form line (uses the helper defined above)
-        # --------------------------------------------------------------
-        for i in range(len(form_pts) - 1):
-            x1, y1, d1, s1, g1 = form_pts[i]
-            x2, y2, d2, s2, g2 = form_pts[i + 1]
-
-            _draw_form_segment(canvas,
-                               x1, y1, s1,
-                               x2, y2, s2,
-                               tier_colors,
-                               thresholds,
-                               m_top, g_height,
-                               f_min, f_range)
-
-        # ---- form point markers ------------------------------------
-        for x, y, d, score, grade in form_pts:
-            col = tier_colors[
-                'S' if score >= 85 else
-                'A' if score >= 70 else
-                'B' if score >= 55 else
-                'C' if score >= 40 else
-                'D'
-            ]
-            canvas.create_oval(x - 4, y - 4, x + 4, y + 4,
-                               fill=col,
-                               outline="white",
-                               width=2)
-
-        # ---- current‑form horizontal line (if supplied) ----------
-        if current_form:
-            grade, score, streak = current_form
-            cur_y = m_top + g_height - ((score - f_min) / f_range * g_height)
-            canvas.create_line(m_left, cur_y, end_x, cur_y,
-                               fill="#FFFFFF", dash=(4, 4), width=1)
-            canvas.create_oval(end_x - 5, cur_y - 5,
-                               end_x + 5, cur_y + 5,
-                               fill=tier_colors[
-                                   'S' if score >= 85 else
-                                   'A' if score >= 70 else
-                                   'B' if score >= 55 else
-                                   'C' if score >= 40 else
-                                   'D'
-                               ],
-                               outline="white",
-                               width=2)
-
-        # ----------------------------------------------------------------
-        #   Date‑axis labels (spaced out)
-        # ----------------------------------------------------------------
-        min_spacing = 100
-        shown = []
-        sorted_pos = sorted(date_to_x.items(), key=lambda kv: kv[1])
-        if sorted_pos:
-            last_x = sorted_pos[-1][1] + min_spacing
-            for d, x in reversed(sorted_pos):
-                if last_x - x >= min_spacing:
-                    shown.append((x, d))
-                    last_x = x
-            shown.reverse()
-            if len(shown) < 2 and len(sorted_pos) >= 2:
-                shown = [sorted_pos[-2], sorted_pos[-1]]
-
-        base_y = m_top + g_height
-        for x, d in shown:
-            canvas.create_text(x, base_y + 12,
-                               text="|", font=("Arial", 8),
-                               fill="#888888")
-            canvas.create_text(x, base_y + 28,
-                               text=d, font=("Arial", 7),
-                               fill="#888888", anchor="n")
-
-        # ----------------------------------------------------------------
-        #   Legends (rating + form tiers)
-        # ----------------------------------------------------------------
-        leg_x = m_left
-        leg_y = m_top + g_height + 45
-
-        # Rating legend (peak & current)
-        canvas.create_oval(leg_x, leg_y,
-                           leg_x + 10, leg_y + 10,
-                           fill="#1a1a1a", outline="#FFD700", width=2)
-        canvas.create_text(leg_x + 20, leg_y + 5,
-                           text="Peak Rating",
-                           font=("Arial", 8), fill="#888888",
-                           anchor="w")
-        canvas.create_oval(leg_x + 120, leg_y,
-                           leg_x + 130, leg_y + 10,
-                           fill=team_color, outline="white", width=2)
-        canvas.create_text(leg_x + 140, leg_y + 5,
-                           text="Current Rating",
-                           font=("Arial", 8), fill="#888888",
-                           anchor="w")
-
-        # Form tier legend (right side)
-        for i, (tier, col) in enumerate([
-            ("S", tier_colors['S']),
-            ("A", tier_colors['A']),
-            ("B", tier_colors['B']),
-            ("C", tier_colors['C']),
-            ("D", tier_colors['D']),
-        ]):
-            cx = leg_x + i * 80
-            canvas.create_oval(cx, leg_y + 30,
-                               cx + 12, leg_y + 42,
-                               fill=col, outline="white", width=1)
-            canvas.create_text(cx + 18, leg_y + 36,
-                               text=tier,
-                               font=("Arial", 8),
-                               fill="#888888",
-                               anchor="w")
-
-        # ----------------------------------------------------------------
-        #   Close button
-        # ----------------------------------------------------------------
-        if close_btn[0] is None:
-            close_btn[0] = tk.Button(root,
-                                    text="Close",
-                                    command=root.destroy,
-                                    bg="#404040",
-                                    fg="white",
-                                    font=("Arial", 10),
-                                    padx=30,
-                                    pady=5)
-        close_btn[0].place(x=cw // 2 - 40, y=ch - 45)
-
-    # ------------------------------------------------------------------
-    #   Initial draw
-    # ------------------------------------------------------------------
-    draw_graph(width, height)
-    root.mainloop()
-
-# =============================================================================
 # === ANALYTICS TOOLS ===
 # =============================================================================
 
-def team_analytics_menu() -> None:
-    """Submenu for team-specific analytics and visualizations."""
-    options = [
-        ('1', 'Team Rating Graph', view_team_rating_graph),
-        ('2', 'Team Form Graph', view_team_form_graph),
-        ('3', 'Combined Rating + Form Graph', view_team_combined_graph),
-        ('4', 'Elite Teams Over Time', display_elite_teams_over_time),
-        ('5', 'Map Score Distribution', display_map_score_distribution),
-        ('6', 'Form Table (All Teams)', display_form_table),
-        ('7', 'Analyze Team Form', analyze_team_form),
-        ('8', 'Compare Teams', compare_teams),
-        ('0', 'Back', None),
-    ]
-    
-    while True:
-        print_menu(
-            "TEAM ANALYTICS",
-            [
-                ("1", "Rating Graph"),
-                ("2", "Form Graph"),
-                ("3", "Combined Rating + Form Graph"),
-                ("4", "Elite Teams Over Time"),
-                (None, None),
-                ("5", "Map Score Distribution"),
-                ("6", "Form Table  (All Teams)"),
-                ("7", "Analyse Team Form"),
-                ("8", "Compare Teams"),
-                (None, None),
-                ("0", "Back"),
-            ],
-            subtitle="Graphs, Form & Comparisons",
-        )
-        
-        choice = get_cmd(check_cmd(input("Select: ")))
-        
-        if choice in ['0', 'back']:
-            break
-        
-        found = False
-        for num, _, func in options:
-            if choice == num:
-                func()
-                found = True
-                break
-        if not found:
-            print_warning("Invalid choice. Try again.")
 
-def win_probability_calculator() -> None:
-    """Calculate win probabilities for a match."""
-    print("\nWIN PROBABILITY CALCULATOR")
-    print("=" * 50)
 
-    t1_raw = check_cmd(input("Enter Team 1: ")).strip()
-    if get_cmd(t1_raw) in ['back', '0']:
-        return
-    t1 = find_team(t1_raw)
-    if not t1:
-        print("[!] Team not found.")
-        return
-
-    t2_raw = check_cmd(input("Enter Team 2: ")).strip()
-    if get_cmd(t2_raw) in ['back', '0']:
-        return
-    t2 = find_team(t2_raw)
-    if not t2:
-        print("[!] Team not found.")
-        return
-    
-    if t1 == t2:
-        print("[!] Cannot calculate probability for the same team.")
-        return
-
-    p1 = teams[t1]
-    p2 = teams[t2]
-
-    form1 = calculate_form(t1, n=15, history=history)
-    form2 = calculate_form(t2, n=15, history=history)
-    p1_eff = p1
-    p2_eff = p2
-    if form1 and form2:
-        ans = get_cmd(check_cmd(input("Use form adjustments? (y/n): ")))
-        if ans == 'y':
-            p1_eff = p1 + (form1[1] - 50)
-            p2_eff = p2 + (form2[1] - 50)
-    else:
-        if form1 is None or form2 is None:
-            print("(Form data not available for both teams; using raw ratings)")
-
-    p_map = 1 / (1 + 10 ** ((p2_eff - p1_eff) / 400))
-
-    print_menu(
-        "SELECT MATCH FORMAT",
-        [
-            ("1", "Best-of-3"),
-            ("2", "Best-of-5  (Grand Final)"),
-            (None, None),
-            ("0", "Back"),
-        ],
-    )
-    fmt_choice = get_cmd(check_cmd(input("Select: ")))
-    if fmt_choice in ['back', '0']:
-        return
-    if fmt_choice not in ['1', '2']:
-        fmt_choice = '1'
-
-    if fmt_choice == '1':
-        best_of = 3
-        p_win = p_map**2 + 2 * p_map**2 * (1 - p_map)
-        p_lose = 1 - p_win
-        p_win_2_0 = p_map**2
-        p_win_2_1 = 2 * p_map**2 * (1 - p_map)
-        p_lose_0_2 = (1 - p_map)**2
-        p_lose_1_2 = 2 * p_map * (1 - p_map)**2
-    else:
-        best_of = 5
-        p_win = (p_map**3 +
-                 3 * p_map**3 * (1 - p_map) +
-                 6 * p_map**3 * ((1 - p_map)**2))
-        p_lose = 1 - p_win
-        p_win_3_0 = p_map**3
-        p_win_3_1 = 3 * p_map**3 * (1 - p_map)
-        p_win_3_2 = 6 * p_map**3 * ((1 - p_map)**2)
-        p_lose_0_3 = (1 - p_map)**3
-        p_lose_1_3 = 3 * p_map * ((1 - p_map)**3)
-        p_lose_2_3 = 6 * (p_map**2) * ((1 - p_map)**3)
-
-    print("\n" + "=" * 50)
-    print(f"MATCH WIN PROBABILITY (Best-of-{best_of})")
-    print("-" * 50)
-    print(f"  {t1}: {p_win*100:5.1f}%")
-    print(f"  {t2}: {p_lose*100:5.1f}%")
-    print("-" * 50)
-
-    show_detail = get_cmd(check_cmd(input("\nShow map score breakdown? (y/n): ")))
-    if show_detail != 'y':
-        return
-
-    print("\nMap Score Probabilities:")
-    if best_of == 3:
-        print(f"  {t1} 2-0 : {p_win_2_0*100:5.1f}%")
-        print(f"  {t1} 2-1 : {p_win_2_1*100:5.1f}%")
-        print(f"  {t2} 2-0 : {p_lose_0_2*100:5.1f}%")
-        print(f"  {t2} 2-1 : {p_lose_1_2*100:5.1f}%")
-    else:
-        print(f"  {t1} 3-0 : {p_win_3_0*100:5.1f}%")
-        print(f"  {t1} 3-1 : {p_win_3_1*100:5.1f}%")
-        print(f"  {t1} 3-2 : {p_win_3_2*100:5.1f}%")
-        print(f"  {t2} 3-0 : {p_lose_0_3*100:5.1f}%")
-        print(f"  {t2} 3-1 : {p_lose_1_3*100:5.1f}%")
-        print(f"  {t2} 3-2 : {p_lose_2_3*100:5.1f}%")
-    print("=" * 50)
-
-def display_map_score_distribution() -> None:
-    """
-    Display histogram of map score distribution per team.
-    """
-    history = load_history()
-    if not history:
-        print("\n>>> No match history found.")
-        return
-    
-    print("\n=== MAP SCORE DISTRIBUTION ===")
-    print(f"  Total matches analyzed: {len(history)}")
-    
-    team_stats = {}
-    
-    for m in history:
-        t1 = m.get('t1', {})
-        t2 = m.get('t2', {})
-        s1 = t1.get('score', 0)
-        s2 = t2.get('score', 0)
-        
-        max_maps = 3 if (s1 <= 2 and s2 <= 2) else 5
-        
-        for side, score in [(t1.get('name'), s1), (t2.get('name'), s2)]:
-            if not side: continue
-            if side not in team_stats:
-                team_stats[side] = {
-                    '2-0_wins': 0, '2-1_wins': 0,
-                    '3-0_wins': 0, '3-1_wins': 0, '3-2_wins': 0,
-                    '0-2_losses': 0, '1-2_losses': 0,
-                    '0-3_losses': 0, '1-3_losses': 0, '2-3_losses': 0,
-                    'total_matches': 0
-                }
-            
-            team_stats[side]['total_matches'] += 1
-            
-            opp_score = s2 if side == t1.get('name') else s1
-            
-            if score > opp_score:
-                if max_maps == 3:
-                    if score == 2 and opp_score == 0:
-                        team_stats[side]['2-0_wins'] += 1
-                    elif score == 2 and opp_score == 1:
-                        team_stats[side]['2-1_wins'] += 1
-                else:
-                    if score == 3 and opp_score == 0:
-                        team_stats[side]['3-0_wins'] += 1
-                    elif score == 3 and opp_score == 1:
-                        team_stats[side]['3-1_wins'] += 1
-                    elif score == 3 and opp_score == 2:
-                        team_stats[side]['3-2_wins'] += 1
-            else:
-                if max_maps == 3:
-                    if score == 0 and opp_score == 2:
-                        team_stats[side]['0-2_losses'] += 1
-                    elif score == 1 and opp_score == 2:
-                        team_stats[side]['1-2_losses'] += 1
-                else:
-                    if score == 0 and opp_score == 3:
-                        team_stats[side]['0-3_losses'] += 1
-                    elif score == 1 and opp_score == 3:
-                        team_stats[side]['1-3_losses'] += 1
-                    elif score == 2 and opp_score == 3:
-                        team_stats[side]['2-3_losses'] += 1
-    
-    print("\n--- Display Options ---")
-    print("  1. View Specific Team")
-    print("  2. View Top 10 Teams (by ELO Ranking)")
-    print("  0. Back")
-    
-    choice = check_cmd(input("  Select: ")).strip()
-    if get_cmd(choice) in ['back', '0']:
-        return
-    
-    if choice == '1':
-        team_raw = check_cmd(input("  Enter team name: ")).strip()
-        if get_cmd(team_raw) in ['back', '0']:
-            return
-        found_team = find_team(team_raw)
-        if found_team and found_team in team_stats:
-            teams_to_show = [found_team]
-        else:
-            print(f">>> Team '{team_raw}' not found.")
-            return
-    elif choice == '2':
-        ranked_teams = sorted(teams.items(), key=lambda x: x[1], reverse=True)
-        teams_to_show = [name for name, elo in ranked_teams if name in team_stats][:10]
-        if not teams_to_show:
-            print("  [!] No teams found.")
-            return
-    else:
-        print("  [!] Invalid option.")
-        return
-    
-    for idx, team in enumerate(teams_to_show, 1):
-        stats = team_stats[team]
-        total = stats['total_matches']
-        current_elo = int(teams.get(team, 0))
-        
-        if len(teams_to_show) > 1:
-            print(f"\n\n{'='*70}")
-            print(f"  #{idx} {team} | ELO: {current_elo} | {total} matches")
-        else:
-            print(f"\n{'='*70}")
-            print(f"  {team} | ELO: {current_elo} | {total} matches")
-        print(f"{'='*70}")
-        
-        total_wins = (stats['2-0_wins'] + stats['2-1_wins'] + 
-                     stats['3-0_wins'] + stats['3-1_wins'] + stats['3-2_wins'])
-        total_losses = (stats['0-2_losses'] + stats['1-2_losses'] + 
-                       stats['0-3_losses'] + stats['1-3_losses'] + stats['2-3_losses'])
-        win_rate = (total_wins / total * 100) if total > 0 else 0
-        
-        print(f"\n  Overall: {total_wins}W - {total_losses}L ({win_rate:.1f}% win rate)")
-        
-        bo3_total = (stats['2-0_wins'] + stats['2-1_wins'] + 
-                    stats['0-2_losses'] + stats['1-2_losses'])
-        if bo3_total > 0:
-            print(f"\n  --- Best-of-3 Results ({bo3_total} matches) ---\n")
-            
-            bo3_data = [
-                ('2-0', stats['2-0_wins']),
-                ('2-1', stats['2-1_wins']),
-                ('1-2', stats['1-2_losses']),
-                ('0-2', stats['0-2_losses']),
-            ]
-            
-            max_count = max([d[1] for d in bo3_data]) if any(d[1] > 0 for d in bo3_data) else 1
-            COL_WIDTH = 8
-            
-            for row in range(10, 0, -1):
-                threshold = (row / 10) * max_count
-                
-                if row == 10:
-                    pct_label = "100%"
-                elif row == 8:
-                    pct_label = " 80%"
-                elif row == 6:
-                    pct_label = " 60%"
-                elif row == 4:
-                    pct_label = " 40%"
-                elif row == 2:
-                    pct_label = " 20%"
-                else:
-                    pct_label = "    "
-                
-                line = f"  {pct_label} |"
-                for score, count in bo3_data:
-                    if count >= threshold:
-                        line += "##".center(COL_WIDTH)
-                    else:
-                        line += " " * COL_WIDTH
-                print(line)
-            
-            print(f"       +{'-' * (COL_WIDTH * len(bo3_data))}")
-            
-            label_line = "        "
-            count_line = "        "
-            for score, count in bo3_data:
-                label_line += str(score).center(COL_WIDTH)
-                count_line += str(count).center(COL_WIDTH)
-            print(label_line)
-            print(count_line)
-        else:
-            print(f"\n  --- Best-of-3 Results (0 matches) ---")
-            print("  No Bo3 matches recorded.")
-        
-        bo5_total = (stats['3-0_wins'] + stats['3-1_wins'] + stats['3-2_wins'] + 
-                    stats['0-3_losses'] + stats['1-3_losses'] + stats['2-3_losses'])
-        if bo5_total > 0:
-            print(f"\n  --- Best-of-5 Results ({bo5_total} matches) ---\n")
-            
-            bo5_data = [
-                ('3-0', stats['3-0_wins']),
-                ('3-1', stats['3-1_wins']),
-                ('3-2', stats['3-2_wins']),
-                ('2-3', stats['2-3_losses']),
-                ('1-3', stats['1-3_losses']),
-                ('0-3', stats['0-3_losses']),
-            ]
-            
-            max_count = max([d[1] for d in bo5_data]) if any(d[1] > 0 for d in bo5_data) else 1
-            COL_WIDTH = 8
-            
-            for row in range(10, 0, -1):
-                threshold = (row / 10) * max_count
-                
-                if row == 10:
-                    pct_label = "100%"
-                elif row == 8:
-                    pct_label = " 80%"
-                elif row == 6:
-                    pct_label = " 60%"
-                elif row == 4:
-                    pct_label = " 40%"
-                elif row == 2:
-                    pct_label = " 20%"
-                else:
-                    pct_label = "    "
-                
-                line = f"  {pct_label} |"
-                for score, count in bo5_data:
-                    if count >= threshold:
-                        line += "##".center(COL_WIDTH)
-                    else:
-                        line += " " * COL_WIDTH
-                print(line)
-            
-            print(f"       +{'-' * (COL_WIDTH * len(bo5_data))}")
-            
-            label_line = "        "
-            count_line = "        "
-            for score, count in bo5_data:
-                label_line += str(score).center(COL_WIDTH)
-                count_line += str(count).center(COL_WIDTH)
-            print(label_line)
-            print(count_line)
-        else:
-            print(f"\n  --- Best-of-5 Results (0 matches) ---")
-            print("  No Bo5 matches recorded.")
-        
-        print(f"\n  --- Dominance Metrics ---")
-        clean_wins = stats['2-0_wins'] + stats['3-0_wins'] + stats['3-1_wins']
-        close_wins = stats['2-1_wins'] + stats['3-2_wins']
-        clean_losses = stats['0-2_losses'] + stats['0-3_losses'] + stats['1-3_losses']
-        close_losses = stats['1-2_losses'] + stats['2-3_losses']
-        
-        if total_wins > 0:
-            clean_win_rate = (clean_wins / total_wins * 100)
-            close_win_rate = (close_wins / total_wins * 100)
-            print(f"    Clean Wins (2-0/3-0/3-1): {clean_wins} ({clean_win_rate:.1f}% of wins)")
-            print(f"    Close Wins (2-1/3-2): {close_wins} ({close_win_rate:.1f}% of wins)")
-        
-        if total_losses > 0:
-            clean_loss_rate = (clean_losses / total_losses * 100)
-            close_loss_rate = (close_losses / total_losses * 100)
-            print(f"    Clean Losses (0-2/0-3/1-3): {clean_losses} ({clean_loss_rate:.1f}% of losses)")
-            print(f"    Close Losses (1-2/2-3): {close_losses} ({close_loss_rate:.1f}% of losses)")
-    
-    print(f"\n{'='*70}")
-    if len(teams_to_show) > 1:
-        print(f"  Displayed {len(teams_to_show)} teams (ordered by ELO ranking)")
-    print("\nPress Enter to return...")
-    input()
 
 def duplicate_match_detection():
     """
@@ -7183,717 +3717,6 @@ def custom_point_adjustments() -> None:
     print(f">>> Adjusted {team}'s points by {adj:+.1f} to {int(new_pts)}.")
     if reason:
         print(f"    Reason: {reason}")
-
-# =============================================================================
-# === EVENT SUMMARY & VRS COMPARISON ===
-# =============================================================================
-
-def calculate_form_at_date(team_name: str, cutoff_date: datetime, history: List[Dict[str, Any]]) -> Optional[Tuple[str, float]]:
-    """
-    Calculate form score for a team using only matches BEFORE cutoff_date.
-    
-    Parameters:
-    - team_name: The team to calculate form for
-    - cutoff_date: Only include matches before this date
-    - history: List of match records (REQUIRED - no global fallback)
-    
-    Returns: (grade, score) or None if insufficient data
-    """
-    if not history:
-        return None
-    
-    team_matches = []
-    for m in history:
-        match_date_str = m.get('date', 'N/A')
-        if match_date_str == 'N/A' or not match_date_str:
-            continue
-        
-        try:
-            match_date = datetime.strptime(match_date_str[:10], "%Y-%m-%d").date()
-            if match_date >= cutoff_date:
-                continue
-        except:
-            continue
-        
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        
-        if t1_name == team_name:
-            team_matches.append(('t1', m))
-        elif t2_name == team_name:
-            team_matches.append(('t2', m))
-    
-    if len(team_matches) < 3:
-        return None
-    
-    recent = team_matches[-15:]
-    total_weight = 0.0
-    win_weighted = 0.0
-    map_wins_weighted = 0.0
-    map_total_weighted = 0.0
-    comp_weighted = 0.0
-    
-    for idx, (side, m) in enumerate(recent):
-        t = m.get(side, {})
-        opp_side = 't2' if side == 't1' else 't1'
-        opp = m.get(opp_side, {})
-        
-        t_score = t.get('score', 0)
-        opp_score = opp.get('score', 0)
-        won = t_score > opp_score
-        matches_ago = len(recent) - 1 - idx
-        exponent = 2.0
-        normalized = matches_ago / 14
-        recency = 1.0 - (normalized ** exponent) * 0.85
-        recency = max(0.15, recency)
-
-        win_weighted += (1.0 if won else 0.0) * recency
-        map_wins_weighted += t_score * recency
-        map_total_weighted += (t_score + opp_score) * recency
-        
-        opp_pts = opp.get('pts_before', 500)
-        comp_weighted += (opp_pts / DIMINISHING_MAX) * recency
-        total_weight += recency
-    
-    if total_weight == 0:
-        return None
-    
-    win_rate = win_weighted / total_weight
-    map_win_rate = map_wins_weighted / map_total_weighted if map_total_weighted > 0 else 0.5
-    comp_rate = comp_weighted / total_weight
-    
-    win_score = win_rate * FORM_WIN_WEIGHT
-    map_score = map_win_rate * FORM_MAP_WEIGHT
-    comp_score = comp_rate * FORM_COMP_WEIGHT
-    
-    score = win_score + map_score + comp_score
-    
-    total_form_points = FORM_WIN_WEIGHT + FORM_MAP_WEIGHT + FORM_COMP_WEIGHT
-    if score >= total_form_points * 0.85:   grade = 'S'
-    elif score >= total_form_points * 0.70: grade = 'A'
-    elif score >= total_form_points * 0.55: grade = 'B'
-    elif score >= total_form_points * 0.40: grade = 'C'
-    else:                                   grade = 'D'
-    
-    return grade, round(score, 1)
-
-
-def get_all_events():
-    """Extract unique event names from history with match counts."""
-    events = {}
-    for m in history:
-        event = get_match_event(m)
-        if event and event != 'N/A':
-            if event not in events:
-                events[event] = []
-            events[event].append(m)
-    return events
-
-
-def generate_event_summary(event_name, event_matches=None):
-    """
-    Generate complete summary for a specific event.
-    """
-    from datetime import datetime, timedelta
-    
-    if event_matches is None:
-        event_matches = [m for m in history if get_match_event(m) == event_name]
-    
-    if not event_matches:
-        print("\n>>> No matches found for this event.")
-        return
-    
-    sorted_matches = sorted(event_matches, key=lambda m: m.get('date', ''))
-
-    first_match = sorted_matches[0]
-    tier = first_match.get('tier', 'N/A')
-
-    env_counts = {}
-    for m in sorted_matches:
-        match_env = m.get('env', 'UNKNOWN')
-        env_counts[match_env] = env_counts.get(match_env, 0) + 1
-
-    env_parts = [f"{env} ({count})" for env, count in sorted(env_counts.items(), key=lambda x: x[1], reverse=True)]
-    env_display = " | ".join(env_parts)
-    
-    dates = []
-    for m in sorted_matches:
-        date_str = m.get('date', 'N/A')
-        if date_str and date_str != 'N/A':
-            try:
-                dates.append(datetime.strptime(date_str[:10], "%Y-%m-%d").date())
-            except:
-                pass
-    
-    if dates:
-        start_date = min(dates)
-        end_date = max(dates)
-        date_range_str = f"{start_date} to {end_date}"
-    else:
-        date_range_str = "Unknown"
-    
-    team_stats = {}
-    
-    for m in sorted_matches:
-        for side in ['t1', 't2']:
-            team = m.get(side, {}).get('name')
-            if not team:
-                continue
-            
-            pts_before = m.get(side, {}).get('pts_before')
-            pts_after = m.get(side, {}).get('pts_after')
-            
-            if pts_before is None or pts_after is None:
-                continue
-            
-            if team not in team_stats:
-                team_stats[team] = {
-                    'start_rating': float(pts_before),
-                    'end_rating': float(pts_after),
-                    'wins': 0, 'losses': 0,
-                    'maps_won': 0, 'maps_lost': 0,
-                    'matches': 0,
-                    'form_start': None,
-                    'form_end': None
-                }
-            
-            team_stats[team]['matches'] += 1
-            team_stats[team]['end_rating'] = float(pts_after)
-            
-            opp_side = 't2' if side == 't1' else 't1'
-            team_score = m.get(side, {}).get('score', 0)
-            opp_score = m.get(opp_side, {}).get('score', 0)
-            
-            if team_score > opp_score:
-                team_stats[team]['wins'] += 1
-            else:
-                team_stats[team]['losses'] += 1
-            
-            team_stats[team]['maps_won'] += team_score
-            team_stats[team]['maps_lost'] += opp_score
-    
-    if not team_stats:
-        print("\n>>> ERROR: No teams with valid rating data found!")
-        print("    Try resimulating match history from Match History menu.")
-        print("\nPress Enter to return...")
-        input()
-        return
-    
-    team_first_match_date = {}
-    for m in sorted_matches:
-        date_str = m.get('date', 'N/A')
-        if date_str and date_str != 'N/A':
-            try:
-                match_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
-                for side in ['t1', 't2']:
-                    team = m.get(side, {}).get('name')
-                    if team and team not in team_first_match_date:
-                        team_first_match_date[team] = match_date
-            except:
-                pass
-    
-    for team, stats in team_stats.items():
-        if team in team_first_match_date:
-            form_date = team_first_match_date[team]
-            stats['form_start'] = calculate_form_at_date(team, form_date, history)
-    
-    for team, stats in team_stats.items():
-        if end_date:
-            form_after_cutoff = end_date + timedelta(days=1)
-            stats['form_end'] = calculate_form_at_date(team, form_after_cutoff, history)
-    
-    for team, stats in team_stats.items():
-        stats['rating_change'] = stats['end_rating'] - stats['start_rating']
-        stats['map_diff'] = stats['maps_won'] - stats['maps_lost']
-        
-        if stats['form_start'] and stats['form_end']:
-            stats['form_change'] = stats['form_end'][1] - stats['form_start'][1]
-        else:
-            stats['form_change'] = None
-    
-    grand_final = [m for m in sorted_matches if m.get('grand_final', False)]
-    
-    print("\n" + "-" * 92)
-    print(f"  EVENT SUMMARY: {event_name}")
-    print("-" * 92)
-    print(f"  Tier: {tier}  |  Environments: {env_display}  |  Matches: {len(sorted_matches)}  |  Dates: {date_range_str}")
-    print("-" * 92)
-    
-    print("\nTOP RATING GAINERS")
-    print("-" * 80)
-    
-    gainers = [(team, stats) for team, stats in team_stats.items() if stats['rating_change'] > 0]
-    gainers.sort(key=lambda x: x[1]['rating_change'], reverse=True)
-    
-    if gainers:
-        print(f"  {'#':<3} {'Team':<22} {'Rating Change':<18} {'Record'}")
-        print(f"  {'-'*55}")
-        for i, (team, stats) in enumerate(gainers[:5], 1):
-            rating_str = f"{int(stats['start_rating'])} -> {int(stats['end_rating'])} ({stats['rating_change']:+.0f})"
-            record = f"{stats['wins']}-{stats['losses']}"
-            print(f"  {i:<3} {team:<22} {rating_str:<18} {record}")
-    else:
-        print("  No teams gained rating at this event.")
-    
-    print("\nTOP RATING LOSERS")
-    print("-" * 80)
-    
-    losers = [(team, stats) for team, stats in team_stats.items() if stats['rating_change'] < 0]
-    losers.sort(key=lambda x: x[1]['rating_change'])
-    
-    if losers:
-        print(f"  {'#':<3} {'Team':<22} {'Rating Change':<18} {'Record'}")
-        print(f"  {'-'*55}")
-        for i, (team, stats) in enumerate(losers[:5], 1):
-            rating_str = f"{int(stats['start_rating'])} -> {int(stats['end_rating'])} ({stats['rating_change']:+.0f})"
-            record = f"{stats['wins']}-{stats['losses']}"
-            print(f"  {i:<3} {team:<22} {rating_str:<18} {record}")
-    else:
-        print("  No teams lost rating at this event.")
-    
-    print("\nTOP FORM IMPROVERS")
-    print("-" * 80)
-    
-    form_improvers = [(team, stats) for team, stats in team_stats.items() 
-                      if stats['form_change'] is not None and stats['form_change'] > 0]
-    form_improvers.sort(key=lambda x: x[1]['form_change'], reverse=True)
-    
-    if form_improvers:
-        print(f"  {'#':<3} {'Team':<22} {'Form Change':<22} {'Record'}")
-        print(f"  {'-'*60}")
-        for i, (team, stats) in enumerate(form_improvers[:5], 1):
-            fs_grade, fs_score = stats['form_start']
-            fe_grade, fe_score = stats['form_end']
-            form_str = f"{fs_grade} {int(fs_score)} -> {fe_grade} {int(fe_score)} ({stats['form_change']:+.0f})"
-            record = f"{stats['wins']}-{stats['losses']}"
-            print(f"  {i:<3} {team:<22} {form_str:<22} {record}")
-    else:
-        print("  No teams improved form at this event.")
-    
-    print("\nTOP FORM DECLINERS")
-    print("-" * 80)
-    
-    form_decliners = [(team, stats) for team, stats in team_stats.items() 
-                      if stats['form_change'] is not None and stats['form_change'] < 0]
-    form_decliners.sort(key=lambda x: x[1]['form_change'])
-    
-    if form_decliners:
-        print(f"  {'#':<3} {'Team':<22} {'Form Change':<22} {'Record'}")
-        print(f"  {'-'*60}")
-        for i, (team, stats) in enumerate(form_decliners[:5], 1):
-            fs_grade, fs_score = stats['form_start']
-            fe_grade, fe_score = stats['form_end']
-            form_str = f"{fs_grade} {int(fs_score)} -> {fe_grade} {int(fe_score)} ({stats['form_change']:+.0f})"
-            record = f"{stats['wins']}-{stats['losses']}"
-            print(f"  {i:<3} {team:<22} {form_str:<22} {record}")
-    else:
-        print("  No teams declined in form at this event.")
-    
-    print("\nEVENT STATISTICS")
-    print("-" * 80)
-    
-    if team_stats:
-        highest_team = max(team_stats.items(), key=lambda x: x[1]['end_rating'])
-        print(f"  - Highest Rated Team: {highest_team[0]} ({int(highest_team[1]['end_rating'])} pts)")
-    
-    upsets = []
-    for m in sorted_matches:
-        t1 = m.get('t1', {})
-        t2 = m.get('t2', {})
-        pts1_before = t1.get('pts_before', 0)
-        pts2_before = t2.get('pts_before', 0)
-        pts1_after = t1.get('pts_after', 0)
-        pts2_after = t2.get('pts_after', 0)
-        s1 = t1.get('score', 0)
-        s2 = t2.get('score', 0)
-        
-        if pts1_before and pts2_before:
-            if s1 > s2 and pts1_before < pts2_before:
-                upsets.append({
-                    'diff': pts2_before - pts1_before,
-                    'winner': t1.get('name'),
-                    'loser': t2.get('name'),
-                    'score': f"{s1}-{s2}",
-                    'winner_change': pts1_after - pts1_before,
-                    'loser_change': pts2_after - pts2_before
-                })
-            elif s2 > s1 and pts2_before < pts1_before:
-                upsets.append({
-                    'diff': pts1_before - pts2_before,
-                    'winner': t2.get('name'),
-                    'loser': t1.get('name'),
-                    'score': f"{s2}-{s1}",
-                    'winner_change': pts2_after - pts2_before,
-                    'loser_change': pts1_after - pts1_before
-                })
-    
-    if upsets:
-        upsets.sort(key=lambda x: x['diff'], reverse=True)
-        biggest = upsets[0]
-        print(f"  - Biggest Upset: {biggest['winner']} def. {biggest['loser']}")
-        print(f"      Rating Gap: {int(biggest['diff'])} pts | Score: {biggest['score']}")
-        print(f"      Rating Changes: {biggest['winner']} {biggest['winner_change']:+.0f} | {biggest['loser']} {biggest['loser_change']:+.0f}")
-    
-    if team_stats:
-        most_maps = max(team_stats.items(), key=lambda x: x[1]['maps_won'] + x[1]['maps_lost'])
-        total_maps = most_maps[1]['maps_won'] + most_maps[1]['maps_lost']
-        print(f"  - Most Maps Played: {most_maps[0]} ({total_maps} maps across {most_maps[1]['matches']} matches)")
-    
-    all_changes = [stats['rating_change'] for stats in team_stats.values()]
-    avg_change = sum(all_changes) / len(all_changes) if all_changes else 0
-    print(f"  - Average Rating Change: {avg_change:+.1f} pts per team")
-    
-    form_changes = [stats['form_change'] for stats in team_stats.values() if stats['form_change'] is not None]
-    if form_changes:
-        avg_form_change = sum(form_changes) / len(form_changes)
-        print(f"  - Average Form Change: {avg_form_change:+.1f} points")
-    
-    if grand_final:
-        gf = grand_final[0]
-        t1 = gf.get('t1', {}).get('name', 'Unknown')
-        t2 = gf.get('t2', {}).get('name', 'Unknown')
-        s1 = gf.get('t1', {}).get('score', 0)
-        s2 = gf.get('t2', {}).get('score', 0)
-        winner = t1 if s1 > s2 else t2
-        loser = t2 if winner == t1 else t1
-        print(f"\nGRAND FINAL: {winner} def. {loser} ({max(s1,s2)}-{min(s1,s2)})")
-    
-    print("\n" + "=" * 80)
-    print("\nPress Enter to return...")
-    input()
-
-
-def event_summary_menu() -> None:
-    """Menu to select and view event summaries."""
-    events = get_all_events()
-    
-    if not events:
-        print("\n>>> No events found in match history.")
-        return
-    
-    while True:
-        print("\n" + "-" * 22)
-        print("  EVENT SUMMARY MENU")
-        print("-" * 22)
-        print(f"  Total Events: {len(events)}")
-        print("-" * 91)
-        
-        from datetime import datetime
-        
-        event_info = []
-        for event, matches in events.items():
-            dates = [datetime.strptime(m.get('date', 'N/A')[:10], "%Y-%m-%d").date() 
-                     for m in matches if m.get('date') and m.get('date') != 'N/A']
-            
-            if dates:
-                date_range = f"{min(dates)} to {max(dates)}"
-                sort_date = max(dates)
-            else:
-                date_range = "Unknown dates"
-                sort_date = None
-            
-            event_info.append({'name': event, 'matches': len(matches), 'date_range': date_range, 'sort_date': sort_date})
-        
-        event_info.sort(key=lambda x: x['sort_date'] if x['sort_date'] else datetime.min.date(), reverse=True)
-        
-        page_size = 9
-        total_pages = (len(event_info) + page_size - 1) // page_size
-        
-        for page in range(total_pages):
-            start_idx = page * page_size
-            end_idx = min(start_idx + page_size, len(event_info))
-            
-            for i, info in enumerate(event_info[start_idx:end_idx], start_idx + 1):
-                event_name = info['name'][:45] if len(info['name']) > 45 else info['name']
-                print(f"  {i:<3} {event_name:<45} ({info['matches']:>2} matches) - {info['date_range']}")
-            
-            if page < total_pages - 1:
-                print(f"  ... ({len(event_info) - end_idx} more events on next page)")
-                print("-" * 91)
-                next_page = input("  Press Enter for next page, or '0' to go back: ").strip()
-                if next_page == '0':
-                    break
-                print()
-        
-        print("-" * 91)
-        print("  0. Back")
-        print()
-        
-        choice = input("  Select event number: ").strip()
-        
-        if choice == '0':
-            break
-        
-        try:
-            idx = int(choice) - 1
-            if 0 <= idx < len(event_info):
-                generate_event_summary(event_info[idx]['name'], events[event_info[idx]['name']])
-            else:
-                print("  [!] Invalid selection.")
-        except ValueError:
-            print("  [!] Please enter a number.")
-
-def compare_csrs_to_vrs():
-    """
-    Compare CSRS Elo ratings against official Valve Ranking System points.
-    Only shows teams above ELITE_THRESHOLD (850+).
-    """
-    print("\n=== CSRS vs VRS COMPARISON ===")
-    print("Fetching VRS rankings from HLTV...")
-    
-    # Get elite teams only
-    elite_teams = [name for name, pts in teams.items() if pts >= ELITE_THRESHOLD]
-    elite_teams.sort(key=lambda x: teams[x], reverse=True)
-    
-    if not elite_teams:
-        print(f">>> No teams above elite threshold ({ELITE_THRESHOLD}+).")
-        return
-    
-    print(f"\nElite Teams Found: {len(elite_teams)} (CSRS Elo >= {ELITE_THRESHOLD})\n")
-    
-    results = []
-    vrs_fetch_date = datetime.now().strftime("%Y-%m-%d")
-    
-    for team in elite_teams:
-        csrs_elo = teams[team]
-        
-        # Try to fetch VRS points (uses existing cache)
-        vrs_pts = scrape_vrs_points(team)
-        
-        if vrs_pts is not None:
-            vrs_converted = vrs_pts / 2
-            diff = csrs_elo - vrs_converted
-            
-            # Determine status - FIXED: single icon, not duplicated
-            if abs(diff) <= 25:
-                status = "Aligned"
-                status_icon = "[OK]"
-            elif diff > 25:
-                status = "Overrated"
-                status_icon = "[*]"
-            else:
-                status = "Underrated"
-                status_icon = "[!]"
-        else:
-            vrs_converted = None
-            diff = None
-            status = "No VRS Data"
-            status_icon = "[--]"
-        
-        results.append({
-            'team': team,
-            'csrs': csrs_elo,
-            'vrs': vrs_pts,
-            'vrs_conv': vrs_converted,
-            'diff': diff,
-            'status': status,
-            'status_icon': status_icon
-        })
-    
-    # Display table
-    print(f"VRS Data From: {vrs_fetch_date} (HLTV Valve Ranking)")
-    print(f"Conversion: VRS Points / 2 = CSRS Elo Equivalent\n")
-    
-    print(f"  {'#':<3} {'Team':<22} {'CSRS':<8} {'VRS':<8} {'VRS/2':<8} {'Diff':<8} {'Status'}")
-    print(f"  {'-'*75}")
-    
-    aligned = 0
-    overrated = 0
-    underrated = 0
-    no_data = 0
-    total_diff = 0
-    diff_count = 0
-    
-    for i, r in enumerate(results, 1):
-        vrs_str = str(int(r['vrs'])) if r['vrs'] else "--"
-        conv_str = str(int(r['vrs_conv'])) if r['vrs_conv'] else "--"
-        diff_str = f"{int(r['diff']):+d}" if r['diff'] is not None else "--"
-        
-        # FIXED: Only print status_icon once, followed by status text
-        print(f"  {i:<3} {r['team'][:22]:<22} {int(r['csrs']):<8} {vrs_str:<8} {conv_str:<8} {diff_str:<8} {r['status_icon']} {r['status']}")
-        
-        # Track stats
-        if r['status'] == "Aligned":
-            aligned += 1
-        elif r['status'] == "Overrated":
-            overrated += 1
-        elif r['status'] == "Underrated":
-            underrated += 1
-        else:
-            no_data += 1
-        
-        if r['diff'] is not None:
-            total_diff += r['diff']
-            diff_count += 1
-    
-    print(f"  {'-'*75}")
-    
-    # Summary stats
-    avg_diff = total_diff / diff_count if diff_count > 0 else 0
-    
-    print(f"\n  Summary: {aligned} Aligned | {overrated} Overrated | {underrated} Underrated | {no_data} No VRS Data")
-    
-    if diff_count > 0:
-        if avg_diff > 25:
-            print(f"  Average Diff: {avg_diff:+.1f} (CSRS inflated vs VRS)")
-        elif avg_diff < -25:
-            print(f"  Average Diff: {avg_diff:+.1f} (CSRS deflated vs VRS)")
-        else:
-            print(f"  Average Diff: {avg_diff:+.1f} (CSRS well-calibrated)")
-    
-    print(f"\n  Note: VRS uses ~2-month window | CSRS uses all-time history with depreciation")
-    print("\nPress Enter to return...")
-    input()
-
-def compare_csrs_vrs_rankings():
-    """
-    Compare CSRS rankings against VRS rankings for top X teams.
-    Shows ACTUAL VRS ranking positions (from full HLTV VRS list).
-    """
-    print("\n=== CSRS vs VRS RANKINGS COMPARISON ===")
-    print("Fetching FULL VRS rankings from HLTV...")
-    
-    while True:
-        try:
-            top_x = int(check_cmd(input("Compare top how many CSRS teams? (5-50): ")))
-            if 5 <= top_x <= 50:
-                break
-            print("  [!] Please enter a number between 5 and 50.")
-        except ValueError:
-            print("  [!] Invalid number.")
-    
-    csrs_ranked = get_sorted_rankings()[:top_x]
-    
-    if not csrs_ranked:
-        print(">>> No teams found.")
-        return
-    
-    print(f"\nFetching FULL VRS ranking list to get actual positions...\n")
-    
-    vrs_full_rankings = {}
-    vrs_fetch_date = datetime.now().strftime("%Y-%m-%d")
-    
-    try:
-        from datetime import date as date_cls
-        today = date_cls.today()
-        vrs_url = f"https://www.hltv.org/valve-ranking/teams/{today.year}/{today.strftime('%B').lower()}/{today.day}"
-
-        with BrowserSession() as sess:
-            page = sess.new_page()
-            try:
-                page.goto(vrs_url, timeout=30000, wait_until="domcontentloaded")
-                page.wait_for_timeout(3000)
-
-                vrs_data = page.evaluate("""() => {
-                    const results = {};
-                    const entries = document.querySelectorAll('.ranking-header');
-                    console.log('Found ranking-header entries:', entries.length);
-                    for (let i = 0; i < entries.length; i++) {
-                        const entry = entries[i];
-                        if (entry.innerHTML.indexOf('old-roster') !== -1) continue;
-                        const positionEl = entry.querySelector('.position');
-                        if (!positionEl) continue;
-                        const rankMatch = positionEl.textContent.trim().match(/#?(\\d+)/);
-                        if (!rankMatch) continue;
-                        const rank = parseInt(rankMatch[1]);
-                        const nameEl = entry.querySelector('.teamLine .name');
-                        if (!nameEl) continue;
-                        const teamName = nameEl.textContent.trim().toLowerCase();
-                        if (!teamName || teamName.length < 2) continue;
-                        const pointsEl = entry.querySelector('.points');
-                        if (!pointsEl) continue;
-                        const pointsMatch = pointsEl.textContent.trim().match(/(\\d+)\\s*(?:Valve\\s*points)?/);
-                        if (!pointsMatch) continue;
-                        const points = parseFloat(pointsMatch[1]);
-                        if (rank && teamName && points) {
-                            results[teamName] = {'rank': rank, 'points': points};
-                        }
-                    }
-                    return results;
-                }""")
-
-                for team_name_lower, data in vrs_data.items():
-                    vrs_full_rankings[team_name_lower] = data['rank']
-
-                print(f"  [OK] Fetched {len(vrs_full_rankings)} teams from VRS\n")
-            finally:
-                try: page.close()
-                except: pass
-
-    except Exception as e:
-        print(f"  [!] VRS scrape error: {e}")
-        log_scrape_error("VRS Rankings", vrs_url if 'vrs_url' in locals() else "Unknown", str(e))
-    
-    # === BUILD RESULTS WITH ACTUAL VRS RANKS ===
-    results = []
-    
-    for csrs_rank, team in enumerate(csrs_ranked, 1):
-        csrs_elo = teams[team]
-        vrs_rank = vrs_full_rankings.get(team.lower())
-        vrs_pts = scrape_vrs_points(team)
-        vrs_converted = vrs_pts / 2 if vrs_pts else None
-        
-        results.append({
-            'csrs_rank': csrs_rank,
-            'team': team,
-            'csrs_elo': csrs_elo,
-            'vrs_pts': vrs_pts,
-            'vrs_converted': vrs_converted,
-            'vrs_rank': vrs_rank
-        })
-    
-    # Display table
-    print(f"VRS Data From: {vrs_fetch_date} (HLTV Valve Ranking)")
-    print(f"Conversion: VRS Points / 2 = CSRS Elo Equivalent\n")
-    
-    print(f"  {'CSRS #':<6} {'VRS #':<6} {'Diff':<6} {'Team':<22} {'CSRS':<8} {'VRS/2':<8}")
-    print(f"  {'-'*85}")
-    
-    same_rank = higher_csrs = higher_vrs = no_vrs_data = 0
-    
-    for r in results:
-        vrs_str = str(int(r['vrs_converted'])) if r['vrs_converted'] else "--"
-        
-        if r['vrs_rank'] is not None:
-            rank_diff = r['csrs_rank'] - r['vrs_rank']
-            if rank_diff == 0:
-                diff_str, diff_icon = "─", "[=]"
-                same_rank += 1
-            elif rank_diff > 0:
-                diff_str, diff_icon = f"-{rank_diff}", "[↓]"
-                higher_vrs += 1
-            else:
-                diff_str, diff_icon = f"+{abs(rank_diff)}", "[↑]"
-                higher_csrs += 1
-            
-            print(f"  {r['csrs_rank']:<6} {r['vrs_rank']:<6} {diff_str:<6} {r['team'][:22]:<22} {int(r['csrs_elo']):<8} {vrs_str:<8} {diff_icon}")
-        else:
-            diff_str, diff_icon = "--", "[--]"
-            no_vrs_data += 1
-            print(f"  {r['csrs_rank']:<6} {'--':<6} {diff_str:<6} {r['team'][:22]:<22} {int(r['csrs_elo']):<8} {vrs_str:<8} {diff_icon}")
-    
-    print(f"  {'-'*85}")
-    
-    print(f"\n  Summary:")
-    print(f"    Same Rank:      {same_rank} teams ({same_rank/len(results)*100:.1f}%)")
-    print(f"    Higher in CSRS: {higher_csrs} teams ({higher_csrs/len(results)*100:.1f}%)")
-    print(f"    Higher in VRS:  {higher_vrs} teams ({higher_vrs/len(results)*100:.1f}%)")
-    print(f"    No VRS Data:    {no_vrs_data} teams")
-    
-    teams_with_diff = [r for r in results if r['vrs_rank'] is not None]
-    if teams_with_diff:
-        biggest_csrs_high = max(teams_with_diff, key=lambda x: x['csrs_rank'] - x['vrs_rank'])
-        biggest_vrs_high = min(teams_with_diff, key=lambda x: x['csrs_rank'] - x['vrs_rank'])
-        
-        print(f"\n  Notable Differences:")
-        if biggest_csrs_high['csrs_rank'] - biggest_csrs_high['vrs_rank'] > 0:
-            print(f"    Highest in VRS: {biggest_csrs_high['team']} (VRS #{biggest_csrs_high['vrs_rank']} vs CSRS #{biggest_csrs_high['csrs_rank']})")
-        if biggest_vrs_high['csrs_rank'] - biggest_vrs_high['vrs_rank'] < 0:
-            print(f"    Highest in CSRS: {biggest_vrs_high['team']} (CSRS #{biggest_vrs_high['csrs_rank']} vs VRS #{biggest_vrs_high['vrs_rank']})")
-    
-    print(f"\n  Note: VRS uses ~2-month window | CSRS uses all-time history with depreciation")
-    print("\nPress Enter to return...")
-    input()
 
 # === BROWSER SESSION ===
 # =============================================================================
@@ -8386,7 +4209,7 @@ def _scrape_vrs_with_players(match_date=None, context=None):
     """
     Fetch the VRS rankings page and return a dict of:
         { team_name_lower: { 'pts': float, 'players': [nick, ...] } }
-    Used by _find_vrs_team_by_roster for roster-based matching.
+    Used by _find_vrs_team_by_core for core-based matching.
     """
     from datetime import timedelta, date as date_cls
     if match_date:
@@ -8454,17 +4277,18 @@ def _scrape_vrs_with_players(match_date=None, context=None):
             _sess.stop()
 
 
-def _find_vrs_team_by_roster(player_nicks, match_date=None, context=None, min_matches=3):
+def _find_vrs_team_by_core(player_nicks, match_date=None, context=None, min_matches=3):
     """
     When a team can't be found by name in VRS, scrape the VRS rankings page
-    and compare player rosters. If a VRS team shares >= min_matches players
-    with player_nicks, return (vrs_team_name, vrs_pts). Otherwise None.
+    and compare player cores. If a VRS team shares >= min_matches players
+    with player_nicks (i.e. shares a "core"), return (vrs_team_name,
+    vrs_pts). Otherwise None.
 
     Parameters:
     - player_nicks: list of lowercase player nick strings scraped from the match page
     - match_date:   date object for the match (we use the day-before VRS page)
     - context:      optional BrowserContext to reuse
-    - min_matches:  minimum overlapping players to count as a match (default 3)
+    - min_matches:  minimum overlapping players to count as a shared core (default 3)
     """
     if not player_nicks:
         return None
@@ -8491,7 +4315,8 @@ def _find_vrs_team_by_roster(player_nicks, match_date=None, context=None, min_ma
     return None
 
 
-def auto_register_team(team_name, match_date=None, teams_dict=None, context=None, player_nicks=None):
+def auto_register_team(team_name, match_date=None, teams_dict=None, context=None, player_nicks=None,
+                        history_list=None, date_index=None):
     """
     Look up VRS points for a brand‑new team and register it.
     The function now ALWAYS prints the raw VRS points that were used,
@@ -8500,8 +4325,45 @@ def auto_register_team(team_name, match_date=None, teams_dict=None, context=None
     Parameters:
     - context:      optional Playwright BrowserContext to reuse for the VRS lookup
     - player_nicks: optional list of player nick strings scraped from the match page,
-                    used as a fallback when name lookup fails (roster matching)
+                    used both for CSRS's own core-matching (step 0) and as a
+                    fallback for VRS lookup when name lookup fails (step 3)
+    - history_list: full match history, needed for CSRS's own core-matching
+                    (step 0) to compute each candidate's last-match date.
+                    If omitted, step 0 is skipped entirely.
+    - date_index:   optional build_match_date_index(history_list) result,
+                    to avoid rebuilding it per team when registering
+                    several new teams in the same import batch.
     """
+    # ------------------------------------------------------------------
+    # 0️⃣  Check CSRS's own lineup history for a core match FIRST — if the
+    # same 3+ players just showed up under a new team name, that's a more
+    # direct and reliable signal than anything VRS can tell us, so it
+    # takes priority: inherit the old team's own CSRS rating (depreciated
+    # as normal for the time gap) instead of deriving a fresh one from VRS.
+    # ------------------------------------------------------------------
+    if player_nicks and history_list is not None:
+        core_result = _find_core_match_in_lineups(
+            player_nicks, exclude_team=team_name, before_date=match_date, date_index=date_index
+        )
+        if core_result:
+            old_team, old_event, overlap = core_result
+            old_rating = teams_dict.get(old_team) if teams_dict is not None else None
+            if old_rating is not None:
+                if match_date:
+                    old_rating = apply_depreciation_to_rating(old_team, old_rating, match_date)
+                if teams_dict is not None:
+                    teams_dict[team_name] = old_rating
+                # Carry over provisional-window state too, if the old team
+                # hadn't graduated yet — otherwise a rebrand mid-window would
+                # unfairly cost it the remaining boosted K-factor matches.
+                if old_team in provisional_teams:
+                    provisional_teams[team_name] = provisional_teams[old_team]
+                print(
+                    f"  >>> Core match: '{team_name}' shares {overlap} players with "
+                    f"'{old_team}' (from '{old_event}') → inheriting {int(old_rating)} CSRS Elo"
+                )
+                return True
+
     # ------------------------------------------------------------------
     # 1️⃣  Try the *match‑page forecast* first – this is the most accurate
     # ------------------------------------------------------------------
@@ -8525,18 +4387,18 @@ def auto_register_team(team_name, match_date=None, teams_dict=None, context=None
             _vrs_session_cache.setdefault(cache_key, {})[team_name.lower()] = vrs
 
     # ------------------------------------------------------------------
-    # 3️⃣  Name lookup failed — try roster matching by player nicks
+    # 3️⃣  Name lookup failed — try core matching by player nicks
     # ------------------------------------------------------------------
     if vrs is None and player_nicks:
-        print(f"  [VRS] Name lookup failed for '{team_name}' — trying roster match ({len(player_nicks)} players)…")
-        result = _find_vrs_team_by_roster(player_nicks, match_date, context)
+        print(f"  [VRS] Name lookup failed for '{team_name}' — trying core match ({len(player_nicks)} players)…")
+        result = _find_vrs_team_by_core(player_nicks, match_date, context)
         if result:
             vrs_name, vrs = result
-            source = f"roster match (VRS name: '{vrs_name}')"
-            print(f"  [VRS] Roster match found: '{vrs_name}' → '{team_name}' ({len(player_nicks)} players checked)")
+            source = f"core match (VRS name: '{vrs_name}')"
+            print(f"  [VRS] Core match found: '{vrs_name}' → '{team_name}' ({len(player_nicks)} players checked)")
             _vrs_session_cache.setdefault(cache_key, {})[team_name.lower()] = vrs
         else:
-            print(f"  [VRS] Roster match failed for '{team_name}' — no VRS team shares ≥3 players")
+            print(f"  [VRS] Core match failed for '{team_name}' — no VRS team shares a 3+ player core")
 
     # ------------------------------------------------------------------
     # 4️⃣  No VRS found — register as provisional at 400 CSRS
@@ -9201,6 +5063,10 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
     import time
     global total_imports
 
+    # Built once for this import session, then kept updated in memory as
+    # matches are processed — see _capture_core_if_first_match.
+    participation_index = _build_event_participation_index(history_list)
+
     while True:
         import_counter = 0
         print_menu(
@@ -9301,7 +5167,8 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
                     print(f"  >>> Auto-registered '{name}': {int(page_vrs)} VRS (match page) -> {int(csrs)} CSRS Elo")
                 else:
                     player_nicks = lineups[0] if name == t1_name else lineups[1]
-                    ok = auto_register_team(name, match_dt, teams_dict, context=context, player_nicks=player_nicks)
+                    ok = auto_register_team(name, match_dt, teams_dict, context=context, player_nicks=player_nicks,
+                                             history_list=history_list)
                     if not ok:
                         print(f">>> Skipping match - '{name}' could not be registered.")
                         registration_failed = True
@@ -9567,6 +5434,10 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
             continue
 
         history_list.append(entry)
+
+        if event_name:
+            _capture_core_if_first_match(t1, event_name, lineups[0], participation_index)
+            _capture_core_if_first_match(t2, event_name, lineups[1], participation_index)
         
         if update_peak_func:
             update_peak_func(t1, teams_dict.get(t1, 1000), entry_date)
@@ -9605,184 +5476,9 @@ _MONTH_MAP = {
     'July':7,'August':8,'September':9,'October':10,'November':11,'December':12,
 }
 
-def _parse_hltv_end_date(date_str: str, year: int = 2026) -> str | None:
-    """
-    Parse HLTV date range strings like 'Jun 11th-Jun 21st' or 'Jun 25th-Jun 26th'
-    and return the END date as 'YYYY-MM-DD'.
-    """
-    parts = date_str.strip().split('-')
-    end_part = parts[-1].strip() if len(parts) > 1 else parts[0].strip()
-    m = re.match(r'(\w+)\s*(\d+)', end_part)
-    if m:
-        month = _MONTH_MAP.get(m.group(1), 0)
-        day   = int(re.sub(r'\D', '', m.group(2)))
-        if month:
-            return f"{year}-{month:02d}-{day:02d}"
-    return None
-
-def _parse_hltv_month_year(text: str):
-    """Parse 'June 20261 - 50 of 8019' -> (2026, 6)"""
-    m = re.match(r'(\w+)\s+(\d{4})', text.strip())
-    if m:
-        month = _MONTH_MAP.get(m.group(1), 0)
-        year  = int(m.group(2))
-        return year, month
-    return None, None
 
 
-def scrape_events_archive(
-    start_date: str,
-    cookies: list | None = None,
-    event_index_file: str = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "data", "event_index.json"),
-) -> list[dict]:
-    """
-    Walk /events/archive?offset=0,50,100,... using Camoufox + real cookies,
-    parsing event IDs and end dates. Stops when all events on a page are older
-    than start_date. Caches results in event_index_file so repeat calls are fast.
 
-    Returns list of dicts: [{id, name, end_date}, ...]
-    """
-    import json as _json
-    from bs4 import BeautifulSoup
-
-    start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
-
-    # Load existing index
-    index: dict[str, dict] = {}
-    if os.path.exists(event_index_file):
-        try:
-            with open(event_index_file) as f:
-                index = {str(e["id"]): e for e in _json.load(f)}
-        except Exception:
-            index = {}
-
-    if not cookies:
-        cookies = _load_hltv_cookies()
-
-    pw_cookies = [
-        {"name": c.get("name",""), "value": c.get("value",""),
-         "domain": c.get("domain",".hltv.org"), "path": c.get("path","/")}
-        for c in cookies if c.get("name") and c.get("value")
-    ]
-
-    newly_found = []
-    offset = 0
-    stop_early = False
-
-    try:
-        from camoufox.sync_api import Camoufox
-    except ImportError:
-        _batch_log("  [ERROR] Camoufox not installed — cannot scrape events archive")
-        return list(index.values())
-
-    with Camoufox(headless=True, os=("windows","macos","linux")) as browser:
-        context = browser.new_context()
-        if pw_cookies:
-            context.add_cookies(pw_cookies)
-        page = context.new_page()
-
-        # Warm up the session via homepage first — CF is much more likely to
-        # pass subsequent requests after seeing a normal landing page visit
-        _batch_log("  Warming up session via hltv.org homepage...")
-        try:
-            page.goto("https://www.hltv.org", timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(4000)
-        except Exception:
-            pass
-
-        while not stop_early:
-            url = f"https://www.hltv.org/events/archive?offset={offset}"
-            _batch_log(f"  Scraping events archive offset={offset}...")
-            try:
-                page.goto(url, timeout=30000, wait_until="domcontentloaded")
-                page.wait_for_timeout(3000)
-                html = page.content()
-            except Exception as e:
-                _batch_log(f"  [WARN] Archive page failed at offset={offset}: {e}")
-                break
-
-            if "Just a moment" in html or "challenge-platform" in html:
-                _batch_log("  [WARN] Cloudflare challenge on archive page — stopping")
-                break
-
-            soup = BeautifulSoup(html, "html.parser")
-            month_blocks = soup.find_all("div", class_="events-month")
-
-            if not month_blocks:
-                _batch_log("  No events-month blocks found — stopping")
-                break
-
-            page_had_events = False
-            for block in month_blocks:
-                headline = block.find(class_="standard-headline")
-                if not headline:
-                    continue
-                year, month_num = _parse_hltv_month_year(headline.get_text(strip=True))
-                if not year:
-                    continue
-
-                for event_link in block.find_all("a", href=re.compile(r'/events/\d+/')):
-                    href = event_link.get("href", "")
-                    id_m = re.search(r'/events/(\d+)/', href)
-                    if not id_m:
-                        continue
-                    event_id = int(id_m.group(1))
-                    page_had_events = True
-
-                    # Already indexed
-                    if str(event_id) in index:
-                        evt = index[str(event_id)]
-                        if evt.get("end_date") and evt["end_date"] < start_date:
-                            stop_early = True
-                        continue
-
-                    name_el = event_link.find(class_="text-ellipsis")
-                    name = name_el.get_text(strip=True) if name_el else href
-
-                    # Parse end date from col-desc
-                    end_date = None
-                    for d in event_link.find_all(class_="col-desc"):
-                        txt = d.get_text(strip=True)
-                        if re.search(r'\w{3}\s*\d+.*-.*\w{3}\s*\d+', txt):
-                            end_date = _parse_hltv_end_date(txt, year)
-                            break
-
-                    evt = {"id": event_id, "name": name, "end_date": end_date}
-                    index[str(event_id)] = evt
-                    newly_found.append(evt)
-
-                    # Stop if this event ended before our target start
-                    if end_date and end_date < start_date:
-                        stop_early = True
-
-            if not page_had_events:
-                break
-
-            offset += 50
-            import time as _time; _time.sleep(2)
-
-        page.close()
-
-    # Save updated index
-    try:
-        with open(event_index_file, "w") as f:
-            _json.dump(list(index.values()), f, indent=2)
-        _batch_log(f"  Event index saved: {len(index)} total events")
-    except Exception as e:
-        _batch_log(f"  [WARN] Could not save event index: {e}")
-
-    # Return all events ending on or after start_date
-    result = [
-        e for e in index.values()
-        if e.get("end_date") and e["end_date"] >= start_date
-    ]
-    if result:
-        dates = sorted(e["end_date"] for e in result)
-        _batch_log(
-            f"  [EVENT INDEX] {len(result)} events in range | "
-            f"earliest_end={dates[0]} | latest_end={dates[-1]}"
-        )
-    return result
 
 
 def scrape_active_events(cookies: list | None = None) -> list[dict]:
@@ -10128,6 +5824,10 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
     import_counter = 0
     failed = []
 
+    # Built once for this batch, then kept updated in memory as matches
+    # are processed — see _capture_core_if_first_match.
+    participation_index = _build_event_participation_index(history)
+
     for idx, url_raw in enumerate(urls_to_do, 1):
         _batch_log(f"[{idx}/{len(urls_to_do)}] {url_raw}")
 
@@ -10165,7 +5865,8 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
                     _batch_log(f"  Auto-registered '{name}': {int(page_vrs)} VRS -> {int(csrs)} CSRS")
                 else:
                     player_nicks = lineups[0] if name == t1_name else lineups[1]
-                    ok = auto_register_team(name, match_dt, teams, context=ctx, player_nicks=player_nicks)
+                    ok = auto_register_team(name, match_dt, teams, context=ctx, player_nicks=player_nicks,
+                                             history_list=history)
                     if not ok:
                         _batch_log(f"  FAIL: could not register '{name}' — skipping match")
                         registration_failed = True
@@ -10369,8 +6070,15 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             continue
 
         history.append(entry)
-        update_peak(t1, teams.get(t1, 1000), entry_date)
-        update_peak(t2, teams.get(t2, 1000), entry_date)
+
+        if event_name:
+            _capture_core_if_first_match(t1, event_name, lineups[0], participation_index)
+            _capture_core_if_first_match(t2, event_name, lineups[1], participation_index)
+
+        _dataset_start = _history_start_date(history)
+        _days_since_start = (match_dt - _dataset_start).days if (match_dt and _dataset_start) else None
+        update_peak(t1, teams.get(t1, 1000), entry_date, days_since_dataset_start=_days_since_start)
+        update_peak(t2, teams.get(t2, 1000), entry_date, days_since_dataset_start=_days_since_start)
         mark_unsaved()
         total_imports += 1
         import_counter += 1
@@ -10532,123 +6240,7 @@ def run_batch_import() -> None:
     input("Press Enter to continue...")
 
 
-def manage_event_tiers() -> None:
-    '''View and edit event tier mappings.'''
-    while True:
-        print('\n--- Manage Event Tiers ---')
-        if event_tiers:
-            print('Current event tier mappings:')
-            for event, tier in sorted(event_tiers.items()):
-                print(f'  {event}: {tier}')
-        else:
-            print('No event tier mappings defined.')
-        print('\n1. Add/Edit Event Tier')
-        print('2. Delete Event Tier')
-        print('3. Resimulate All Matches (apply changes)')
-        print('0. Back')
-        
-        raw_choice = check_cmd(input('Select: ')).strip()
-        choice = get_cmd(raw_choice)
-        
-        if choice in ['back', '0']:
-            break
 
-        if choice == '1':
-            event = check_cmd(input('Event name (or 0 to go back): ')).strip()
-            if get_cmd(event) in ['back', '0']:
-                continue
-            current = event_tiers.get(event)
-            if current:
-                print(f"Current tier for '{event}': {current}")
-            new_tier = check_cmd(input('New tier (S+/S/A/B/C/D): ')).strip().upper()
-            if get_cmd(new_tier) in ['back', '0']:
-                continue
-            valid_tiers = ['S+', 'S', 'A', 'B', 'C', 'D', 'E']
-            if new_tier not in valid_tiers:
-                print(f"Invalid tier. Must be one of: {', '.join(valid_tiers)}")
-                continue
-            event_tiers[event] = new_tier
-            mark_unsaved()
-            save_all()
-            print(f"Set tier for '{event}' to {new_tier}.")
-            resim = get_cmd(check_cmd(input('Resimulate all matches now to apply this change? (y/n): ')))
-            if resim == 'y':
-                resimulate()
-
-        elif choice == '2':
-            event = check_cmd(input('Event name to delete (or 0 to go back): ')).strip()
-            if get_cmd(event) in ['back', '0']:
-                continue
-            if event in event_tiers:
-                del event_tiers[event]
-                mark_unsaved()
-                save_all()
-                print(f"Deleted tier mapping for '{event}'.")
-            else:
-                print('Event not found.')
-
-        elif choice == '3':
-            resimulate()
-
-def analytics_tools_menu() -> None:
-    """Submenu for analytical tools and utilities."""
-    options = [
-        ('1', 'Team Analytics', team_analytics_menu),
-        ('2', 'Event Summary', event_summary_menu),
-        ('3', 'CSRS vs VRS Comparison', compare_csrs_to_vrs),
-        ('4', 'CSRS vs VRS Rankings', compare_csrs_vrs_rankings),
-        ('5', 'Manage Event Tiers', manage_event_tiers),
-        ('6', 'Duplicate Match Detection', duplicate_match_detection),
-        ('7', 'Clear History', clear_history_menu),
-        ('0', 'Back', None),
-    ]
-    
-    while True:
-        print_menu(
-            "ANALYTICS & TOOLS",
-            [
-                ("1", "Team Analytics"),
-                ("2", "Event Summary"),
-                (None, None),
-                ("3", "CSRS vs VRS Comparison"),
-                ("4", "CSRS vs VRS Rankings"),
-                (None, None),
-                ("5", "Manage Event Tiers"),
-                ("6", "Duplicate Match Detection"),
-                ("7", "Clear History"),
-                (None, None),
-                ("h", "Help  (explain features)"),
-                ("0", "Back"),
-            ],
-        )
-        
-        raw_choice = check_cmd(input("Select: ")).strip()
-        choice = get_cmd(raw_choice)
-        
-        if choice in ['0', 'back']:
-            break
-        
-        if choice == 'h':
-            print("\n--- Feature Help ---")
-            print("  1. Team Analytics: Graphs, form tables, team comparisons")
-            print("  2. Event Summary: Breaks down team performance at tournaments")
-            print("  3. CSRS vs VRS: Compares our ratings against HLTV's official rankings")
-            print("  4. Rankings Compare: Shows ranking position differences (CSRS # vs VRS #)")
-            print("  5. Event Tiers: Set S+/S/A/B/C/D/E tiers for tournaments")
-            print("  6. Duplicates: Find and remove duplicate match entries")
-            print("  7. Clear History: Reset all match data (with backup)")
-            print("\n  Tip: Use '0' or 'back' at any prompt to return.")
-            input("\nPress Enter to continue...")
-            continue
-        
-        found = False
-        for num, _, func in options:
-            if choice == num:
-                func()
-                found = True
-                break
-        if not found:
-            print_warning("Invalid choice. Try again.")
 
 # =============================================================================
 # === MAIN ENTRY POINT ===
@@ -10954,22 +6546,6 @@ _PROTECTED_COOKIE_FILE = os.path.normcase(os.path.normpath(os.path.abspath(
 )))
 
 
-def _is_protected_path(path: str) -> bool:
-    """
-    Returns True if `path` IS the cookie file, or is a directory that
-    CONTAINS the cookie file (in which case the directory must be emptied
-    around it rather than removed wholesale).
-    """
-    norm = os.path.normcase(os.path.normpath(os.path.abspath(path)))
-    if norm == _PROTECTED_COOKIE_FILE:
-        return True
-    # Directory case: does the protected file live inside this directory?
-    try:
-        common = os.path.commonpath([norm, _PROTECTED_COOKIE_FILE])
-        return common == norm
-    except ValueError:
-        # Different drives on Windows, or unrelated paths — not protected.
-        return False
 
 
 def _delete_path_preserving_cookies(path: str) -> tuple[int, int, int]:
@@ -11261,15 +6837,11 @@ if __name__ == "__main__":
                 "CSRS  ·  ELO RATING SYSTEM",
                 [
                     ("1", "Import Match from HLTV"),
-                    ("2", "View Rankings"),
-                    ("3", "Match History"),
-                    ("4", "Simulate Match"),
+                    ("2", "Match History"),
                     (None, None),
-                    ("5", "Team Management"),
-                    ("6", "Save / Load"),
-                    ("7", "Analytics & Tools"),
-                    ("8", "Batch Import"),
-                    ("9", "Future Updates"),
+                    ("3", "Team Management"),
+                    ("4", "Save / Load"),
+                    ("5", "Batch Import"),
                     (None, None),
                     ("0", "Exit"),
                 ],
@@ -11291,21 +6863,13 @@ if __name__ == "__main__":
                         old_roster_check_func=None
                     )
                 elif choice == '2':
-                    display_rankings()
-                elif choice == '3':
                     view_match_history()
-                elif choice == '4':
-                    simulate_match()
-                elif choice == '5':
+                elif choice == '3':
                     team_management_menu()
-                elif choice == '6':
+                elif choice == '4':
                     save_load_menu()
-                elif choice == '7':
-                    analytics_tools_menu()
-                elif choice == '8':
+                elif choice == '5':
                     run_batch_import()
-                elif choice == '9':
-                    future_updates_menu()
                 elif choice == '0':
                     if confirm_exit():
                         break

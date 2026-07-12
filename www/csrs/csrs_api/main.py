@@ -613,7 +613,7 @@ def simulate_elo(
 
 @app.get("/api/rankings")
 def get_rankings(
-    limit: int = Query(50, ge=1, le=200),
+    limit: Optional[int] = Query(None, ge=1, description="Max teams to return. Omit for no limit."),
     search: str = Query("", description="Filter by team name"),
     as_of: str = Query("", description="View rankings as of YYYY-MM-DD. Defaults to today."),
 ):
@@ -754,7 +754,7 @@ def get_rankings(
 
 @app.get("/api/form-rankings")
 def get_form_rankings(
-    limit: int = Query(50, ge=1, le=200),
+    limit: Optional[int] = Query(None, ge=1, description="Max teams to return. Omit for no limit."),
     search: str = Query("", description="Filter by team name"),
 ):
     """
@@ -767,8 +767,15 @@ def get_form_rankings(
     provisional: dict = data.get("provisional_teams", {})
     history: list = data.get("history", [])
 
+    from datetime import timedelta
+    date_index = _build_match_date_index(history)
+    cutoff = datetime.now() - timedelta(days=30)
+
     scored = []
     for name in teams:
+        last_match = _get_last_match_date(name, index=date_index)
+        if last_match is None or last_match < cutoff:
+            continue  # inactive in the last 30 days — leave off form rankings
         f = _calculate_form_at_match_index(name, len(history), history)
         if not f:
             continue  # not enough match history yet for a form score
