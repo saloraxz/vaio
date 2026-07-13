@@ -613,6 +613,83 @@ tr:last-child td { border-bottom: none; }
   color: var(--muted);
   text-decoration: none;
 }
+.match-footer-links .csrs-link { color: var(--accent); }
+
+/* Results tab: two parallel layouts sharing the same data — the compact
+   single-row "old" design (desktop, score-centered) and the stacked
+   "new" match-card design (mobile). Only one is shown at a time via the
+   mobile media query below, same responsive-swap pattern used for the
+   Streak column on Form Rankings. */
+.results-list-new { display: none; }
+
+.result-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 18px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.result-matchup {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+  width: 320px;
+}
+.result-team-block {
+  min-width: 0;
+  text-align: right;
+}
+.result-team-block.right { text-align: left; }
+.result-team-block .team-link {
+  font-weight: 600;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.result-score {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 1.05rem;
+  white-space: nowrap;
+}
+.result-event {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.result-links {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.result-links a, .result-links span.team-link {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-decoration: none;
+}
+.result-links .csrs-link { color: var(--accent); }
+
+@media (max-width: 700px) {
+  .results-list-old { display: none; }
+  .results-list-new { display: block; }
+}
 
 @media (max-width: 700px) {
   .results-date-header { font-size: 1rem; margin: 20px 0 8px; }
@@ -820,7 +897,22 @@ tr:last-child td { border-bottom: none; }
 /* ── Mobile-only elements — hidden on desktop, all styles inside media query ── */
 #bottom-nav,
 #more-sheet,
-#more-sheet-overlay { display: none; }
+#more-sheet-overlay,
+.streak-inline { display: none; }
+
+.streak-col { white-space: nowrap; }
+.streak-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+}
 
 /* ── Responsive ── */
 @media (max-width: 700px) {
@@ -851,6 +943,12 @@ tr:last-child td { border-bottom: none; }
   .ap-table th:first-child, .ap-table td:first-child { padding-left: 2px !important; }
   .ap-col-maps { display: none; }
   .ap-table .ap-col-team { max-width: 74px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap !important; }
+
+  /* Form Rankings: the dedicated Streak column is desktop-only real estate
+     (big lettered badges need room a phone doesn't have); on mobile fall
+     back to the small plain dot strip under the team name instead. */
+  .streak-col { display: none; }
+  .streak-inline { display: flex !important; }
 
   /* Analyse Team Form → Matches in Window still needs horizontal scroll
      on a phone (Date + Opponent + Score + Result + Form Pts don't fit),
@@ -2634,10 +2732,10 @@ function renderRankings(rows) {
   setEl('rankings-table', html);
 }
 
+let rankSearchDebounce = null;
 document.getElementById('rank-search').addEventListener('input', () => {
-  const q = document.getElementById('rank-search').value.toLowerCase();
-  const filtered = rankingsData.filter(r => r.name.toLowerCase().includes(q));
-  renderRankings(filtered);
+  clearTimeout(rankSearchDebounce);
+  rankSearchDebounce = setTimeout(loadRankings, 250);
 });
 
 // ---------------------------------------------------------------------------
@@ -2667,13 +2765,17 @@ function renderFormRankings(rows) {
       <thead><tr>
         <th>#</th>
         <th>Team</th>
+        <th class="streak-col">Streak</th>
         <th>Form</th>
         <th class="col-peak">Points</th>
       </tr></thead>
       <tbody>
         ${rows.map(r => {
-          const streakDots = [...r.streak].map(c =>
+          const streakDotsSmall = [...r.streak].map(c =>
             `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${c === 'W' ? 'var(--green)' : 'var(--red)'}"></span>`
+          ).join('');
+          const streakBadgesBig = [...r.streak].map(c =>
+            `<span class="streak-badge" style="background:${c === 'W' ? 'var(--green)' : 'var(--red)'}">${c}</span>`
           ).join('');
           return `
           <tr>
@@ -2683,7 +2785,10 @@ function renderFormRankings(rows) {
                 ${r.name}
               </span>
               ${r.provisional ? `<span class="prov-badge">PROV</span>` : ''}
-              <div style="display:flex;gap:3px;align-items:center;margin-top:4px">${streakDots}</div>
+              <div class="streak-inline" style="gap:3px;align-items:center;margin-top:4px">${streakDotsSmall}</div>
+            </td>
+            <td class="streak-col">
+              <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">${streakBadgesBig}</div>
             </td>
             <td class="pts" style="white-space:nowrap"><span style="color:${tdFormColor(r.form_grade)};font-weight:700">${r.form_grade}</span>&nbsp;(${r.form_score})</td>
             <td class="pts col-peak" style="color:var(--muted)">${r.points.toFixed(2)}</td>
@@ -2694,10 +2799,10 @@ function renderFormRankings(rows) {
   setEl('form-rankings-table', html);
 }
 
+let formRankSearchDebounce = null;
 document.getElementById('form-rank-search').addEventListener('input', () => {
-  const q = document.getElementById('form-rank-search').value.toLowerCase();
-  const filtered = formRankingsData.filter(r => r.name.toLowerCase().includes(q));
-  renderFormRankings(filtered);
+  clearTimeout(formRankSearchDebounce);
+  formRankSearchDebounce = setTimeout(loadFormRankings, 250);
 });
 
 // ---------------------------------------------------------------------------
@@ -2760,48 +2865,72 @@ function renderHistory(rows) {
     setEl('history-table', '<div class="empty-msg">No matches found.</div>');
     return;
   }
-  let html = '<div class="results-list">';
+  let oldHtml = '<div class="results-list-old">';
+  let newHtml = '<div class="results-list-new">';
   let lastDate = null;
 
   rows.forEach(h => {
     const t1won = h.t1.score > h.t2.score;
     const dateOnly = h.date.split(' ')[0];
     if (dateOnly !== lastDate) {
-      html += `<div class="results-date-header">${formatDateHeader(dateOnly)}</div>`;
+      const header = `<div class="results-date-header">${formatDateHeader(dateOnly)}</div>`;
+      oldHtml += header;
+      newHtml += header;
       lastDate = dateOnly;
     }
-    html += `
+
+    const t1Name = h.t1.name.replace(/'/g, "\\'");
+    const t2Name = h.t2.name.replace(/'/g, "\\'");
+    const scoreHtml = `<span class="${t1won ? 'win-badge' : 'loss-badge'}">${h.t1.score}</span><span style="color:var(--muted)">\u2013</span><span class="${!t1won ? 'win-badge' : 'loss-badge'}">${h.t2.score}</span>`;
+    const linksHtml = `
+      ${h.url ? `<a href="${h.url}" target="_blank">HLTV</a>` : ''}
+      ${h.url ? `<span class="team-link csrs-link" onclick="openMatch(${JSON.stringify(h.url)})">CSRS</span>` : ''}
+    `;
+
+    // ── Desktop: single-row block, score centered, teams grow outward ──
+    oldHtml += `
+      <div class="result-card">
+        <div class="result-matchup">
+          <div class="result-team-block">
+            <span class="team-link" onclick="openTeam('${t1Name}')">${h.t1.name}</span>
+            <small class="${deltaClass(h.t1.pts_delta)}" style="font-size:0.72rem">${fmt(h.t1.pts_delta)}</small>
+          </div>
+          <div class="result-score">${scoreHtml}</div>
+          <div class="result-team-block right">
+            <span class="team-link" onclick="openTeam('${t2Name}')">${h.t2.name}</span>
+            <small class="${deltaClass(h.t2.pts_delta)}" style="font-size:0.72rem">${fmt(h.t2.pts_delta)}</small>
+          </div>
+        </div>
+        ${tierBadge(h.tier)}
+        <span class="result-event" title="${h.event}">${h.event}</span>
+        <div class="result-links">${linksHtml}</div>
+      </div>`;
+
+    // ── Mobile: stacked card ──
+    newHtml += `
       <div class="match-card">
         <div class="match-event" title="${h.event}">${h.event}</div>
         <div class="match-row">
           <div class="match-team match-team-left">
-            <span class="team-link ${t1won ? 'win-badge' : ''}" onclick="openTeam('${h.t1.name.replace(/'/g,"\\'")}')">
-              ${h.t1.name}
-            </span>
+            <span class="team-link" onclick="openTeam('${t1Name}')">${h.t1.name}</span>
             <small class="${deltaClass(h.t1.pts_delta)}" style="font-size:0.72rem">${fmt(h.t1.pts_delta)}</small>
           </div>
-          <div class="match-score">
-            <span class="${t1won ? 'win-badge' : ''}">${h.t1.score}</span> - <span class="${!t1won ? 'win-badge' : ''}">${h.t2.score}</span>
-          </div>
+          <div class="match-score">${scoreHtml}</div>
           <div class="match-team match-team-right">
             <small class="${deltaClass(h.t2.pts_delta)}" style="font-size:0.72rem">${fmt(h.t2.pts_delta)}</small>
-            <span class="team-link ${!t1won ? 'win-badge' : ''}" onclick="openTeam('${h.t2.name.replace(/'/g,"\\'")}')">
-              ${h.t2.name}
-            </span>
+            <span class="team-link" onclick="openTeam('${t2Name}')">${h.t2.name}</span>
           </div>
         </div>
         <div class="match-footer">
           ${tierBadge(h.tier)}
-          <div class="match-footer-links">
-            ${h.url ? `<a href="${h.url}" target="_blank">HLTV</a>` : ''}
-            ${h.url ? `<span class="team-link" onclick="openMatch(${JSON.stringify(h.url)})">CSRS</span>` : ''}
-          </div>
+          <div class="match-footer-links">${linksHtml}</div>
         </div>
       </div>`;
   });
 
-  html += '</div>';
-  setEl('history-table', html);
+  oldHtml += '</div>';
+  newHtml += '</div>';
+  setEl('history-table', oldHtml + newHtml);
 }
 
 function renderHistPagination() {
