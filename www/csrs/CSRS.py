@@ -21,7 +21,6 @@ import bisect
 import time
 from collections import deque
 from datetime import datetime, timedelta
-from tkinter import Tk
 from typing import Dict, List, Tuple, Optional, Any
 
 # =============================================================================
@@ -334,6 +333,20 @@ _PITY_THRESHOLD_TO_MAX_GAP = PITY_THRESHOLD_PERCENT - PITY_MAX_PERCENT
 # automatically reappears the instant it plays a new match. See is_team_archived().
 INACTIVE_ARCHIVE_DAYS = CONFIG.get("INACTIVE_ARCHIVE_DAYS", DEFAULT_CONFIG.get("INACTIVE_ARCHIVE_DAYS", 180))
 
+# === ROSTER CORE CONTINUITY (per-event core check) ===
+# A team's "core" (its lineup) is only valid for the same window used above
+# for inactivity archiving — reuse INACTIVE_ARCHIVE_DAYS rather than a second
+# hardcoded 6-month constant. Checked once per team, the first time that team
+# enters a NEW event (see _check_new_event_core): fewer than 3 shared players
+# vs. that team's own last valid core — or no valid core on file at all —
+# resets the team to provisional, mirroring Valve's own "3-player core" rule
+# for retaining VRS points. 1-2 changed players below that threshold keep the
+# rating but apply an escalating penalty rather than a hard cliff right
+# before the 3-changed reset boundary.
+ROSTER_CORE_VALID_DAYS = INACTIVE_ARCHIVE_DAYS
+ROSTER_CORE_ANCHOR_REFRESH_DAYS = 90  # 3 months — how often the reference/anchor core rolls forward
+ROSTER_CHANGE_PENALTIES = {0: 0.0, 1: 0.05, 2: 0.125}  # players changed -> cumulative % cut
+
 # === PEAK-RANK WARMUP WINDOW ===
 # update_peak() records a team's peak rank alongside its peak rating. Ranks
 # are computed against however many teams have been registered SO FAR, not
@@ -431,6 +444,18 @@ total_imports = 0         # Persistent running count of imports (drives tiered b
 # the specific snapshot that was actually on server at that event.
 team_lineups: Dict[str, Dict[str, List[str]]] = {}
 
+# Each team's current CORE ANCHOR — the fixed reference lineup that new-event
+# roster checks are compared against (see _check_new_event_core). Distinct
+# from team_lineups (which records EVERY event's lineup, for rebrand
+# matching) — this only tracks the ONE lineup currently acting as the
+# baseline, plus when it was set. The anchor does NOT move every time a
+# team enters a new event; it only rolls forward once
+# ROSTER_CORE_ANCHOR_REFRESH_DAYS have passed since it was last set, so
+# several small roster changes within the same window compound against one
+# stable reference instead of each getting compared against whatever
+# changed most recently. {team_name: {"lineup": [nicks], "date": "Y-m-d H:M"}}
+team_core_anchor: Dict[str, Dict[str, Any]] = {}
+
 # Tiered backup schedule: maps tier number -> import interval.
 # On each import, only the HIGHEST tier whose interval divides total_imports
 # is written — so import #20 (divisible by 5, 10, and 20) only writes to
@@ -466,6 +491,7 @@ def _build_save_code(t, a, h):
             "provisional_teams": provisional_teams,
             "total_imports": total_imports,
             "team_lineups": team_lineups,
+            "team_core_anchor": team_core_anchor,
         })
         return base64.b64encode(zlib.compress(payload.encode())).decode()
     except Exception as e:
@@ -482,7 +508,7 @@ def _parse_save_code(raw_code):
             print(f">>> WARNING: Save version mismatch (File: {data.get('version', 0)}, Expected: {SAVE_VERSION})")
         
         if isinstance(data, dict) and "teams" not in data:
-            return data, {}, [], {}, {}, [], {}, 0, {}
+            return data, {}, [], {}, {}, [], {}, 0, {}, {}
         # Migrate legacy 'event_name' key to 'event' on all history records
         history = data.get("history", [])
         for m in history:
@@ -499,7 +525,8 @@ def _parse_save_code(raw_code):
                 data.get("adjustments", []),
                 data.get("provisional_teams", {}),
                 data.get("total_imports", 0),
-                data.get("team_lineups", {}))  # {} for saves from before this feature existed
+                data.get("team_lineups", {}),  # {} for saves from before this feature existed
+                data.get("team_core_anchor", {}))  # {} for saves from before this feature existed
     except Exception as e:
         error_log(f"Failed to parse save code: {e}")
         raise
@@ -602,7 +629,7 @@ def save_all(silent: bool = False) -> bool:
 
 def load_all():
     """Load state from data.save. Auto-recovers from backup if corrupted."""
-    global teams, aliases, history, peak_ratings, event_tiers, adjustments, unsaved_changes, total_imports, team_lineups
+    global teams, aliases, history, peak_ratings, event_tiers, adjustments, unsaved_changes, total_imports, team_lineups, team_core_anchor
     
     _backup_dir = os.path.join(os.environ.get("CSRS_DATA_DIR", "."), "save", "backup")
     files_to_try = [SAVE_FILE] + [
@@ -619,7 +646,7 @@ def load_all():
                 if not content:
                     continue
                     
-                t, a, h, pk, et, adj, prov, ti, tl = _parse_save_code(content)
+                t, a, h, pk, et, adj, prov, ti, tl, tca = _parse_save_code(content)
                 
                 teams.clear(); teams.update(t)
                 aliases.clear(); aliases.update(a)
@@ -630,6 +657,7 @@ def load_all():
                 provisional_teams.clear(); provisional_teams.update({k: int(v) for k, v in prov.items()})
                 total_imports = ti
                 team_lineups.clear(); team_lineups.update(tl)
+                team_core_anchor.clear(); team_core_anchor.update(tca)
                 
                 if filename == SAVE_FILE:
                     print(f">>> Loaded {len(history)} matches from {filename}")
@@ -650,9 +678,9 @@ def load_logic(raw_code):
     
     Used when importing save codes from other users or backup files.
     """
-    global teams, aliases, history, peak_ratings, event_tiers, adjustments, provisional_teams, total_imports, team_lineups
+    global teams, aliases, history, peak_ratings, event_tiers, adjustments, provisional_teams, total_imports, team_lineups, team_core_anchor
     try:
-        t, a, h, pk, et, adj, prov, ti, tl = _parse_save_code(raw_code)
+        t, a, h, pk, et, adj, prov, ti, tl, tca = _parse_save_code(raw_code)
         teams.clear(); teams.update(t)
         aliases.clear(); aliases.update(a)
         history.clear(); history.extend(h)
@@ -662,6 +690,7 @@ def load_logic(raw_code):
         provisional_teams.clear(); provisional_teams.update({k: int(v) for k, v in prov.items()})
         total_imports = ti
         team_lineups.clear(); team_lineups.update(tl)
+        team_core_anchor.clear(); team_core_anchor.update(tca)
     except Exception as e:
         error_log(f"Load logic failed: {e}")
         raise
@@ -1064,6 +1093,7 @@ def get_sorted_rankings(include_archived: bool = False):
 def copy_to_clipboard(text):
     """Attempt to copy text to system clipboard using tkinter."""
     try:
+        from tkinter import Tk
         r = Tk()
         r.withdraw()
         r.clipboard_clear()
@@ -1602,6 +1632,130 @@ def _capture_core_if_first_match(team_name: str, event_name: str, player_nicks: 
     participation_index.add(key)
     team_lineups.setdefault(team_name, {})[event_name] = list(player_nicks)
     mark_unsaved()
+
+
+def _parse_stored_date(date_str: Optional[str]) -> Optional[datetime]:
+    """Parse a stored 'YYYY-MM-DD HH:MM[ UTC]' or 'YYYY-MM-DD' string back
+    into a datetime. Returns None if missing/unparseable."""
+    if not date_str:
+        return None
+    try:
+        clean = date_str.replace(' UTC', '').strip()
+        try:
+            return datetime.strptime(clean, "%Y-%m-%d %H:%M")
+        except ValueError:
+            return datetime.strptime(clean[:10], "%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def _set_core_anchor(team_name: str, player_nicks: List[str], match_date: Optional[datetime]) -> None:
+    """(Re)set `team_name`'s core anchor to `player_nicks`, dated `match_date`
+    (falls back to now if unknown). This is the ONLY place team_core_anchor
+    is written."""
+    date_str = (match_date or datetime.now()).strftime("%Y-%m-%d %H:%M")
+    team_core_anchor[team_name] = {"lineup": list(player_nicks), "date": date_str}
+    mark_unsaved()
+
+
+def _check_new_event_core(team_name: str, event_name: str, player_nicks: List[str],
+                            participation_index: set, teams_dict: Dict[str, float],
+                            match_date: Optional[datetime] = None) -> None:
+    """
+    Run once per team, the moment that team enters a NEW event (i.e. its
+    first match in `event_name` — checked against `participation_index`
+    BEFORE _capture_core_if_first_match records this lineup).
+
+    Compares `player_nicks` against the team's CORE ANCHOR — a fixed
+    reference lineup that does NOT move every event. The anchor is seeded
+    at team creation (see auto_register_team / the page_vrs registration
+    shortcuts), so its 90-day clock starts from when the team was actually
+    made, not from whenever it happens to enter its second event. It then
+    only rolls forward once ROSTER_CORE_ANCHOR_REFRESH_DAYS (3 months) have
+    passed since it was last set, so several small roster changes within
+    the same window compound against one stable reference rather than each
+    being compared against whatever changed most recently. Penalties for
+    1-2 changed players always apply immediately regardless of anchor age —
+    only the ROLL of the anchor itself is gated on the 90-day window.
+
+    - No anchor on file at all (only possible for teams registered before
+      this feature existed, from older save data) -> treated the same as a
+      brand-new team: reset to provisional, and seed an anchor now.
+    - Anchor exists but is older than ROSTER_CORE_VALID_DAYS (6 months) ->
+      reset to provisional (PROVISIONAL_STARTING_RATING), current lineup
+      becomes the new anchor.
+    - Anchor within the window, overlap < 3 players -> core is broken, same
+      treatment: reset to provisional, current lineup becomes the new anchor.
+    - Anchor within the window, overlap >= 3 -> keep the rating, apply
+      ROSTER_CHANGE_PENALTIES[players_changed] (0 for no change, 5% for 1,
+      12.5% cumulative for 2). The anchor only rolls forward to the current
+      lineup if >= ROSTER_CORE_ANCHOR_REFRESH_DAYS have passed since it was
+      set — otherwise it's left untouched so the NEXT event still compares
+      against the same reference.
+
+    No-op if this isn't actually a new event for the team, if there's no
+    lineup to check, or if the team isn't registered yet (brand-new teams
+    go through auto_register_team instead, not this path).
+    """
+    if not team_name or not event_name or not player_nicks:
+        return
+    if (team_name, event_name) in participation_index:
+        return  # not this team's first match of this event
+    if team_name not in teams_dict:
+        return  # handled by auto_register_team, not here
+
+    anchor = team_core_anchor.get(team_name)
+
+    if anchor is None:
+        # Only reachable for teams that predate this feature (no anchor was
+        # ever seeded at their creation) — treat like a fresh team.
+        old_rating = teams_dict[team_name]
+        teams_dict[team_name] = PROVISIONAL_STARTING_RATING
+        provisional_teams[team_name] = 0
+        if old_rating != PROVISIONAL_STARTING_RATING:
+            print(f"  [!] '{team_name}': no core anchor on file (pre-dates this feature) "
+                  f"-> reset to provisional ({int(old_rating)} -> {int(PROVISIONAL_STARTING_RATING)} CSRS)")
+        _set_core_anchor(team_name, player_nicks, match_date)
+        return
+
+    anchor_lineup = anchor.get("lineup", [])
+    anchor_date = _parse_stored_date(anchor.get("date"))
+    anchor_age_days = (match_date - anchor_date).days if (match_date and anchor_date) else None
+
+    if anchor_age_days is not None and anchor_age_days > ROSTER_CORE_VALID_DAYS:
+        old_rating = teams_dict[team_name]
+        teams_dict[team_name] = PROVISIONAL_STARTING_RATING
+        provisional_teams[team_name] = 0
+        print(f"  [!] '{team_name}': core anchor stale ({anchor_age_days}d > {ROSTER_CORE_VALID_DAYS}d) "
+              f"-> reset to provisional ({int(old_rating)} -> {int(PROVISIONAL_STARTING_RATING)} CSRS)")
+        _set_core_anchor(team_name, player_nicks, match_date)
+        return
+
+    overlap = len(set(n.lower() for n in player_nicks) & set(n.lower() for n in anchor_lineup))
+
+    if overlap < 3:
+        old_rating = teams_dict[team_name]
+        teams_dict[team_name] = PROVISIONAL_STARTING_RATING
+        provisional_teams[team_name] = 0
+        print(f"  [!] '{team_name}': core broken vs anchor ({overlap}/5 carried over) "
+              f"-> reset to provisional ({int(old_rating)} -> {int(PROVISIONAL_STARTING_RATING)} CSRS)")
+        _set_core_anchor(team_name, player_nicks, match_date)
+        return
+
+    changed = max(0, 5 - overlap)
+    penalty_pct = ROSTER_CHANGE_PENALTIES.get(changed, 0.0)
+    if penalty_pct > 0:
+        old_rating = teams_dict[team_name]
+        new_rating = min(max(RATING_FLOOR, old_rating * (1 - penalty_pct)), RATING_CAP)
+        teams_dict[team_name] = new_rating
+        print(f"  [!] '{team_name}': {changed} player(s) changed vs anchor "
+              f"-> -{penalty_pct * 100:.1f}% ({int(old_rating)} -> {int(new_rating)} CSRS)")
+
+    # Anchor only rolls forward once the refresh window has actually
+    # elapsed — NOT on every new event, so it stays a stable reference for
+    # ROSTER_CORE_ANCHOR_REFRESH_DAYS at a time.
+    if anchor_age_days is not None and anchor_age_days >= ROSTER_CORE_ANCHOR_REFRESH_DAYS:
+        _set_core_anchor(team_name, player_nicks, match_date)
 
 
 def _find_core_match_in_lineups(player_nicks: List[str], exclude_team: Optional[str] = None,
@@ -4358,6 +4512,14 @@ def auto_register_team(team_name, match_date=None, teams_dict=None, context=None
                 # unfairly cost it the remaining boosted K-factor matches.
                 if old_team in provisional_teams:
                     provisional_teams[team_name] = provisional_teams[old_team]
+                # Inherit the OLD team's core anchor as-is (same lineup, same
+                # date) rather than starting a fresh 90-day clock — a rebrand
+                # under a new name shouldn't reset how "due" a core roll is.
+                if old_team in team_core_anchor:
+                    team_core_anchor[team_name] = dict(team_core_anchor[old_team])
+                    mark_unsaved()
+                elif player_nicks:
+                    _set_core_anchor(team_name, player_nicks, match_date)
                 print(
                     f"  >>> Core match: '{team_name}' shares {overlap} players with "
                     f"'{old_team}' (from '{old_event}') → inheriting {int(old_rating)} CSRS Elo"
@@ -4408,6 +4570,8 @@ def auto_register_team(team_name, match_date=None, teams_dict=None, context=None
         if teams_dict is not None:
             teams_dict[team_name] = csrs
         provisional_teams[team_name] = 0
+        if player_nicks:
+            _set_core_anchor(team_name, player_nicks, match_date)
         print(
             f"  >>> Provisionally registered '{team_name}': "
             f"no VRS found → {int(csrs)} CSRS (needs {PROVISIONAL_MATCH_THRESHOLD} matches to establish rating)"
@@ -4420,6 +4584,8 @@ def auto_register_team(team_name, match_date=None, teams_dict=None, context=None
     csrs = vrs / 2
     if teams_dict is not None:
         teams_dict[team_name] = csrs
+    if player_nicks:
+        _set_core_anchor(team_name, player_nicks, match_date)
 
     print(
         f"  >>> Auto‑registered '{team_name}': "
@@ -4486,7 +4652,7 @@ def _prune_debug_snapshots(max_age_days: int = DEBUG_SNAPSHOT_MAX_AGE_DAYS) -> N
         pass
 
 
-def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, int, str, str, bool, dict, str, dict, Optional[str], Optional[str]]]:
+def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, int, str, str, bool, dict, str, dict, Optional[str], Optional[str], Any, List[List[str]], Tuple[bool, bool]]]:
     """
     Scrape teams, scores, date, event, and grand final status from HLTV match page.
     Includes error logging for debugging.
@@ -4764,6 +4930,33 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
                 });
             } catch(e) { result.lineups = [[], []]; }
 
+            // === SUBSTITUTE DETECTION ===
+            // HLTV marks a stand-in with a footnote in the veto/preformatted
+            // -text block, e.g. "** ultimate substitutes Jorko." The leading
+            // "**" is just HLTV's footnote-marker styling and is NOT checked
+            // for or relied on here — footnote symbols/formatting aren't
+            // consistent enough to trust. Matching the TEAM name in that line
+            // is also unreliable (short names, sponsor tags, abbreviations
+            // don't always match result.teams exactly). Instead: find the
+            // WORD "substitute"/"substitutes"/"substituted" wherever it
+            // appears in the veto text, take the player NICK immediately
+            // following it, and check which team's scraped lineup (above,
+            // straight from the match page) actually contains that nick —
+            // that's the team that fielded the sub, using the same nick data
+            // the rest of the app already trusts for core-matching.
+            result.substitute_team1 = false;
+            result.substitute_team2 = false;
+            if (vetoLower.includes('substitute')) {
+                const subRegex = /\\bsubstitute[sd]?\\b\\s+([A-Za-z0-9_.\\-]+)/gi;
+                let m;
+                while ((m = subRegex.exec(vetoTextRaw)) !== null) {
+                    const subNick = m[1].replace(/[.,]+$/, '').toLowerCase();
+                    if (!subNick) continue;
+                    if (result.lineups[0].includes(subNick)) result.substitute_team1 = true;
+                    if (result.lineups[1].includes(subNick)) result.substitute_team2 = true;
+                }
+            }
+
             return result;
         }""")
         
@@ -4836,6 +5029,7 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
         match_env = data.get('match_env', None)  # 'LAN', 'ONLINE', or None
         match_stage = data.get('match_stage') or False  # False = scraped but no stage found; None = never attempted
         lineups = data.get('lineups', [[], []])  # [[t1_player_nicks], [t2_player_nicks]]
+        substitute_flags = (data.get('substitute_team1', False), data.get('substitute_team2', False))
         
         print_info(f"Successfully scraped: {t1_name} vs {t2_name}")
         if vrs_before:
@@ -4854,7 +5048,7 @@ def scrape_match_data(url: str, context=None) -> Optional[Tuple[str, str, int, i
             f"url={url}"
         )
 
-        return t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env, match_stage, lineups
+        return t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env, match_stage, lineups, substitute_flags
         
     except PlaywrightTimeout:
         error_msg = f"Page load timeout for URL: {url}"
@@ -5105,7 +5299,7 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
             continue
 
         scrape_time_ms = int((time.time() - scrape_start) * 1000)
-        t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env, match_stage, lineups = match_data
+        t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env, match_stage, lineups, substitute_flags = match_data
 
         if not match_date or match_date == 'N/A':
             print("  [WARN] Could not automatically determine match date from page.")
@@ -5164,6 +5358,9 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
                 if page_vrs is not None:
                     csrs = page_vrs / 2
                     teams_dict[name] = csrs
+                    player_nicks = lineups[0] if name == t1_name else lineups[1]
+                    if player_nicks:
+                        _set_core_anchor(name, player_nicks, match_dt)
                     print(f"  >>> Auto-registered '{name}': {int(page_vrs)} VRS (match page) -> {int(csrs)} CSRS Elo")
                 else:
                     player_nicks = lineups[0] if name == t1_name else lineups[1]
@@ -5182,6 +5379,23 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
         if not t1 or not t2:
             print(">>> ERROR: Teams not found after registration. Skipping match.")
             continue
+
+        # Roster-core continuity check — fires only on a team's FIRST match
+        # of a NEW event, and only for teams already registered (brand-new
+        # teams already went through auto_register_team above). May reset
+        # teams_dict[t1]/[t2] to provisional or apply a roster-change
+        # penalty BEFORE p1_before/p2_before are read below. Skipped entirely
+        # for a team that fielded a substitute in THIS match (detected from
+        # the word "substitute" in the veto text, cross-checked against that
+        # team's scraped lineup — not the "**" footnote symbol, which isn't
+        # reliable enough to key off) — a stand-in appearance is temporary
+        # and must never permanently cost a team a roster-change penalty or
+        # reset.
+        if event_name:
+            if not substitute_flags[0]:
+                _check_new_event_core(t1, event_name, lineups[0], participation_index, teams_dict, match_dt)
+            if not substitute_flags[1]:
+                _check_new_event_core(t2, event_name, lineups[1], participation_index, teams_dict, match_dt)
 
         VALID_TIERS = ['S+', 'S', 'A', 'B', 'C', 'D', 'E']
         tier_raw = 'A'
@@ -5438,7 +5652,7 @@ def import_from_hltv(teams_dict: Dict[str, float], history_list: List[Dict[str, 
         if event_name:
             _capture_core_if_first_match(t1, event_name, lineups[0], participation_index)
             _capture_core_if_first_match(t2, event_name, lineups[1], participation_index)
-        
+
         if update_peak_func:
             update_peak_func(t1, teams_dict.get(t1, 1000), entry_date)
             update_peak_func(t2, teams_dict.get(t2, 1000), entry_date)
@@ -5838,7 +6052,7 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             failed.append(url_raw)
             continue
 
-        t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env, match_stage, lineups = match_data
+        t1_name, t2_name, s1, s2, match_date, event_name, is_grand_final, vrs_before, event_href, event_field, forfeit_team, match_env, match_stage, lineups, substitute_flags = match_data
 
         # --- Date ---
         if not match_date or match_date == 'N/A':
@@ -5862,6 +6076,9 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
                 if page_vrs is not None:
                     csrs = page_vrs / 2
                     teams[name] = csrs
+                    player_nicks = lineups[0] if name == t1_name else lineups[1]
+                    if player_nicks:
+                        _set_core_anchor(name, player_nicks, match_dt)
                     _batch_log(f"  Auto-registered '{name}': {int(page_vrs)} VRS -> {int(csrs)} CSRS")
                 else:
                     player_nicks = lineups[0] if name == t1_name else lineups[1]
@@ -5882,6 +6099,16 @@ def _import_url_list(urls_to_do: List[str], ctx) -> Tuple[int, List[str]]:
             _batch_log(f"  FAIL: teams not found after registration")
             failed.append(url_raw)
             continue
+
+        # Roster-core continuity check — same rule as the interactive
+        # importer: fires only on a team's first match of a new event.
+        # Skipped for a team that fielded a substitute in this match (see
+        # the matching comment in import_from_hltv).
+        if event_name:
+            if not substitute_flags[0]:
+                _check_new_event_core(t1, event_name, lineups[0], participation_index, teams, match_dt)
+            if not substitute_flags[1]:
+                _check_new_event_core(t2, event_name, lineups[1], participation_index, teams, match_dt)
 
         # --- Tier ---
         tier_raw = 'A'

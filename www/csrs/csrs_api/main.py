@@ -20,6 +20,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+# CSRS.py is the single source of truth for Elo/rating and form-score math.
+# main.py used to keep its own parallel copies of these formulas (with
+# comments claiming they were "exact ports") — they had drifted out of sync
+# in several real ways (tier/map multipliers, the pity/mismatch sliding
+# thresholds, the adaptive Competition-Strength reference). Importing CSRS
+# directly instead removes that duplication. CSRS.py is safe to import here
+# (no tkinter/dependency-install code runs at import time — see CSRS.py's
+# own comments), and every function main.py calls from it is a pure
+# function that takes its inputs as explicit arguments rather than reading
+# CSRS.py's own module-level `teams`/`history` globals (which main.py never
+# populates — it loads/holds its own copy of the save data).
+import CSRS
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -57,12 +70,13 @@ def load_data() -> dict:
         raise HTTPException(status_code=500, detail=f"Failed to read data.save: {e}")
 
 
-def _compute_best_ever_ranks(history: list, teams: dict = None, as_of_dt=None) -> tuple:
+def _compute_best_ever_ranks(history: list, teams: dict = None, as_of_dt=None) -> dict:
     """
     Replay match history chronologically, recomputing full *depreciated*
     league standings after every match (mirroring how /api/rankings'
     current `rank` is computed — via _apply_depreciation, not raw points),
-    and track each team's best (lowest-number) rank ever held.
+    and track each team's best (lowest-number) rank ever held, along with
+    the date it was achieved.
 
     Also includes a "now" snapshot (current stored points when live, or the
     as-of-date reconstructed points when `as_of_dt` is given) as one
@@ -75,21 +89,16 @@ def _compute_best_ever_ranks(history: list, teams: dict = None, as_of_dt=None) -
     This is independent of peak points — a team's points-peak day and its
     best-rank day are not necessarily the same day, since rank also depends
     on what every other team was doing (including their own inactivity
-    depreciation) at that point in time.
+    depreciation) at that point in time. That's exactly why this function
+    tracks its own date per team, rather than callers reusing the
+    peak-*points* date (stored separately in data.save's `peaks` dict) —
+    reusing that date previously mislabeled whatever day happened to hold
+    the peak-rating record as if it were also the day the peak rank was
+    reached.
 
     Depreciation-aware because an earlier raw-points-only version produced
     peak ranks that disagreed with current `rank` for inactive teams, since
     current `rank` already accounts for depreciation but raw points don't.
-
-    Evaluated once per calendar day (at end-of-day), not after every
-    individual match. Multiple matches often land on the same day, and a
-    team can briefly touch a high rank early in the day only to be passed
-    by other teams' results later that same day — an earlier version
-    treated that brief intraday high as the "peak", which produced a peak
-    rank whose date, when checked against that day's actual end-of-day
-    standings, showed a worse rank than the one being claimed. End-of-day
-    evaluation matches what a person actually checking "the rankings on
-    that date" would see.
 
     `teams` (name -> raw points) is needed for the "now"/as-of snapshot; if
     omitted, only match-history points in time are considered.
@@ -101,17 +110,7 @@ def _compute_best_ever_ranks(history: list, teams: dict = None, as_of_dt=None) -
     rankings), the full history and the real current time are used,
     matching prior behavior exactly.
 
-    Returns a (best_rank, best_rank_date, rank_series) triple: best_rank
-    maps team name -> lowest (best) rank number ever held; best_rank_date
-    maps that same name -> the date string on which that best rank
-    occurred; rank_series maps team name -> a chronological list of
-    {"date": day_key, "rank": pos} points, one per day that had any match
-    activity anywhere in the league — this is the full day-by-day "position
-    history" a team occupied over time (powers a position-history chart),
-    not just its single best-ever point. This date is tracked independently
-    of `peaks[name]["date"]` (the points-peak date) since the two can and
-    often do differ — a team's best rank can occur on a day it didn't even
-    play, purely because a rival decayed past it.
+    Returns: dict of name -> {"rank": int, "date": str}
     """
     from datetime import datetime
 
@@ -125,30 +124,7 @@ def _compute_best_ever_ranks(history: list, teams: dict = None, as_of_dt=None) -
             return datetime.strptime(clean[:10], "%Y-%m-%d")
 
     running_raw_points: dict = {}
-    best_rank: dict = {}
-    best_rank_date: dict = {}
-    rank_series: dict = {}
-
-    def _evaluate_day_end(day_key: str):
-        """Rank every team seen so far as of 23:59:59 on day_key, record a
-        new best rank for anyone who improves on it, and append today's
-        rank to every team's position-history series."""
-        if not running_raw_points:
-            return
-        day_end = datetime.strptime(day_key, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
-        depreciated: dict = {}
-        for name, raw_pts in running_raw_points.items():
-            depreciated[name] = _apply_depreciation(
-                name, raw_pts, match_date=day_end, index=date_index
-            )
-        ranked = sorted(depreciated.items(), key=lambda x: x[1], reverse=True)
-        for pos, (name, _pts) in enumerate(ranked, 1):
-            if name not in best_rank or pos < best_rank[name]:
-                best_rank[name] = pos
-                best_rank_date[name] = day_key
-            rank_series.setdefault(name, []).append({"date": day_key, "rank": pos})
-
-    current_day_key = None
+    best_rank: dict = {}  # name -> {"rank": int, "date": str}
 
     for m in history:
         date_str = m.get("date", "")
@@ -162,21 +138,22 @@ def _compute_best_ever_ranks(history: list, teams: dict = None, as_of_dt=None) -
         if as_of_dt is not None and as_of > as_of_dt:
             continue
 
-        day_key = as_of.strftime("%Y-%m-%d")
-
-        # New day started — evaluate the day that just ended before moving on.
-        if current_day_key is not None and day_key != current_day_key:
-            _evaluate_day_end(current_day_key)
-        current_day_key = day_key
-
         for side in ("t1", "t2"):
             name = m[side]["name"]
             running_raw_points[name] = m[side]["pts_after"]
 
-    # Evaluate whichever day the loop ended on (no "next day" ever arrived
-    # to trigger it above).
-    if current_day_key is not None:
-        _evaluate_day_end(current_day_key)
+        # Recompute depreciated standings for every team seen so far, as of
+        # this match's date — same logic /api/rankings uses for "today".
+        depreciated: dict = {}
+        for name, raw_pts in running_raw_points.items():
+            depreciated[name] = _apply_depreciation(
+                name, raw_pts, match_date=as_of, index=date_index
+            )
+
+        ranked = sorted(depreciated.items(), key=lambda x: x[1], reverse=True)
+        for pos, (name, _pts) in enumerate(ranked, 1):
+            if name not in best_rank or pos < best_rank[name]["rank"]:
+                best_rank[name] = {"rank": pos, "date": date_str}
 
     # Final candidate point: "now" (or the as-of date) — same depreciation
     # logic /api/rankings uses for display rank at that point in time.
@@ -185,6 +162,7 @@ def _compute_best_ever_ranks(history: list, teams: dict = None, as_of_dt=None) -
     # and current live points for the live view).
     if teams:
         reference_time = as_of_dt if as_of_dt is not None else datetime.now()
+        reference_date_str = reference_time.strftime("%Y-%m-%d")
         team_display: dict = {}
         for name, pts in teams.items():
             last = _get_last_match_date(name, index=date_index, before_date=as_of_dt)
@@ -195,26 +173,17 @@ def _compute_best_ever_ranks(history: list, teams: dict = None, as_of_dt=None) -
             team_display[name] = _calculate_depreciation(pts, days_inactive, team_name=name)
 
         ranked_now = sorted(team_display.items(), key=lambda x: x[1], reverse=True)
-        now_date_str = reference_time.strftime("%Y-%m-%d")
         for pos, (name, _pts) in enumerate(ranked_now, 1):
-            if name not in best_rank or pos < best_rank[name]:
-                best_rank[name] = pos
-                best_rank_date[name] = now_date_str
-            series = rank_series.setdefault(name, [])
-            # Avoid a duplicate point if the day-end replay above already
-            # recorded this same day (e.g. a match happened today).
-            if not series or series[-1]["date"] != now_date_str:
-                series.append({"date": now_date_str, "rank": pos})
-            else:
-                series[-1]["rank"] = pos
+            if name not in best_rank or pos < best_rank[name]["rank"]:
+                best_rank[name] = {"rank": pos, "date": reference_date_str}
 
-    return best_rank, best_rank_date, rank_series
+    return best_rank
 
 
 _best_rank_cache: dict = {"mtime": None, "by_key": {}}
 
 
-def _compute_best_ever_ranks_cached(history: list, teams: dict = None, as_of_dt=None) -> tuple:
+def _compute_best_ever_ranks_cached(history: list, teams: dict = None, as_of_dt=None) -> dict:
     """
     Cached wrapper around _compute_best_ever_ranks. Recomputes only when
     DATA_FILE's modification time changes (i.e. data.save was updated),
@@ -254,45 +223,28 @@ def _compute_best_ever_ranks_cached(history: list, teams: dict = None, as_of_dt=
 
 
 # ---------------------------------------------------------------------------
-# Elo simulation — exact port of CSRS.py calculate_points()
+# Elo simulation — the actual rating formula now lives in CSRS.py
+# (CSRS.calculate_points). What's left here is only what simulate_elo below
+# still needs for its own "what-if" projection logic, which has no CSRS.py
+# equivalent (CSRS.py only ever processes real match results, not
+# hypothetical ones).
 # ---------------------------------------------------------------------------
 
-# Constants — must match DEFAULT_CONFIG in CSRS.py
 RATING_CAP   = 12930
 RATING_FLOOR = 0
-K_WIN        = 33
-K_LOSS       = 22
-PROVISIONAL_OPP_DIFF_CAP = 200
 
 # Provisional team's OWN change multiplier — applied on top of opponent cap.
 # Match 1 = 3.0x, match 2 = 2.5x, match 3 = 2.0x, then graduates.
-PROVISIONAL_MATCH_THRESHOLD = 3
 PROVISIONAL_K_FACTORS = {1: 3.0, 2: 2.5, 3: 2.0}
-
-DIMINISHING_RETURNS_ENABLED  = True
-DIMINISHING_THRESHOLD        = 1000
-DIMINISHING_MAX              = 1050
-DIMINISHING_K_WIN_MIN_PCT    = 0.0
-DIMINISHING_K_LOSS_MIN_PCT   = 1.0
-
-MISMATCH_PENALTY_ENABLED   = True
-MISMATCH_DECAY_PERCENT     = 1.0
-MISMATCH_ZERO_POINT_PERCENT = 0.70
-MISMATCH_MAX_PENALTY_PERCENT = 0.66
-MISMATCH_MAX_PENALTY_VALUE  = -0.75
-
-PITY_POINTS_ENABLED    = True
-PITY_THRESHOLD_PERCENT = 0.75
-PITY_MAX_PERCENT       = 0.65
-PITY_MAX_POINTS        = 9
-PITY_MIN_POINTS        = 6
 
 # Elite tier — exact port of DEFAULT_CONFIG["ELITE_THRESHOLD"] in CSRS.py.
 ELITE_THRESHOLD = 850
 
-# Form + depreciation — exact port of DEFAULT_CONFIG in CSRS.py.
-# Used to compute the day-before-match depreciation transition point
-# on the Elite Teams Over Time graph.
+# Form breakdown weights/thresholds — still used directly by
+# _analyze_team_form()'s display breakdown (component scores, streak bonus,
+# compression) below. The actual form GRADE/SCORE used everywhere else now
+# comes from CSRS.calculate_form(), not from these constants being applied
+# here a second time.
 FORM_WIN_WEIGHT               = 42.5
 FORM_MAP_WEIGHT               = 42.5
 FORM_COMP_WEIGHT              = 15.0
@@ -300,16 +252,10 @@ FORM_STREAK_BONUS_ENABLED     = True
 FORM_STREAK_BONUS_MAX         = 10.0
 FORM_STREAK_BONUS_PER_WIN     = 2
 FORM_STREAK_LOSS_RESET_COUNT  = 2
-FORM_MODIFIER_MIN             = 0.5
-FORM_MODIFIER_MAX             = 1.5
 FORM_DIMINISHING_ENABLED      = True
 FORM_DIMINISHING_THRESHOLD    = 0.85
 FORM_DIMINISHING_COMPRESSION  = 0.67
 DEPRECIATION_THRESHOLD        = 14
-
-TIERS  = {"S+": 1.5, "S": 1.4, "A": 1.2, "B": 1.0, "C": 0.8, "D": 0.55}
-MAPS   = {1: 0.8, 2: 1.0, 3: 1.2}
-ENVS   = {"ONLINE": 0.8, "LAN": 1.1, "STUDIO": 1.1, "STAGE": 1.1}
 
 
 def _calculate_points(
@@ -324,90 +270,13 @@ def _calculate_points(
     opp_form_adj: float = 0.0,
     opp_is_provisional: bool = False,
 ) -> float:
-    """Exact port of CSRS.py calculate_points(). Returns new rating."""
-
-    # Diminishing returns on K
-    k_win  = K_WIN
-    k_loss = K_LOSS
-    if DIMINISHING_RETURNS_ENABLED and team_pts >= DIMINISHING_THRESHOLD:
-        pos = max(0.0, min(1.0,
-            (team_pts - DIMINISHING_THRESHOLD) / (DIMINISHING_MAX - DIMINISHING_THRESHOLD)
-        ))
-        k_win  = K_WIN  * (1.0 - pos * (1.0 - DIMINISHING_K_WIN_MIN_PCT))
-        k_loss = K_LOSS * (1.0 - pos * (1.0 - DIMINISHING_K_LOSS_MIN_PCT))
-
-    K = k_win if result == 1 else k_loss
-
-    m_tier = TIERS.get(tier.upper(), 1.0)
-    m_map  = MAPS.get(map_diff, 1.0)
-    m_env  = ENVS.get(env.upper(), 1.0)
-    gf_mult = 1.5 if is_grand_final else 1.0
-
-    # Effective ratings with form adjustments
-    team_eff = team_pts + team_form_adj
-    opp_eff  = opp_pts  + opp_form_adj
-
-    # Provisional opponent rating cap
-    if opp_is_provisional:
-        diff = opp_eff - team_eff
-        if abs(diff) > PROVISIONAL_OPP_DIFF_CAP:
-            opp_eff = team_eff + PROVISIONAL_OPP_DIFF_CAP * (1 if diff > 0 else -1)
-
-    expected = 1 / (1 + 10 ** ((opp_eff - team_eff) / 400))
-
-    # Upset factor
-    if team_eff > opp_eff and result == 0:
-        upset = team_eff / opp_eff if opp_eff > 0 else 1.0
-    elif team_eff < opp_eff and result == 1:
-        upset = opp_eff / team_eff if team_eff > 0 else 1.0
-    else:
-        upset = 1.0
-
-    change = K * (result - expected) * m_tier * m_map * gf_mult * upset
-
-    # Pity points (underdog losses)
-    pity_bonus = 0.0
-    if PITY_POINTS_ENABLED and result == 0:
-        team_rating_pct = team_pts / opp_pts if opp_pts > 0 else 0
-        if team_rating_pct <= PITY_THRESHOLD_PERCENT:
-            gap_factor = min(1.0,
-                (PITY_THRESHOLD_PERCENT - team_rating_pct) /
-                (PITY_THRESHOLD_PERCENT - PITY_MAX_PERCENT)
-            )
-            pity_base = {1: 9, 2: 6, 3: 3}.get(map_diff, 3)
-            pity_bonus = pity_base * gap_factor * m_tier * m_env * gf_mult
-            if pity_bonus < PITY_MIN_POINTS:
-                pity_bonus = float(PITY_MIN_POINTS)
-
-            gap_from_threshold = PITY_THRESHOLD_PERCENT - team_rating_pct
-            total_range = PITY_THRESHOLD_PERCENT - PITY_MAX_PERCENT
-            scale_pos = min(1.0, gap_from_threshold / total_range)
-            target_net = 0 + scale_pos * 7
-            if change + pity_bonus < target_net:
-                pity_bonus = target_net - change
-
-    # Mismatch penalty (beating much weaker teams)
-    mismatch_mult = 1.0
-    if MISMATCH_PENALTY_ENABLED and result == 1 and team_pts > 0:
-        opp_pct = opp_pts / team_pts
-        if opp_pct <= MISMATCH_DECAY_PERCENT:
-            if opp_pct > MISMATCH_ZERO_POINT_PERCENT:
-                pos = (opp_pct - MISMATCH_DECAY_PERCENT) / (MISMATCH_ZERO_POINT_PERCENT - MISMATCH_DECAY_PERCENT)
-                mismatch_mult = 1.0 - pos
-            elif opp_pct > MISMATCH_MAX_PENALTY_PERCENT:
-                pos = (opp_pct - MISMATCH_ZERO_POINT_PERCENT) / (MISMATCH_MAX_PENALTY_PERCENT - MISMATCH_ZERO_POINT_PERCENT)
-                mismatch_mult = 0.0 - pos * abs(MISMATCH_MAX_PENALTY_VALUE)
-            else:
-                mismatch_mult = MISMATCH_MAX_PENALTY_VALUE
-
-    if result == 1:
-        change *= m_env
-        change *= mismatch_mult
-    elif result == 0:
-        change += pity_bonus
-
-    new_rating = team_pts + change
-    return float(max(RATING_FLOOR, min(RATING_CAP, new_rating)))
+    """Thin wrapper — the actual Elo/tier/pity/mismatch math lives in
+    CSRS.calculate_points(), so this file has no separate copy to drift
+    out of sync with it."""
+    return float(CSRS.calculate_points(
+        team_pts, opp_pts, result, map_diff, tier, env,
+        is_grand_final, team_form_adj, opp_form_adj, opp_is_provisional,
+    ))
 
 
 def _build_match_date_index(history_list: list) -> dict:
@@ -613,7 +482,7 @@ def simulate_elo(
 
 @app.get("/api/rankings")
 def get_rankings(
-    limit: Optional[int] = Query(None, ge=1, description="Max teams to return. Omit for no limit."),
+    limit: int = Query(50, ge=1, le=200),
     search: str = Query("", description="Filter by team name"),
     as_of: str = Query("", description="View rankings as of YYYY-MM-DD. Defaults to today."),
 ):
@@ -694,7 +563,7 @@ def get_rankings(
     # Peak rank: capped at as_of_dt for historical views (None/live otherwise)
     # so a past date's "peak rank" reflects the peak as of that date, not the
     # all-time peak including matches that hadn't happened yet.
-    best_ever_rank, best_ever_rank_date, _rank_series = _compute_best_ever_ranks_cached(
+    best_ever_rank: dict = _compute_best_ever_ranks_cached(
         history,
         teams=ref_teams,
         as_of_dt=as_of_dt if is_historical else None,
@@ -739,67 +608,12 @@ def get_rankings(
             "peak_points": round(peak_info.get("points", pts), 2),
             "peak_date": peak_info.get("date"),
             "peak_rank": best_ever_rank.get(name),
-            "peak_rank_date": best_ever_rank_date.get(name),
             "provisional": name in provisional,
             "matches_until_ranked": provisional.get(name, 0) if name in provisional else None,
             "sparkline": team_spark.get(name, []),
         })
 
     return {"total": len(results), "rankings": results[:limit], "as_of": as_of_str}
-
-
-# ---------------------------------------------------------------------------
-# Form rankings endpoint
-# ---------------------------------------------------------------------------
-
-@app.get("/api/form-rankings")
-def get_form_rankings(
-    limit: Optional[int] = Query(None, ge=1, description="Max teams to return. Omit for no limit."),
-    search: str = Query("", description="Filter by team name"),
-):
-    """
-    Same idea as /api/rankings, but ordered by current form score (the same
-    weighted win/map/competition + streak score shown on the team form
-    analysis page) instead of raw/depreciated rating points.
-    """
-    data = load_data()
-    teams: dict = data.get("teams", {})
-    provisional: dict = data.get("provisional_teams", {})
-    history: list = data.get("history", [])
-
-    from datetime import timedelta
-    date_index = _build_match_date_index(history)
-    cutoff = datetime.now() - timedelta(days=30)
-
-    scored = []
-    for name in teams:
-        last_match = _get_last_match_date(name, index=date_index)
-        if last_match is None or last_match < cutoff:
-            continue  # inactive in the last 30 days — leave off form rankings
-        f = _calculate_form_at_match_index(name, len(history), history)
-        if not f:
-            continue  # not enough match history yet for a form score
-        grade, score, streak = f
-        scored.append((name, grade, score, streak))
-
-    # Highest form score first; ties broken alphabetically for stability.
-    scored.sort(key=lambda x: (-x[2], x[0]))
-
-    results = []
-    for rank, (name, grade, score, streak) in enumerate(scored, 1):
-        if search and search.lower() not in name.lower():
-            continue
-        results.append({
-            "rank": rank,
-            "name": name,
-            "form_grade": grade,
-            "form_score": score,
-            "streak": streak,
-            "points": round(teams.get(name, 0), 2),
-            "provisional": name in provisional,
-        })
-
-    return {"total": len(results), "rankings": results[:limit]}
 
 
 # ---------------------------------------------------------------------------
@@ -943,38 +757,12 @@ def get_team(team_name: str):
                 entry["form_score"] = round(f[1], 1)
                 entry["form_grade"] = f[0]
 
-    # Attach a standard (fixed n=15, CSRS.py-default) form score/grade to
-    # EVERY timeline entry — not just the 3-month window above — so an
-    # "All Time" form chart has a full series to plot. Deliberately a
-    # separate field (form_score_all/form_grade_all) rather than reusing
-    # form_score/form_grade: those use a variable window sized to the
-    # 3-month match count (to match the "Form (3 months)" stat card), while
-    # this uses the fixed n=15 convention used everywhere else in the app,
-    # so the two are not directly comparable and shouldn't be conflated.
-    for entry in timeline:
-        gi = entry["_gi"]
-        f = _calculate_form_at_match_index(matched, gi + 1, history)
-        if f:
-            entry["form_score_all"] = round(f[1], 1)
-            entry["form_grade_all"] = f[0]
-
     # Strip the internal global-index marker before it ever reaches the response
     for entry in timeline:
         entry.pop("_gi", None)
 
     peak_info = dict(peaks.get(matched, {}))
-    _best_rank_map, _best_rank_date_map, _rank_series_map = _compute_best_ever_ranks_cached(history, teams=teams)
-    peak_info["rank"] = _best_rank_map.get(matched, peak_info.get("rank"))
-    # Own date field for the rank peak — this is NOT the same day as
-    # peak_info["date"] (the rating/points peak), since best-ever rank can
-    # occur on a different day, including one this team didn't even play.
-    peak_info["rank_date"] = _best_rank_date_map.get(matched)
-
-    # Full day-by-day position (rank) history for this team, one point per
-    # day that had any league match activity — powers the "Position
-    # History" chart (both its 3-month and all-time views; the 3-month
-    # slice is taken client-side from this same series).
-    rank_history = _rank_series_map.get(matched, [])
+    peak_info["rank"] = _compute_best_ever_ranks_cached(history, teams=teams).get(matched, peak_info.get("rank"))
 
     # Day-by-day expanded series (90 days) with depreciation between matches
     daily_series: list = []
@@ -1061,7 +849,6 @@ def get_team(team_name: str):
         "rank": rank,
         "peak": peak_info,
         "form": form_data,
-        "rank_history": rank_history,
         # All-time
         "total_matches": total_matches,
         "wins": wins_all,
@@ -1369,258 +1156,37 @@ def head_to_head(team1: str = Query(...), team2: str = Query(...)):
 # Elite Teams Over Time — matches CSRS.py display_elite_teams_over_time()
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Adaptive Competition-Strength reference for the form calculator
-# ---------------------------------------------------------------------------
-#
-# A Monte Carlo test (synthetic team locked at an exact 50% win rate, no
-# real skill change at all) showed its form score drifting from ~53.96 in
-# Jan 2026 to ~55.10 in Jun 2026 — purely because the form calc's
-# Competition Strength component divided opponent points by the FIXED
-# constant DIMINISHING_MAX (1050), while the league's real top-of-table
-# point levels drifted upward roughly 10% over that span. Win Rate and Map
-# Win Rate don't have this problem (a win is a win regardless of era), so
-# this only affects Competition Strength.
-#
-# Fix: normalize against the league's ACTUAL point level at the time of
-# each match (trailing top-40 teams' points, recomputed daily) instead of
-# a static number. This is intentionally separate from DIMINISHING_MAX's
-# other use in _calculate_points()'s K-factor diminishing-returns curve —
-# that's a different, more sensitive part of the rating engine and is out
-# of scope here.
-
-_comp_reference_cache: dict = {"mtime": None, "series": None, "keys": None}
-
-
-def _build_comp_reference_series(history: list, top_k: int = 20) -> dict:
-    """
-    Day-by-day 'ceiling of the league' series: for each day with at least
-    one match, the average of the top `top_k` teams' most-recent points
-    as of that day. Used to normalize Competition Strength against the
-    league's actual point levels at the time, rather than a fixed constant.
-    """
-    from datetime import datetime
-
-    def parse_date(date_str):
-        clean = date_str.replace(" UTC", "").strip()
-        try:
-            return datetime.strptime(clean, "%Y-%m-%d %H:%M")
-        except ValueError:
-            return datetime.strptime(clean[:10], "%Y-%m-%d")
-
-    latest_pts: dict = {}
-    series: dict = {}
-    current_day_key = None
-
-    def _snapshot(day_key):
-        if not latest_pts:
-            return
-        top_vals = sorted(latest_pts.values(), reverse=True)[:top_k]
-        series[day_key] = sum(top_vals) / len(top_vals)
-
-    for m in history:
-        date_str = m.get("date", "")
-        if not date_str or date_str == "N/A":
-            continue
-        try:
-            as_of = parse_date(date_str)
-        except Exception:
-            continue
-        day_key = as_of.strftime("%Y-%m-%d")
-
-        if current_day_key is not None and day_key != current_day_key:
-            _snapshot(current_day_key)
-        current_day_key = day_key
-
-        for side in ("t1", "t2"):
-            name = m[side]["name"]
-            latest_pts[name] = m[side]["pts_after"]
-
-    if current_day_key is not None:
-        _snapshot(current_day_key)
-
-    return series
-
-
-def _comp_reference_cached(history: list):
-    """Mtime-cached wrapper — same invalidation pattern as _best_rank_cache."""
-    try:
-        mtime = DATA_FILE.stat().st_mtime
-    except OSError:
-        mtime = None
-
-    if _comp_reference_cache["mtime"] != mtime:
-        series = _build_comp_reference_series(history)
-        _comp_reference_cache["mtime"] = mtime
-        _comp_reference_cache["series"] = series
-        _comp_reference_cache["keys"] = sorted(series.keys())
-
-    return _comp_reference_cache["series"], _comp_reference_cache["keys"]
-
-
-def _comp_reference_for_date(date_str: str, history: list) -> float:
-    """
-    Looks up the adaptive Competition-Strength reference for a match date
-    (nearest day at or before it). Falls back to the static DIMINISHING_MAX
-    constant if there's no series data yet (e.g. the very first matches in
-    history, before any day has been snapshotted).
-    """
-    import bisect
-    from datetime import datetime
-
-    series, keys = _comp_reference_cached(history)
-    if not keys:
-        return DIMINISHING_MAX
-
-    clean = (date_str or "").replace(" UTC", "").strip()
-    try:
-        try:
-            dt = datetime.strptime(clean, "%Y-%m-%d %H:%M")
-        except ValueError:
-            dt = datetime.strptime(clean[:10], "%Y-%m-%d")
-    except Exception:
-        return DIMINISHING_MAX
-    day_key = dt.strftime("%Y-%m-%d")
-
-    idx = bisect.bisect_right(keys, day_key) - 1
-    if idx < 0:
-        return DIMINISHING_MAX
-    return series[keys[idx]]
-
-
 def _calculate_form_at_match_index(team_name: str, match_index: int, history: list, n: int = 15):
     """
-    Exact port of CSRS.py calculate_form_at_match_index (default n=15, matching
-    CSRS.py exactly). The `n` parameter is an extension used by get_team() to
-    compute a 3-month-windowed form score — CSRS.py itself never varies it.
-    Calculates form using only matches strictly before `match_index`,
-    so historical transition points never leak future results.
+    Point-in-time form: calculates form using only matches strictly before
+    `match_index`, so historical transition points never leak future
+    results. The actual form math (recency weighting, tier compression,
+    streak bonus, adaptive Competition-Strength reference) all lives in
+    CSRS.calculate_form() — this just slices `history` to the right cutoff
+    first, which achieves the "no future leak" property without needing a
+    separate copy of the formula.
+
+    The `n` parameter is an extension used by get_team() to compute a
+    3-month-windowed form score — CSRS.py's own calculate_form() never
+    varies it from its internal default.
+
     Returns (grade, score, streak) or None if insufficient data.
     """
     if not history:
         return None
-
-    sliced_history = history[:match_index]
-
-    team_matches = []
-    for m in sliced_history:
-        t1_name = m.get('t1', {}).get('name')
-        t2_name = m.get('t2', {}).get('name')
-        if t1_name == team_name:
-            team_matches.append(('t1', m))
-        elif t2_name == team_name:
-            team_matches.append(('t2', m))
-
-    if len(team_matches) < 3:
-        return None
-
-    recent = team_matches[-n:]
-    total_weight = 0.0
-    win_weighted = 0.0
-    map_wins_weighted = 0.0
-    map_total_weighted = 0.0
-    comp_weighted = 0.0
-    streak_chars = []
-
-    for idx, (side, m) in enumerate(recent):
-        t = m.get(side, {})
-        opp_side = 't2' if side == 't1' else 't1'
-        opp = m.get(opp_side, {})
-
-        t_score = t.get('score', 0)
-        opp_score = opp.get('score', 0)
-        won = t_score > opp_score
-
-        matches_ago = len(recent) - 1 - idx
-        exponent = 2.0
-        normalized = matches_ago / max(1, len(recent) - 1)
-        recency = 1.0 - (normalized ** exponent) * 0.85
-        recency = max(0.15, recency)
-
-        win_weighted += (1.0 if won else 0.0) * recency
-        map_wins_weighted += t_score * recency
-        map_total_weighted += (t_score + opp_score) * recency
-
-        opp_pts = opp.get('pts_before', 500)
-        comp_ref = _comp_reference_for_date(m.get('date', ''), history)
-        comp_weighted += (opp_pts / comp_ref) * recency
-
-        total_weight += recency
-        streak_chars.append('W' if won else 'L')
-
-    if total_weight == 0:
-        return None
-
-    win_rate = win_weighted / total_weight
-    map_win_rate = map_wins_weighted / map_total_weighted if map_total_weighted > 0 else 0.5
-    comp_rate = comp_weighted / total_weight
-
-    def apply_form_compression(value, threshold=FORM_DIMINISHING_THRESHOLD,
-                                compression=FORM_DIMINISHING_COMPRESSION):
-        if not FORM_DIMINISHING_ENABLED or value <= threshold:
-            return value
-        gain_above_threshold = value - threshold
-        compressed_gain = gain_above_threshold * (1.0 - compression)
-        result = threshold + compressed_gain
-        return min(1.0, max(threshold, result))
-
-    win_rate_compressed = apply_form_compression(win_rate)
-    map_win_rate_compressed = apply_form_compression(map_win_rate)
-    comp_rate_compressed = apply_form_compression(comp_rate)
-
-    win_score = win_rate_compressed * FORM_WIN_WEIGHT
-    map_score = map_win_rate_compressed * FORM_MAP_WEIGHT
-    comp_score = comp_rate_compressed * FORM_COMP_WEIGHT
-
-    base_score = win_score + map_score + comp_score
-
-    streak = ''.join(streak_chars[-n:])
-    streak_bonus = 0.0
-    consecutive_losses = 0
-
-    if FORM_STREAK_BONUS_ENABLED:
-        for result in streak:
-            if result == 'W':
-                streak_bonus += FORM_STREAK_BONUS_PER_WIN
-                streak_bonus = min(FORM_STREAK_BONUS_MAX, streak_bonus)
-                consecutive_losses = 0
-            else:
-                consecutive_losses += 1
-                if consecutive_losses >= FORM_STREAK_LOSS_RESET_COUNT:
-                    streak_bonus = 0.0
-                    consecutive_losses = 0
-                else:
-                    streak_bonus *= 0.5
-        streak_bonus = min(FORM_STREAK_BONUS_MAX, streak_bonus)
-
-    score = base_score + streak_bonus
-    score = min(score, 100.0)
-
-    total_form_points = FORM_WIN_WEIGHT + FORM_MAP_WEIGHT + FORM_COMP_WEIGHT
-    if score >= total_form_points * 0.85:   grade = 'S'
-    elif score >= total_form_points * 0.70: grade = 'A'
-    elif score >= total_form_points * 0.55: grade = 'B'
-    elif score >= total_form_points * 0.40: grade = 'C'
-    else:                                   grade = 'D'
-
-    return grade, round(score, 1), streak
+    return CSRS.calculate_form(team_name, n, history[:match_index])
 
 
 def _analyze_team_form(team_name: str, history: list, teams: dict, n: int = 15):
     """
     Full form breakdown for a team: component scores (win/map/competition),
     per-match contributions, a short-window trend, and plain-language
-    insights. This mirrors CSRS.py's analyze_team_form() CLI feature, with
-    the same fix already applied there: Competition Strength uses the flat
-    `opp_pts / <adaptive reference>` formula (matching
-    _calculate_form_at_match_index, the function that actually produces
-    the team's real displayed form score), not a team-rating-relative
-    threshold/buffer — using the latter made the three component scores
-    fail to sum to the real "base" score. The reference is looked up via
-    `_comp_reference_for_date` (the trailing top-40 teams' point level on
-    that match's date) rather than the fixed DIMINISHING_MAX constant, to
-    avoid the score drifting upward over time purely from league-wide
-    point inflation rather than a real change in the opponent's strength.
+    insights. Mirrors CSRS.py's analyze_team_form() CLI feature. Competition
+    Strength uses `opp_pts / CSRS._comp_reference_for_date(...)` (the same
+    adaptive reference CSRS.calculate_form() uses internally) — matching
+    it here, rather than a team-rating-relative threshold/buffer or the
+    old static DIMINISHING_MAX constant, keeps the three component scores
+    summing to the real "base" score returned by _calculate_form_at_match_index.
 
     Returns a dict, or None if the team doesn't have enough match history
     (minimum 3 matches).
@@ -1703,7 +1269,7 @@ def _analyze_team_form(team_name: str, history: list, teams: dict, n: int = 15):
         map_wins_weighted += t_score * recency
         map_total_weighted += (t_score + opp_score) * recency
 
-        comp_value = opp_pts / _comp_reference_for_date(m.get('date', ''), history)
+        comp_value = opp_pts / CSRS._comp_reference_for_date(m.get('date', ''), history)
         comp_weighted += comp_value * recency
         total_weight += recency
 
@@ -1801,7 +1367,7 @@ def _analyze_team_form(team_name: str, history: list, teams: dict, n: int = 15):
                 w_mw += t.get('score', 0) * r
                 w_mt += (t.get('score', 0) + opp.get('score', 0)) * r
                 opp_pts = opp.get('pts_before', 500)
-                w_c += (opp_pts / _comp_reference_for_date(m.get('date', ''), history)) * r
+                w_c += (opp_pts / CSRS._comp_reference_for_date(m.get('date', ''), history)) * r
                 w_t += r
             w_rate = w_w / w_t if w_t else 0
             w_map = w_mw / w_mt if w_mt else 0
@@ -1877,28 +1443,26 @@ def _calculate_depreciation(current_rating: float, days_inactive: int,
                              team_name: str = None, match_index: int = None,
                              history: list = None) -> float:
     """
-    Exact port of CSRS.py calculate_depreciation, adapted to take an explicit
-    match_index + history so form is computed via calculate_form_at_match_index
-    (no future-data leakage) instead of the global calculate_form.
+    Delegates the decay-curve + form-modifier math to
+    CSRS.calculate_depreciation() — the single source of truth for it now.
+
+    Form is computed here first, via _calculate_form_at_match_index (which
+    slices `history` up to `match_index`, avoiding future-data leakage),
+    and passed in as CSRS.calculate_depreciation's `form_score` argument.
+    This is deliberate: if form_score isn't supplied, CSRS.calculate_depreciation
+    falls back to computing form itself against CSRS.py's own module-level
+    `history` global — which main.py never populates (it holds its own
+    separately-loaded copy of the save data) — so that fallback path must
+    never be allowed to fire from here.
     """
-    if days_inactive <= DEPRECIATION_THRESHOLD:
-        return current_rating
-
-    base_decay = (((min(days_inactive, 75) - DEPRECIATION_THRESHOLD) /
-                   (75 - DEPRECIATION_THRESHOLD)) ** 2) * 0.25
-
-    form_modifier = 1.0
+    form_score = None
     if team_name and match_index is not None and history is not None:
         form = _calculate_form_at_match_index(team_name, match_index, history)
         if form:
             form_score = form[1]
-            form_modifier = 1.0 - ((form_score - 50) / 250)
-            form_modifier = max(FORM_MODIFIER_MIN, min(FORM_MODIFIER_MAX, form_modifier))
 
-    decay_factor = base_decay * form_modifier
-    depreciated_rating = current_rating * (1 - decay_factor)
-
-    return max(RATING_FLOOR, depreciated_rating)
+    return CSRS.calculate_depreciation(current_rating, days_inactive,
+                                        team_name=team_name, form_score=form_score)
 
 
 @app.get("/api/analytics/elite-over-time")
@@ -2443,6 +2007,28 @@ def home(
     cutoff_30d = _parse_match_date(start + " 00:00") if (start and end) else today - timedelta(days=30)
     streak_as_of = _parse_match_date(end + " 23:59") if end else None
 
+    # As-of match-index cutoff for _calculate_form_at_match_index(): when
+    # viewing a historical month, "current form" must mean form as of that
+    # month's end, not today's live form — otherwise every month in Month
+    # Summary shows the same "#1 Form Team" as the live Home page, since the
+    # form score itself was always computed over the full/live history
+    # regardless of which month was selected. Equivalent to len(history) for
+    # the live case.
+    if start and end:
+        end_idx = 0
+        for gi, m in enumerate(history):
+            d_str = m.get("date", "")
+            if not d_str or d_str == "N/A":
+                continue
+            try:
+                d = _parse_match_date(d_str)
+            except Exception:
+                continue
+            if d <= today:
+                end_idx = gi + 1
+    else:
+        end_idx = len(history)
+
     recent: list = []
     for m in history:
         date_str = m.get("date", "")
@@ -2524,7 +2110,7 @@ def home(
             for side in ("t1", "t2")
             if m[side]["name"] == top_name
         ]
-        form_3m = _calculate_form_at_match_index(top_name, len(history), history)
+        form_3m = _calculate_form_at_match_index(top_name, end_idx, history)
         top_team = {
             "name": top_name,
             "points": round(team_display[top_name], 2),
@@ -2589,7 +2175,7 @@ def home(
     top_form_team = None
     best_form_score = None
     for name in top_30_names:
-        form = _calculate_form_at_match_index(name, len(history), history)
+        form = _calculate_form_at_match_index(name, end_idx, history)
         if not form:
             continue
         grade, score, _streak = form
@@ -2788,7 +2374,7 @@ def home(
             continue  # team has no match history before the cutoff
 
         form_before = _calculate_form_at_match_index(name, idx_before_cutoff, history)
-        form_now = _calculate_form_at_match_index(name, len(history), history)
+        form_now = _calculate_form_at_match_index(name, end_idx, history)
         if not form_before or not form_now:
             continue
 
@@ -3154,13 +2740,11 @@ def meta():
     data = load_data()
     history = data.get("history", [])
     last_match = history[-1]["date"] if history else None
-    earliest_match = history[0]["date"] if history else None
     return {
         "version": data.get("version", 1),
         "total_teams": len(data.get("teams", {})),
         "total_matches": len(history),
         "last_match": last_match,
-        "earliest_match": earliest_match,
         "data_file": str(DATA_FILE),
     }
 
